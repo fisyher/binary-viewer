@@ -1,0 +1,932 @@
+{
+  "schemaVersion": 1,
+  "id": "bmp",
+  "name": "Windows Bitmap",
+  "endian": "le",
+  "extensions": [
+    "bmp"
+  ],
+  "detect": [
+    {
+      "at": 0,
+      "bytes": "42 4D"
+    }
+  ],
+  "doc": "Windows / OS/2 device-independent bitmap (BMP) file. A 14-byte BITMAPFILEHEADER is followed by a DIB header whose first field (its size in bytes) selects the variant (12 = BITMAPCOREHEADER, 40 = BITMAPINFOHEADER, 52 = V2 and 56 = V3 (unofficial Adobe variants: info plus RGB / RGBA masks), 108 = BITMAPV4HEADER, 124 = BITMAPV5HEADER), then optional colour masks (BI_BITFIELDS / BI_ALPHABITFIELDS with a 40-byte header), an optional colour table, then the pixel data at the offset given in the file header. All integers are little-endian. Pixel rows are stored padded to a multiple of 4 bytes: stride = ((bpp * width + 31) / 32) * 4 (integer division). Colour-space FourCCs in V4/V5 headers appear byte-reversed on disk (\"sRGB\" is stored as 42 47 52 73). Headerless DIBs have no \"BM\" signature and are not detected. The OS/2 2.x 64-byte header (and any other unrecognised header size) is kept as raw bytes. Not modelled: gaps between the colour table and the pixel data, and the contents of embedded ICC profiles (only their location and size).",
+  "root": "file",
+  "types": {
+    "file": {
+      "doc": "The whole file: file header, DIB header, optional colour masks and palette, pixel data, optional ICC profile.",
+      "fields": [
+        {
+          "name": "file_header",
+          "type": "file_header",
+          "doc": "BITMAPFILEHEADER (14 bytes)."
+        },
+        {
+          "name": "dib",
+          "type": "dib_header",
+          "doc": "DIB header; its variant is chosen by its size field."
+        },
+        {
+          "name": "masks",
+          "type": "bitfield_masks",
+          "if": "dib.size == 40 and (dib.body.compression == 3 or dib.body.compression == 6)",
+          "doc": "Colour masks stored right after a 40-byte BITMAPINFOHEADER when compression is BI_BITFIELDS (3 masks) or BI_ALPHABITFIELDS (4 masks). Larger headers carry the masks inside the header."
+        },
+        {
+          "name": "palette_core",
+          "type": "rgbtriple",
+          "if": "dib.size == 12",
+          "repeat": {
+            "count": "dib.body.bpp >= 1 and dib.body.bpp <= 8 ? 1 << dib.body.bpp : 0"
+          },
+          "doc": "Colour table of an OS/2 BITMAPCOREHEADER bitmap: 2^bpp RGBTRIPLE entries when bpp <= 8, none otherwise."
+        },
+        {
+          "name": "palette",
+          "type": "rgbquad",
+          "if": "dib.size == 40 or dib.size == 52 or dib.size == 56 or dib.size == 108 or dib.size == 124",
+          "repeat": {
+            "count": "dib.body.clr_used != 0 ? dib.body.clr_used : (dib.body.bpp >= 1 and dib.body.bpp <= 8 ? 1 << dib.body.bpp : 0)"
+          },
+          "doc": "Colour table of RGBQUAD entries: clr_used entries if non-zero, otherwise 2^bpp when 1 <= bpp <= 8, otherwise none (bpp 0 is valid for BI_JPEG / BI_PNG). The count is clamped (with an error) if it cannot fit in the file."
+        },
+        {
+          "name": "pixels",
+          "type": "bytes",
+          "at": "file_header.off_bits",
+          "size": "(dib.size == 40 or dib.size == 52 or dib.size == 56 or dib.size == 108 or dib.size == 124) and dib.body.size_image != null ? max(0, min(_io.size - file_header.off_bits, dib.body.size_image != 0 ? dib.body.size_image : (dib.body.height < 0 ? -dib.body.height : dib.body.height) * (((dib.body.bpp * (dib.body.width < 0 ? 0 : dib.body.width) + 31) / 32) * 4))) : _io.size - file_header.off_bits",
+          "doc": "Raw pixel data, located at off_bits. Its size is size_image if non-zero, otherwise abs(height) * stride, clamped to the end of the file (to the end of the file for headers of unknown size). Rows are padded to 4-byte multiples; for positive height the first stored row is the bottom row.",
+          "assert": [
+            {
+              "expr": "file_header.off_bits >= _io.pos",
+              "level": "warning",
+              "message": "off_bits points inside the headers or the colour table"
+            }
+          ]
+        },
+        {
+          "name": "profile",
+          "type": "bytes",
+          "at": "14 + dib.body.profile_data",
+          "size": "dib.body.profile_size",
+          "if": "dib.size == 124 and dib.body.cs_type == 0x4D424544",
+          "doc": "Embedded ICC profile (PROFILE_EMBEDDED); profile_data is relative to the start of the DIB header."
+        },
+        {
+          "name": "profile_link",
+          "type": "str",
+          "at": "14 + dib.body.profile_data",
+          "size": "dib.body.profile_size",
+          "encoding": "latin1",
+          "terminator": 0,
+          "if": "dib.size == 124 and dib.body.cs_type == 0x4C494E4B",
+          "doc": "Path of the linked ICC profile (PROFILE_LINKED), a NUL-terminated latin1 string (size bounds the field; the terminator is trimmed from the value)."
+        }
+      ]
+    },
+    "file_header": {
+      "doc": "BITMAPFILEHEADER.",
+      "fields": [
+        {
+          "name": "magic",
+          "type": "str",
+          "size": 2,
+          "encoding": "ascii",
+          "expect": "BM",
+          "doc": "bfType: the ASCII characters \"BM\"."
+        },
+        {
+          "name": "file_size",
+          "type": "u4",
+          "doc": "bfSize: size of the file in bytes (not always accurate in the wild)."
+        },
+        {
+          "name": "reserved1",
+          "type": "u2",
+          "doc": "bfReserved1: reserved, should be 0."
+        },
+        {
+          "name": "reserved2",
+          "type": "u2",
+          "doc": "bfReserved2: reserved, should be 0."
+        },
+        {
+          "name": "off_bits",
+          "type": "u4",
+          "doc": "bfOffBits: offset from the start of the file to the pixel data."
+        }
+      ]
+    },
+    "dib_header": {
+      "doc": "DIB header. The first field is the header size, which identifies the variant; the remaining fields are parsed in a substream of exactly size - 4 bytes so a corrupt size cannot make the parser run past the header.",
+      "fields": [
+        {
+          "name": "size",
+          "type": "u4",
+          "doc": "Header size in bytes: 12 (core), 40 (info), 52 (V2), 56 (V3), 108 (V4) or 124 (V5)."
+        },
+        {
+          "name": "body",
+          "type": {
+            "switch": "size",
+            "cases": {
+              "12": "bitmap_core_body",
+              "40": "bitmap_info_body",
+              "52": "bitmap_v2_body",
+              "56": "bitmap_v3_body",
+              "108": "bitmap_v4_body",
+              "124": "bitmap_v5_body"
+            },
+            "default": "bytes"
+          },
+          "size": "size - 4",
+          "doc": "The rest of the header. Unknown header sizes (including OS/2 2.x 64-byte headers) are kept as raw bytes."
+        }
+      ]
+    },
+    "bitfield_masks": {
+      "doc": "Colour masks that follow a 40-byte header for BI_BITFIELDS (RGB) and BI_ALPHABITFIELDS (RGBA).",
+      "fields": [
+        {
+          "name": "red",
+          "type": "u4",
+          "doc": "Red channel mask."
+        },
+        {
+          "name": "green",
+          "type": "u4",
+          "doc": "Green channel mask."
+        },
+        {
+          "name": "blue",
+          "type": "u4",
+          "doc": "Blue channel mask."
+        },
+        {
+          "name": "alpha",
+          "type": "u4",
+          "if": "_parent.dib.body.compression == 6",
+          "doc": "Alpha channel mask (BI_ALPHABITFIELDS only)."
+        }
+      ]
+    },
+    "bitmap_core_body": {
+      "doc": "BITMAPCOREHEADER (OS/2 1.x) after the size field: 8 bytes.",
+      "fields": [
+        {
+          "name": "width",
+          "type": "u2",
+          "doc": "Image width in pixels (unsigned WORD).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "u2",
+          "doc": "Image height in pixels (unsigned WORD; always bottom-up).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel: 1, 4, 8 or 24.",
+          "assert": [
+            {
+              "expr": "_ == 1 or _ == 4 or _ == 8 or _ == 24",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value for a core header"
+            }
+          ]
+        }
+      ]
+    },
+    "bitmap_info_body": {
+      "doc": "BITMAPINFOHEADER after the size field: 36 bytes.",
+      "fields": [
+        {
+          "name": "width",
+          "type": "s4",
+          "doc": "Image width in pixels (signed LONG).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "s4",
+          "doc": "Image height in pixels. Positive: bottom-up DIB, the first row in the file is the bottom row. Negative: top-down DIB, the first row is the top row (the absolute value is the height).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel (biBitCount): 0 (BI_JPEG/BI_PNG: taken from the embedded stream), 1, 4, 8, 16, 24 or 32.",
+          "assert": [
+            {
+              "expr": "_ == 0 or _ == 1 or _ == 4 or _ == 8 or _ == 16 or _ == 24 or _ == 32",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value"
+            }
+          ]
+        },
+        {
+          "name": "compression",
+          "type": "u4",
+          "enum": "compression",
+          "doc": "Compression method (biCompression).",
+          "assert": [
+            {
+              "expr": "height >= 0 or _ == 0 or _ == 3",
+              "level": "warning",
+              "message": "a top-down bitmap (negative height) must be BI_RGB or BI_BITFIELDS"
+            }
+          ]
+        },
+        {
+          "name": "size_image",
+          "type": "u4",
+          "doc": "Size of the pixel data in bytes; may be 0 for BI_RGB."
+        },
+        {
+          "name": "x_pels_per_meter",
+          "type": "s4",
+          "doc": "Horizontal resolution, pixels per metre."
+        },
+        {
+          "name": "y_pels_per_meter",
+          "type": "s4",
+          "doc": "Vertical resolution, pixels per metre."
+        },
+        {
+          "name": "clr_used",
+          "type": "u4",
+          "doc": "Number of palette entries actually used; 0 means the maximum for the bit depth (2^bpp for bpp <= 8).",
+          "assert": [
+            {
+              "expr": "bpp == 0 or bpp > 8 or _ <= (1 << bpp)",
+              "level": "warning",
+              "message": "clr_used is larger than 2^bpp"
+            }
+          ]
+        },
+        {
+          "name": "clr_important",
+          "type": "u4",
+          "doc": "Number of palette entries needed to display the image; 0 means all."
+        }
+      ]
+    },
+    "bitmap_v2_body": {
+      "doc": "BITMAPV2INFOHEADER (unofficial) after the size field: 48 bytes (info plus red, green and blue masks).",
+      "fields": [
+        {
+          "name": "width",
+          "type": "s4",
+          "doc": "Image width in pixels (signed LONG).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "s4",
+          "doc": "Image height in pixels. Positive: bottom-up DIB, the first row in the file is the bottom row. Negative: top-down DIB, the first row is the top row (the absolute value is the height).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel (biBitCount): 0 (BI_JPEG/BI_PNG: taken from the embedded stream), 1, 4, 8, 16, 24 or 32.",
+          "assert": [
+            {
+              "expr": "_ == 0 or _ == 1 or _ == 4 or _ == 8 or _ == 16 or _ == 24 or _ == 32",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value"
+            }
+          ]
+        },
+        {
+          "name": "compression",
+          "type": "u4",
+          "enum": "compression",
+          "doc": "Compression method (biCompression).",
+          "assert": [
+            {
+              "expr": "height >= 0 or _ == 0 or _ == 3",
+              "level": "warning",
+              "message": "a top-down bitmap (negative height) must be BI_RGB or BI_BITFIELDS"
+            }
+          ]
+        },
+        {
+          "name": "size_image",
+          "type": "u4",
+          "doc": "Size of the pixel data in bytes; may be 0 for BI_RGB."
+        },
+        {
+          "name": "x_pels_per_meter",
+          "type": "s4",
+          "doc": "Horizontal resolution, pixels per metre."
+        },
+        {
+          "name": "y_pels_per_meter",
+          "type": "s4",
+          "doc": "Vertical resolution, pixels per metre."
+        },
+        {
+          "name": "clr_used",
+          "type": "u4",
+          "doc": "Number of palette entries actually used; 0 means the maximum for the bit depth (2^bpp for bpp <= 8).",
+          "assert": [
+            {
+              "expr": "bpp == 0 or bpp > 8 or _ <= (1 << bpp)",
+              "level": "warning",
+              "message": "clr_used is larger than 2^bpp"
+            }
+          ]
+        },
+        {
+          "name": "clr_important",
+          "type": "u4",
+          "doc": "Number of palette entries needed to display the image; 0 means all."
+        },
+        {
+          "name": "red_mask",
+          "type": "u4",
+          "doc": "Colour mask for the red channel (used with BI_BITFIELDS / BI_ALPHABITFIELDS)."
+        },
+        {
+          "name": "green_mask",
+          "type": "u4",
+          "doc": "Colour mask for the green channel."
+        },
+        {
+          "name": "blue_mask",
+          "type": "u4",
+          "doc": "Colour mask for the blue channel."
+        }
+      ]
+    },
+    "bitmap_v3_body": {
+      "doc": "BITMAPV3INFOHEADER (unofficial) after the size field: 52 bytes (V2 plus an alpha mask).",
+      "fields": [
+        {
+          "name": "width",
+          "type": "s4",
+          "doc": "Image width in pixels (signed LONG).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "s4",
+          "doc": "Image height in pixels. Positive: bottom-up DIB, the first row in the file is the bottom row. Negative: top-down DIB, the first row is the top row (the absolute value is the height).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel (biBitCount): 0 (BI_JPEG/BI_PNG: taken from the embedded stream), 1, 4, 8, 16, 24 or 32.",
+          "assert": [
+            {
+              "expr": "_ == 0 or _ == 1 or _ == 4 or _ == 8 or _ == 16 or _ == 24 or _ == 32",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value"
+            }
+          ]
+        },
+        {
+          "name": "compression",
+          "type": "u4",
+          "enum": "compression",
+          "doc": "Compression method (biCompression).",
+          "assert": [
+            {
+              "expr": "height >= 0 or _ == 0 or _ == 3",
+              "level": "warning",
+              "message": "a top-down bitmap (negative height) must be BI_RGB or BI_BITFIELDS"
+            }
+          ]
+        },
+        {
+          "name": "size_image",
+          "type": "u4",
+          "doc": "Size of the pixel data in bytes; may be 0 for BI_RGB."
+        },
+        {
+          "name": "x_pels_per_meter",
+          "type": "s4",
+          "doc": "Horizontal resolution, pixels per metre."
+        },
+        {
+          "name": "y_pels_per_meter",
+          "type": "s4",
+          "doc": "Vertical resolution, pixels per metre."
+        },
+        {
+          "name": "clr_used",
+          "type": "u4",
+          "doc": "Number of palette entries actually used; 0 means the maximum for the bit depth (2^bpp for bpp <= 8).",
+          "assert": [
+            {
+              "expr": "bpp == 0 or bpp > 8 or _ <= (1 << bpp)",
+              "level": "warning",
+              "message": "clr_used is larger than 2^bpp"
+            }
+          ]
+        },
+        {
+          "name": "clr_important",
+          "type": "u4",
+          "doc": "Number of palette entries needed to display the image; 0 means all."
+        },
+        {
+          "name": "red_mask",
+          "type": "u4",
+          "doc": "Colour mask for the red channel (used with BI_BITFIELDS / BI_ALPHABITFIELDS)."
+        },
+        {
+          "name": "green_mask",
+          "type": "u4",
+          "doc": "Colour mask for the green channel."
+        },
+        {
+          "name": "blue_mask",
+          "type": "u4",
+          "doc": "Colour mask for the blue channel."
+        },
+        {
+          "name": "alpha_mask",
+          "type": "u4",
+          "doc": "Colour mask for the alpha channel."
+        }
+      ]
+    },
+    "bitmap_v4_body": {
+      "doc": "BITMAPV4HEADER after the size field: 104 bytes (the BITMAPINFOHEADER fields plus masks, colour space and gamma).",
+      "fields": [
+        {
+          "name": "width",
+          "type": "s4",
+          "doc": "Image width in pixels (signed LONG).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "s4",
+          "doc": "Image height in pixels. Positive: bottom-up DIB, the first row in the file is the bottom row. Negative: top-down DIB, the first row is the top row (the absolute value is the height).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel (biBitCount): 0 (BI_JPEG/BI_PNG: taken from the embedded stream), 1, 4, 8, 16, 24 or 32.",
+          "assert": [
+            {
+              "expr": "_ == 0 or _ == 1 or _ == 4 or _ == 8 or _ == 16 or _ == 24 or _ == 32",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value"
+            }
+          ]
+        },
+        {
+          "name": "compression",
+          "type": "u4",
+          "enum": "compression",
+          "doc": "Compression method (biCompression).",
+          "assert": [
+            {
+              "expr": "height >= 0 or _ == 0 or _ == 3",
+              "level": "warning",
+              "message": "a top-down bitmap (negative height) must be BI_RGB or BI_BITFIELDS"
+            }
+          ]
+        },
+        {
+          "name": "size_image",
+          "type": "u4",
+          "doc": "Size of the pixel data in bytes; may be 0 for BI_RGB."
+        },
+        {
+          "name": "x_pels_per_meter",
+          "type": "s4",
+          "doc": "Horizontal resolution, pixels per metre."
+        },
+        {
+          "name": "y_pels_per_meter",
+          "type": "s4",
+          "doc": "Vertical resolution, pixels per metre."
+        },
+        {
+          "name": "clr_used",
+          "type": "u4",
+          "doc": "Number of palette entries actually used; 0 means the maximum for the bit depth (2^bpp for bpp <= 8).",
+          "assert": [
+            {
+              "expr": "bpp == 0 or bpp > 8 or _ <= (1 << bpp)",
+              "level": "warning",
+              "message": "clr_used is larger than 2^bpp"
+            }
+          ]
+        },
+        {
+          "name": "clr_important",
+          "type": "u4",
+          "doc": "Number of palette entries needed to display the image; 0 means all."
+        },
+        {
+          "name": "red_mask",
+          "type": "u4",
+          "doc": "Colour mask for the red channel (used with BI_BITFIELDS / BI_ALPHABITFIELDS)."
+        },
+        {
+          "name": "green_mask",
+          "type": "u4",
+          "doc": "Colour mask for the green channel."
+        },
+        {
+          "name": "blue_mask",
+          "type": "u4",
+          "doc": "Colour mask for the blue channel."
+        },
+        {
+          "name": "alpha_mask",
+          "type": "u4",
+          "doc": "Colour mask for the alpha channel."
+        },
+        {
+          "name": "cs_type",
+          "type": "u4",
+          "enum": "color_space",
+          "doc": "Colour space type (bV4CSType). The FourCC values appear byte-reversed on disk: \"sRGB\" is stored as 42 47 52 73."
+        },
+        {
+          "name": "endpoints",
+          "type": "ciexyztriple",
+          "doc": "CIE XYZ endpoints of the red, green and blue primaries; only meaningful when cs_type is LCS_CALIBRATED_RGB."
+        },
+        {
+          "name": "gamma_red",
+          "type": "u4",
+          "doc": "Red gamma, 16.16 fixed point; only meaningful for LCS_CALIBRATED_RGB."
+        },
+        {
+          "name": "gamma_green",
+          "type": "u4",
+          "doc": "Green gamma, 16.16 fixed point."
+        },
+        {
+          "name": "gamma_blue",
+          "type": "u4",
+          "doc": "Blue gamma, 16.16 fixed point."
+        }
+      ]
+    },
+    "bitmap_v5_body": {
+      "doc": "BITMAPV5HEADER after the size field: 120 bytes (V4 plus rendering intent and profile fields).",
+      "fields": [
+        {
+          "name": "width",
+          "type": "s4",
+          "doc": "Image width in pixels (signed LONG).",
+          "assert": [
+            {
+              "expr": "_ > 0",
+              "level": "warning",
+              "message": "width should be positive"
+            }
+          ]
+        },
+        {
+          "name": "height",
+          "type": "s4",
+          "doc": "Image height in pixels. Positive: bottom-up DIB, the first row in the file is the bottom row. Negative: top-down DIB, the first row is the top row (the absolute value is the height).",
+          "assert": [
+            {
+              "expr": "_ != 0",
+              "level": "warning",
+              "message": "height should not be zero"
+            }
+          ]
+        },
+        {
+          "name": "planes",
+          "type": "u2",
+          "expect": 1,
+          "doc": "Number of colour planes; must be 1."
+        },
+        {
+          "name": "bpp",
+          "type": "u2",
+          "doc": "Bits per pixel (biBitCount): 0 (BI_JPEG/BI_PNG: taken from the embedded stream), 1, 4, 8, 16, 24 or 32.",
+          "assert": [
+            {
+              "expr": "_ == 0 or _ == 1 or _ == 4 or _ == 8 or _ == 16 or _ == 24 or _ == 32",
+              "level": "warning",
+              "message": "unusual bits-per-pixel value"
+            }
+          ]
+        },
+        {
+          "name": "compression",
+          "type": "u4",
+          "enum": "compression",
+          "doc": "Compression method (biCompression).",
+          "assert": [
+            {
+              "expr": "height >= 0 or _ == 0 or _ == 3",
+              "level": "warning",
+              "message": "a top-down bitmap (negative height) must be BI_RGB or BI_BITFIELDS"
+            }
+          ]
+        },
+        {
+          "name": "size_image",
+          "type": "u4",
+          "doc": "Size of the pixel data in bytes; may be 0 for BI_RGB."
+        },
+        {
+          "name": "x_pels_per_meter",
+          "type": "s4",
+          "doc": "Horizontal resolution, pixels per metre."
+        },
+        {
+          "name": "y_pels_per_meter",
+          "type": "s4",
+          "doc": "Vertical resolution, pixels per metre."
+        },
+        {
+          "name": "clr_used",
+          "type": "u4",
+          "doc": "Number of palette entries actually used; 0 means the maximum for the bit depth (2^bpp for bpp <= 8).",
+          "assert": [
+            {
+              "expr": "bpp == 0 or bpp > 8 or _ <= (1 << bpp)",
+              "level": "warning",
+              "message": "clr_used is larger than 2^bpp"
+            }
+          ]
+        },
+        {
+          "name": "clr_important",
+          "type": "u4",
+          "doc": "Number of palette entries needed to display the image; 0 means all."
+        },
+        {
+          "name": "red_mask",
+          "type": "u4",
+          "doc": "Colour mask for the red channel (used with BI_BITFIELDS / BI_ALPHABITFIELDS)."
+        },
+        {
+          "name": "green_mask",
+          "type": "u4",
+          "doc": "Colour mask for the green channel."
+        },
+        {
+          "name": "blue_mask",
+          "type": "u4",
+          "doc": "Colour mask for the blue channel."
+        },
+        {
+          "name": "alpha_mask",
+          "type": "u4",
+          "doc": "Colour mask for the alpha channel."
+        },
+        {
+          "name": "cs_type",
+          "type": "u4",
+          "enum": "color_space",
+          "doc": "Colour space type (bV4CSType). The FourCC values appear byte-reversed on disk: \"sRGB\" is stored as 42 47 52 73."
+        },
+        {
+          "name": "endpoints",
+          "type": "ciexyztriple",
+          "doc": "CIE XYZ endpoints of the red, green and blue primaries; only meaningful when cs_type is LCS_CALIBRATED_RGB."
+        },
+        {
+          "name": "gamma_red",
+          "type": "u4",
+          "doc": "Red gamma, 16.16 fixed point; only meaningful for LCS_CALIBRATED_RGB."
+        },
+        {
+          "name": "gamma_green",
+          "type": "u4",
+          "doc": "Green gamma, 16.16 fixed point."
+        },
+        {
+          "name": "gamma_blue",
+          "type": "u4",
+          "doc": "Blue gamma, 16.16 fixed point."
+        },
+        {
+          "name": "intent",
+          "type": "u4",
+          "enum": "intent",
+          "doc": "Rendering intent (bV5Intent)."
+        },
+        {
+          "name": "profile_data",
+          "type": "u4",
+          "doc": "Offset of the ICC profile data, relative to the start of the DIB header (the size field), for profile-based colour spaces."
+        },
+        {
+          "name": "profile_size",
+          "type": "u4",
+          "doc": "Size of the embedded or linked profile in bytes."
+        },
+        {
+          "name": "reserved",
+          "type": "u4",
+          "doc": "Reserved; should be zero."
+        }
+      ]
+    },
+    "ciexyztriple": {
+      "doc": "CIEXYZTRIPLE: CIE XYZ endpoints of the three primaries (36 bytes).",
+      "fields": [
+        {
+          "name": "red",
+          "type": "ciexyz"
+        },
+        {
+          "name": "green",
+          "type": "ciexyz"
+        },
+        {
+          "name": "blue",
+          "type": "ciexyz"
+        }
+      ]
+    },
+    "ciexyz": {
+      "doc": "CIEXYZ: one endpoint, three FXPT2DOT30 (2.30 fixed point) values.",
+      "fields": [
+        {
+          "name": "x",
+          "type": "s4"
+        },
+        {
+          "name": "y",
+          "type": "s4"
+        },
+        {
+          "name": "z",
+          "type": "s4"
+        }
+      ]
+    },
+    "rgbquad": {
+      "doc": "RGBQUAD palette entry (4 bytes), stored blue-first.",
+      "fields": [
+        {
+          "name": "blue",
+          "type": "u1"
+        },
+        {
+          "name": "green",
+          "type": "u1"
+        },
+        {
+          "name": "red",
+          "type": "u1"
+        },
+        {
+          "name": "reserved",
+          "type": "u1",
+          "doc": "Reserved; normally 0 (not alpha)."
+        }
+      ]
+    },
+    "rgbtriple": {
+      "doc": "RGBTRIPLE palette entry (3 bytes) used by the OS/2 core header, stored blue-first.",
+      "fields": [
+        {
+          "name": "blue",
+          "type": "u1"
+        },
+        {
+          "name": "green",
+          "type": "u1"
+        },
+        {
+          "name": "red",
+          "type": "u1"
+        }
+      ]
+    }
+  },
+  "enums": {
+    "compression": {
+      "0": "BI_RGB",
+      "1": "BI_RLE8",
+      "2": "BI_RLE4",
+      "3": "BI_BITFIELDS",
+      "4": "BI_JPEG",
+      "5": "BI_PNG",
+      "6": "BI_ALPHABITFIELDS",
+      "11": "BI_CMYK",
+      "12": "BI_CMYKRLE8",
+      "13": "BI_CMYKRLE4"
+    },
+    "color_space": {
+      "0": "LCS_CALIBRATED_RGB",
+      "0x73524742": "LCS_sRGB",
+      "0x57696E20": "LCS_WINDOWS_COLOR_SPACE",
+      "0x4C494E4B": "PROFILE_LINKED",
+      "0x4D424544": "PROFILE_EMBEDDED"
+    },
+    "intent": {
+      "0": "(unset)",
+      "1": "LCS_GM_BUSINESS",
+      "2": "LCS_GM_GRAPHICS",
+      "4": "LCS_GM_IMAGES",
+      "8": "LCS_GM_ABS_COLORIMETRIC"
+    }
+  }
+}
