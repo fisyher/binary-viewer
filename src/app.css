@@ -10,6 +10,7 @@
   --sel-bg: #bfdbfe;
   --sel-fg: #111827;
   --error: #dc2626;
+  --edited: #be123c;
   --node-bg: #fde68a;
   --node-edge: #d97706;
   --tint-1: rgba(37, 99, 235, 0.1);
@@ -32,6 +33,7 @@
     --sel-bg: #1e3a6e;
     --sel-fg: #ffffff;
     --error: #f87171;
+    --edited: #fb7185;
     --node-bg: #6b4e0a;
     --node-edge: #fbbf24;
     --tint-1: rgba(96, 165, 250, 0.16);

@@ -28,6 +28,11 @@ export function rowCount(size: number, bytesPerRow = BYTES_PER_ROW): number {
   return Math.ceil(size / bytesPerRow);
 }
 
+/** Rows to render while editing: the caret slot at offset `size` may start one extra row. */
+export function editRowCount(size: number, bytesPerRow = BYTES_PER_ROW): number {
+  return Math.floor(size / bytesPerRow) + 1;
+}
+
 export function rowStartOffset(row: number, bytesPerRow = BYTES_PER_ROW): number {
   return row * bytesPerRow;
 }

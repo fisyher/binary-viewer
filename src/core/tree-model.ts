@@ -305,3 +305,36 @@ export function throttleLatest<A extends unknown[]>(fn: (...a: A) => void, ms: n
   };
   return throttled;
 }
+
+/**
+ * Stable path key for every loaded node: ancestor names joined by "/", with "#n" appended to the second and later
+ * siblings that share a name. Used to carry expansion/selection across a re-parse of edited bytes. Bounded by
+ * `limit` nodes (extra nodes simply get no key).
+ */
+export function nodePathKeys(root: Node, limit = 200_000): Map<number, string> {
+  const out = new Map<number, string>();
+  const stack: Array<{ node: Node; key: string }> = [{ node: root, key: '' }];
+  while (stack.length > 0 && out.size < limit) {
+    const { node, key } = stack.pop()!;
+    out.set(node.id, key);
+    const seen = new Map<string, number>();
+    for (const c of node.children ?? []) {
+      const n = seen.get(c.name) ?? 0;
+      seen.set(c.name, n + 1);
+      stack.push({ node: c, key: `${key}/${c.name}${n > 0 ? '#' + n : ''}` });
+    }
+  }
+  return out;
+}
+
+/** Map ids of `oldRoot`'s nodes onto the nodes of `newRoot` that have the same path key. */
+export function matchNodeIds(oldRoot: Node, newRoot: Node): Map<number, number> {
+  const byKey = new Map<string, number>();
+  for (const [id, key] of nodePathKeys(newRoot)) byKey.set(key, id);
+  const out = new Map<number, number>();
+  for (const [id, key] of nodePathKeys(oldRoot)) {
+    const to = byKey.get(key);
+    if (to !== undefined) out.set(id, to);
+  }
+  return out;
+}

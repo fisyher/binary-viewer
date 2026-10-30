@@ -25,8 +25,9 @@ export function selectionRange(sel: Selection): { start: number; end: number; le
 }
 
 /**
- * New caret offset after a navigation key. Result is always within [0, size-1]
- * (or 0 for an empty source). `pageRows` is the number of rows a page jump covers.
+ * New caret offset after a navigation key. Result is within [0, size-1] (or 0 for an empty source), or
+ * [0, size] when `allowEnd` is set (editing: the caret may sit one past the end to append).
+ * `pageRows` is the number of rows a page jump covers.
  */
 export function moveCaret(
   caret: number,
@@ -34,9 +35,10 @@ export function moveCaret(
   size: number,
   pageRows: number,
   bytesPerRow = BYTES_PER_ROW,
+  allowEnd = false,
 ): number {
   if (size <= 0) return 0;
-  const last = size - 1;
+  const last = allowEnd ? size : size - 1;
   const page = Math.max(1, pageRows) * bytesPerRow;
   let next: number;
   switch (move) {
@@ -77,6 +79,7 @@ export function moveCaret(
 /**
  * Apply a navigation key to a selection. With no selection the move starts from
  * offset 0. `extend` (shift) keeps the anchor; otherwise the selection collapses to the caret.
+ * `allowEnd` lets a collapsing move land on offset `size`; extending never selects past the last byte.
  */
 export function navigate(
   selection: Selection | null,
@@ -84,7 +87,8 @@ export function navigate(
   size: number,
   pageRows: number,
   extend: boolean,
+  allowEnd = false,
 ): Selection {
-  const caret = moveCaret(selection?.caret ?? 0, move, size, pageRows);
+  const caret = moveCaret(selection?.caret ?? 0, move, size, pageRows, BYTES_PER_ROW, allowEnd && !extend);
   return { anchor: extend ? (selection?.anchor ?? 0) : caret, caret };
 }

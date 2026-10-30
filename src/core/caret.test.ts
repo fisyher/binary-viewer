@@ -64,3 +64,23 @@ describe('navigate', () => {
     expect(navigate(null, 'rowEnd', 100, 5, true)).toEqual({ anchor: 0, caret: 15 });
   });
 });
+
+describe('caret one past the end (allowEnd)', () => {
+  // Phase 4: while editing, the caret may sit at offset == size so typing can append.
+  it('can land on size, but only when collapsing', () => {
+    expect(moveCaret(99, 'right', 100, 1, 16, true)).toBe(100);
+    expect(moveCaret(100, 'right', 100, 1, 16, true)).toBe(100);
+    expect(moveCaret(100, 'left', 100, 1, 16, true)).toBe(99);
+    expect(moveCaret(37, 'fileEnd', 100, 1, 16, true)).toBe(100);
+    expect(moveCaret(95, 'pageDown', 100, 5, 16, true)).toBe(100);
+    expect(moveCaret(0, 'right', 0, 1, 16, true)).toBe(0); // empty: the only position is 0 == size
+  });
+  it('default behaviour is unchanged', () => {
+    expect(moveCaret(99, 'right', 100, 1)).toBe(99);
+  });
+  it('navigate: shift-extend never selects past the last byte', () => {
+    expect(navigate({ anchor: 90, caret: 99 }, 'right', 100, 1, false, true)).toEqual({ anchor: 100, caret: 100 });
+    expect(navigate({ anchor: 90, caret: 99 }, 'right', 100, 1, true, true)).toEqual({ anchor: 90, caret: 99 });
+    expect(navigate({ anchor: 100, caret: 100 }, 'left', 100, 1, true, true)).toEqual({ anchor: 100, caret: 99 });
+  });
+});

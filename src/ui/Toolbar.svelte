@@ -5,7 +5,13 @@
     fileName,
     size,
     hasFile,
+    dirty = false,
+    saving = false,
+    unreadable = false,
+    onNew,
     onOpen,
+    onSave,
+    onSaveAs,
     onGoTo,
     gotoError,
     loadError = null,
@@ -13,7 +19,16 @@
     fileName: string | null;
     size: number;
     hasFile: boolean;
+    /** Unsaved edits: shows a marker next to the file name. */
+    dirty?: boolean;
+    /** A save is in progress (editing is blocked). */
+    saving?: boolean;
+    /** The file could not be re-read after saving: only opening another file makes sense. */
+    unreadable?: boolean;
+    onNew: () => void;
     onOpen: () => void;
+    onSave: () => void;
+    onSaveAs: () => void;
     onGoTo: (text: string, mode: OffsetMode) => void;
     loadError?: string | null;
     gotoError: string | null;
@@ -29,9 +44,14 @@
 </script>
 
 <header class="toolbar">
-  <button type="button" onclick={onOpen}>Open…</button>
+  <button type="button" onclick={onNew} disabled={saving}>New</button>
+  <button type="button" onclick={onOpen} disabled={saving}>Open…</button>
+  <button type="button" onclick={onSave} disabled={fileName === null || saving || unreadable}>Save</button>
+  <button type="button" onclick={onSaveAs} disabled={fileName === null || saving || unreadable}>Save As…</button>
   {#if fileName !== null}
     <span class="file" title={fileName}>{fileName}</span>
+    {#if dirty}<span class="dirty" title="Unsaved changes" aria-label="Modified">●</span>{/if}
+    {#if saving}<span class="size">Saving…</span>{/if}
     <span class="size">{size.toLocaleString()} bytes (0x{size.toString(16).toUpperCase()})</span>
   {/if}
   {#if loadError}<span class="error" role="alert">{loadError}</span>{/if}
@@ -75,6 +95,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .dirty {
+    color: var(--edited);
+    margin-left: -6px;
   }
   .size {
     color: var(--muted);

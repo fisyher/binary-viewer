@@ -58,6 +58,15 @@ src/
 - Chromium: `showDirectoryPicker()`, handle persisted in IndexedDB, permission re-requested on a user gesture.
 - Fallback: JSON import/export.
 
+### Editing (Phase 4)
+
+- `EditBuffer` (src/core/edit-buffer.ts) is a piece table over the base `ByteSource`: `orig` pieces point into the base, `added` pieces into an append-only chunked store (cap 256 MiB; history cap 10k steps). Piece lookup is a binary search over cached offsets; an edit costs O(pieces after the edit), fine to ~100k pieces. Adjacent contiguous pieces are merged.
+- Keyboard: hex digits edit nibbles (first = high, second = low, then advance); the ASCII column writes printable ASCII; Insert toggles Overwrite/Insert (shown in the status bar). **Delete always deletes** (selection, or the byte at the caret) in both modes, and Backspace deletes the selection or the byte before the caret; this has not been checked against HxD. Pastes go to the start of the selection and do not replace the rest of it. Copy is hex text only.
+- Undo steps: typed edits at adjacent positions within 1 s coalesce; arrows, clicks and go-to break the group. Saving clears the history (the base is replaced).
+- After edits the worker is re-opened (debounced 300 ms) on `editBuffer.toBlob(baseBlob)` (lazy slices, no copy) and the chosen spec is parsed again; the tree keeps expansion/selection for nodes whose name path still matches.
+- Save (src/core/save.ts): `streamPieces` yields Blob slices / byte chunks (4 MiB max). In-place via a `FileSystemFileHandle` (`createWritable()` without `keepExistingData`; aborted on any error; after `close()` the buffer is rebased onto `handle.getFile()` at once because the old File becomes unreadable). Without a handle: Save As via `showSaveFilePicker`; without the API: a download.
+- Save safety: Save first awaits the HexView edit queue (`settled()`), then locks editing, cancels the pending re-parse and blocks New/Open/drop until it ends; queued edits that run after the lock are dropped. If the re-read after `close()` fails, the data is on disk but the document is frozen read-only with a notice (reopen the file); if the new file's size differs from what was written, the file is reloaded from disk with a notice. Download saves rebase onto a lazy Blob of the saved content (releasing the added store) and count as saved once the download starts: the browser reports no completion, so cancelling the download in the browser leaves the document marked clean. `toBlob` caches one Blob per added-store chunk. After a download save the typed bytes live in the browser's Blob storage (the rebase base is a lazy Blob of the saved content, which references them), so memory is not freed, but the 256 MiB added-store cap applies per save cycle.
+
 ## Roadmap
 
 1. **Core + Hex view** — scaffold, `ByteSource`, formatting helpers, virtualized read-only hex/ASCII grid, open via picker or `<input type=file>`, selection, go-to-offset.

@@ -9,6 +9,7 @@
     followPath,
     formatNodeValue,
     loadKey,
+    matchNodeIds,
     navigateRows,
     nodeByteRange,
     nodeKey,
@@ -34,6 +35,7 @@
     diagnostics = [],
     loadPage,
     onSelect,
+    preserveFor = null,
   }: {
     root: Node | null;
     diagnostics?: Diagnostic[];
@@ -41,6 +43,8 @@
     loadPage: (nodeId: number, start: number, count: number) => Promise<PageResult>;
     /** `range` is the inclusive byte range of the node, or null for zero-size nodes. */
     onSelect: (node: Node, range: { start: number; end: number } | null) => void;
+    /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
+    preserveFor?: Node | null;
   } = $props();
 
   let expanded = $state.raw<ReadonlySet<number>>(new Set());
@@ -55,8 +59,34 @@
   let scroller: HTMLDivElement | undefined = $state();
 
   // New tree -> fresh view state (runs before the DOM updates).
+  let prevRoot: Node | null = null;
   $effect.pre(() => {
     const r = root;
+    const keep = r !== null && preserveFor === r;
+    const old = prevRoot;
+    prevRoot = r;
+    if (keep && old) {
+      untrack(() => {
+        const ids = matchNodeIds(old, r);
+        const mapId = (id: number) => ids.get(id);
+        const carried = new Set<number>();
+        for (const id of expanded) {
+          const to = mapId(id);
+          if (to !== undefined) carried.add(to);
+        }
+        const key = (k: string | null) => {
+          const to = k && k.startsWith('n') ? mapId(Number(k.slice(1))) : undefined;
+          return to === undefined ? null : nodeKey(to);
+        };
+        expanded = carried.size > 0 ? carried : defaultExpanded(r);
+        selectedKey = key(selectedKey);
+        activeKey = key(activeKey);
+      });
+      pages = new Map();
+      loading = new Set();
+      loadError = null;
+      return; // scroll position stays
+    }
     expanded = r ? defaultExpanded(r) : new Set();
     pages = new Map();
     loading = new Set();

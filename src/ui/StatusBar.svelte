@@ -4,8 +4,21 @@
   let {
     selection,
     error = null,
+    notice = null,
+    info = null,
+    insertMode = null,
     onRetry,
-  }: { selection: Selection | null; error?: string | null; onRetry?: () => void } = $props();
+  }: {
+    selection: Selection | null;
+    error?: string | null;
+    /** Edit/copy/paste/save problem. */
+    notice?: string | null;
+    /** Non-error status text. */
+    info?: string | null;
+    /** null hides the indicator (nothing editable open). */
+    insertMode?: boolean | null;
+    onRetry?: () => void;
+  } = $props();
 
   const r = $derived(selection ? selectionRange(selection) : null);
 
@@ -20,6 +33,11 @@
   {:else}
     <span class="muted">No selection</span>
   {/if}
+  {#if insertMode !== null}
+    <span class="mode" title="Press Insert to toggle">{insertMode ? 'Insert' : 'Overwrite'}</span>
+  {/if}
+  {#if info}<span class="info" role="status">{info}</span>{/if}
+  {#if notice}<span class="error" role="alert">{notice}</span>{/if}
   {#if error}
     <span class="error" role="alert">{error}</span>
     {#if onRetry}<button type="button" class="retry" onclick={onRetry}>Retry</button>{/if}
@@ -40,11 +58,20 @@
     color: var(--error);
     margin-left: auto;
   }
+  .error ~ .error {
+    margin-left: 0;
+  }
   .retry {
     padding: 0 8px;
     font-size: 12px;
   }
+  .info {
+    margin-left: auto;
+  }
   .muted {
     color: var(--muted);
+  }
+  .mode {
+    font-weight: 600;
   }
 </style>

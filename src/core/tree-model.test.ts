@@ -224,3 +224,18 @@ describe('throttleLatest', () => {
     vi.useRealTimers();
   });
 });
+
+describe('matchNodeIds', () => {
+  const nd = (id: number, name: string, children?: Node[]): Node => ({ id, name, typeName: 't', offset: 0, size: 1, children });
+  it('maps nodes with the same name path, numbering duplicate siblings', async () => {
+    const { matchNodeIds, nodePathKeys } = await import('./tree-model');
+    const oldRoot = nd(1, 'f', [nd(2, 'a', [nd(3, 'x')]), nd(4, 'a'), nd(5, 'gone')]);
+    const newRoot = nd(10, 'f', [nd(11, 'a', [nd(12, 'x')]), nd(13, 'a'), nd(14, 'new')]);
+    expect(nodePathKeys(oldRoot).get(4)).toBe('/a#1');
+    const m = matchNodeIds(oldRoot, newRoot);
+    expect(m.get(1)).toBe(10);
+    expect(m.get(3)).toBe(12);
+    expect(m.get(4)).toBe(13);
+    expect(m.has(5)).toBe(false);
+  });
+});

@@ -193,3 +193,26 @@ describe('StructureTree', () => {
     });
   });
 });
+
+describe('StructureTree view preservation across a re-parse', () => {
+  it('keeps collapsed state and selection by node path when preserveFor is the new root', async () => {
+    const a = sample();
+    const { container, rerender } = render(StructureTree, { root: a.root, loadPage: noLoad, onSelect: () => {} });
+    await waitFor(() => row(container, 'magic'));
+    await fireEvent.click(row(container, 'file_header')); // select
+    await fireEvent.keyDown(container.querySelector('[role="tree"]')!, { key: 'ArrowLeft' }); // collapse it
+    await waitFor(() => expect(row(container, 'file_header').getAttribute('aria-expanded')).toBe('false'));
+
+    const b = sample(); // same shape, fresh ids (a re-parse)
+    await rerender({ root: b.root, preserveFor: b.root });
+    await waitFor(() => expect(row(container, 'file_header')).toBeTruthy());
+    expect(row(container, 'file_header').getAttribute('aria-expanded')).toBe('false');
+    expect(row(container, 'file_header').getAttribute('aria-selected')).toBe('true');
+
+    // a different root without preserveFor resets to the default view
+    const c = sample();
+    await rerender({ root: c.root, preserveFor: null });
+    await waitFor(() => expect(row(container, 'file_header').getAttribute('aria-expanded')).toBe('true'));
+    expect(row(container, 'file_header').getAttribute('aria-selected')).not.toBe('true');
+  });
+});

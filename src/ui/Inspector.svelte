@@ -6,8 +6,15 @@
   let {
     source,
     offset,
+    version = 0,
     littleEndian = $bindable(true),
-  }: { source: ByteSource | null; offset: number | null; littleEndian?: boolean } = $props();
+  }: {
+    source: ByteSource | null;
+    offset: number | null;
+    /** Bump when the source's bytes changed in place (an EditBuffer edit) to re-read them. */
+    version?: number;
+    littleEndian?: boolean;
+  } = $props();
 
   // Bytes tagged with the source/offset they were read for, so stale data can be dimmed.
   let data = $state.raw<{ src: ByteSource; off: number; bytes: Uint8Array } | null>(null);
@@ -18,6 +25,7 @@
   $effect(() => {
     const src = source;
     const off = offset;
+    void version;
     const id = ++reqId;
     if (!src || off === null) {
       data = null;
