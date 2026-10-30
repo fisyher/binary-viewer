@@ -144,6 +144,22 @@ describe('Preview on open file', () => {
     expect(names(panes(container)[0]!)).not.toContain('zzz');
   });
 
+  it('a link button in the preview tree sets the preview selection, and Show in viewer selects those bytes', async () => {
+    const linked = specText('other', { name: 'Other', types: { root: { fields: [{ name: 'zzz', type: 'u4', link: { at: '4', size: '2', label: 'tail' } }] } } });
+    const { container, toFormats, getByRole } = await setup([['mine', mine], ['other', linked]]);
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    await fireEvent.click(preview(container)!.querySelector('button[data-link]')!);
+    expect(preview(container)!.querySelector('.selinfo')?.textContent).toContain('offset 0x4 (4)');
+    await fireEvent.click(within(preview(container)!).getByRole('button', { name: 'Show in viewer' }));
+    await waitFor(() => {
+      for (const o of [4, 5]) expect(container.querySelector(`.b.sel[data-o="${o}"]`)).not.toBeNull();
+    }, T);
+    expect(container.querySelector('.b.sel[data-o="6"]')).toBeNull();
+    expect(container.querySelector('.b.sel[data-o="3"]')).toBeNull();
+    expect(getByRole('button', { name: 'Viewer' })).toBeTruthy();
+  });
+
   it('switching back to the Viewer re-parses the viewer format: FormatBar and tree agree', async () => {
     const { container, toFormats, select, calls, getByRole } = await setup();
     await toFormats('other');

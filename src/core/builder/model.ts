@@ -78,10 +78,12 @@ const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype']);
 const META_KEYS = ['schemaVersion', 'id', 'name', 'endian', 'extensions', 'detect', 'doc', 'root'] as const;
 const TOP_ORDER = [...META_KEYS, 'types', 'enums'];
 const TYPE_ORDER = ['doc', 'fields'];
-export const FIELD_ORDER = ['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'assert', 'doc'];
+export const FIELD_ORDER = ['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'link', 'assert', 'doc'];
 const FIND_ORDER = ['bytes', 'mask', 'from', 'window', 'direction', 'accept'];
 const IFMAGIC_ORDER = ['at', 'bytes', 'mask'];
-const REF_ORDER = ['type', 'at', 'doc'];
+const REF_ORDER = ['type', 'at', 'doc', 'jumps'];
+const JUMP_ORDER = ['label', 'path'];
+const LINK_ORDER = ['at', 'size', 'label'];
 const SWITCH_ORDER = ['switch', 'cases', 'default'];
 const DETECT_ORDER = ['at', 'bytes', 'mask'];
 const BIT_ORDER = ['name', 'offset', 'width', 'doc'];
@@ -189,7 +191,12 @@ function fieldJson(f: FieldModel): Rec {
   if (o.assert !== undefined) o.assert = orderedList(o.assert, ASSERT_ORDER);
   if (isRec(o.find)) o.find = ordered(o.find, FIND_ORDER);
   if (isRec(o.ifMagic)) o.ifMagic = ordered(o.ifMagic, IFMAGIC_ORDER);
-  if (isRec(o.ref)) o.ref = ordered(o.ref, REF_ORDER);
+  if (isRec(o.ref)) {
+    const ref = ordered(o.ref, REF_ORDER);
+    if (ref.jumps !== undefined) ref.jumps = orderedList(ref.jumps, JUMP_ORDER);
+    o.ref = ref;
+  }
+  if (isRec(o.link)) o.link = ordered(o.link, LINK_ORDER);
   return ordered(o, FIELD_ORDER);
 }
 
@@ -620,7 +627,7 @@ export interface Reference {
   fieldName: string;
   /**
    * Which expression of the field: `size`, `at`, `if`, `repeat.count`, `repeat.until`, `type.switch`, `type.cases[k]`,
-   * `assert[i].expr`, `find.from`, `find.accept[i]`, `ifMagic.at`, `value`, `ref.at`.
+   * `assert[i].expr`, `find.from`, `find.accept[i]`, `ifMagic.at`, `value`, `ref.at`, `link.at`, `link.size`.
    */
   slot: string;
   expr: string;
@@ -651,6 +658,10 @@ export function fieldExpressions(f: FieldDef): Array<{ slot: string; expr: strin
   if (isRec(f.ifMagic)) add('ifMagic.at', f.ifMagic.at);
   add('value', f.value);
   if (isRec(f.ref)) add('ref.at', f.ref.at);
+  if (isRec(f.link)) {
+    add('link.at', f.link.at);
+    add('link.size', f.link.size);
+  }
   return out;
 }
 

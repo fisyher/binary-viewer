@@ -90,7 +90,9 @@ export interface DocField {
   ifMagic?: { at: string; bytes: string; mask?: string };
   /** `value` fields: the expression. */
   value?: string;
-  ref?: { type: string; at: string; doc?: string };
+  ref?: { type: string; at: string; doc?: string; jumps?: Array<{ label: string; path: string }> };
+  /** `link`: expressions for the offset and size of the location this field points at. */
+  link?: { at: string; size?: string; label?: string };
   bits: DocBit[];
 }
 export interface DocType {
@@ -195,7 +197,13 @@ export function buildDocModel(spec: FormatSpec): DocModel {
       if (Array.isArray(f.find?.accept)) field.findAccept = f.find!.accept.map(String);
       if (f.ifMagic !== undefined) field.ifMagic = { at: String(f.ifMagic.at), bytes: String(f.ifMagic.bytes).trim(), ...(f.ifMagic.mask !== undefined ? { mask: String(f.ifMagic.mask).trim() } : {}) };
       if (f.value !== undefined) field.value = String(f.value);
-      if (f.ref !== undefined) field.ref = { type: String(f.ref.type), at: String(f.ref.at), ...(f.ref.doc ? { doc: f.ref.doc } : {}) };
+      if (f.ref !== undefined) {
+        field.ref = { type: String(f.ref.type), at: String(f.ref.at), ...(f.ref.doc ? { doc: f.ref.doc } : {}) };
+        if (Array.isArray(f.ref.jumps) && f.ref.jumps.length > 0) field.ref.jumps = f.ref.jumps.map((j) => ({ label: String(j.label), path: String(j.path) }));
+      }
+      if (f.link !== undefined) {
+        field.link = { at: String(f.link.at), ...(f.link.size !== undefined ? { size: String(f.link.size) } : {}), ...(f.link.label !== undefined ? { label: String(f.link.label) } : {}) };
+      }
       fields.push(field);
       if (!isPlaced(f) && cursor !== null) {
         const adv = staticAdvance(spec, f);
@@ -254,6 +262,8 @@ function mdDesc(f: DocField): string {
   if (f.findMask !== undefined) parts.push(`Search mask: ${code(f.findMask)}.`);
   if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${code(a)}`).join('; ') + '.');
   if (f.ref) parts.push(`Reference: can be opened as ${code(f.ref.type)} at ${code(f.ref.at)}${f.ref.doc ? ' — ' + esc(f.ref.doc) : ''}.`);
+  if (f.ref?.jumps) parts.push('Jump shortcuts: ' + f.ref.jumps.map((j) => `${esc(j.label)} → ${code(j.path)}`).join('; ') + '.');
+  if (f.link) parts.push(`Link: jumps to offset ${code(f.link.at)}${f.link.size !== undefined ? ` (${code(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + esc(f.link.label) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(esc).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${code(f.enum.name)}${vals}.`);
@@ -342,6 +352,8 @@ function htmlDesc(f: DocField): string {
   if (f.findMask !== undefined) parts.push(`Search mask: ${hcode(f.findMask)}.`);
   if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${hcode(a)}`).join('; ') + '.');
   if (f.ref) parts.push(`Reference: can be opened as ${hcode(f.ref.type)} at ${hcode(f.ref.at)}${f.ref.doc ? ' — ' + h(f.ref.doc) : ''}.`);
+  if (f.ref?.jumps) parts.push('Jump shortcuts: ' + f.ref.jumps.map((j) => `${h(j.label)} → ${hcode(j.path)}`).join('; ') + '.');
+  if (f.link) parts.push(`Link: jumps to offset ${hcode(f.link.at)}${f.link.size !== undefined ? ` (${hcode(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + h(f.link.label) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(h).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${hcode(f.enum.name)}${vals}.`);

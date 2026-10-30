@@ -205,6 +205,38 @@ export function nodeByteRange(node: Node): { start: number; end: number } | null
   return { start: node.offset, end: node.offset + node.size - 1 };
 }
 
+/** Inclusive byte range a node's `link` selects, or null for a caret-only (zero-size) or absent link. */
+export function linkByteRange(node: Node): { start: number; end: number } | null {
+  const l = node.link;
+  if (!l || !Number.isSafeInteger(l.offset) || !Number.isSafeInteger(l.size) || l.offset < 0 || l.size <= 0) return null;
+  return { start: l.offset, end: l.offset + l.size - 1 };
+}
+
+/** Button text of a node's `link`: "→ label" (sanitised, shortened) or "→ 0xOFFSET". Empty when there is no link. */
+export function linkLabel(node: Node): string {
+  const l = node.link;
+  if (!l) return '';
+  const label = l.label !== undefined && l.label.trim() !== '' ? sanitizeText(l.label, 40) : `0x${l.offset.toString(16).toUpperCase()}`;
+  return `→ ${label}`;
+}
+
+/**
+ * Node reached from `start` by following `path` (dotted child names, as validated for `ref.jumps`), or null when a step is
+ * missing (the field was skipped by `if`, or parsing stopped before it). Only attached children are followed.
+ * Returns the chain of nodes after `start` (the last is the target).
+ */
+export function resolveNodePath(start: Node, path: string): Node[] | null {
+  const out: Node[] = [];
+  let cur: Node = start;
+  for (const seg of path.split('.')) {
+    const next: Node | undefined = cur.children?.find((c) => c.name === seg && c.typeName !== 'bits');
+    if (!next) return null;
+    out.push(next);
+    cur = next;
+  }
+  return out.length > 0 ? out : null;
+}
+
 /**
  * Chain of nodes from `root` down to the node with `id`, following attached `children` only; null if absent.
  * Used to expand every ancestor of a node found by the worker.

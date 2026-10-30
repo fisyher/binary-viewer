@@ -212,6 +212,11 @@
           "name": "cd_start",
           "type": "value",
           "value": "cd_offset_eff != null ? cd_offset_eff + delta : null",
+          "link": {
+            "at": "_",
+            "size": "cd_size_eff",
+            "label": "central directory"
+          },
           "doc": "Absolute file offset of the central directory (cd_offset_eff + delta)."
         },
         {
@@ -304,7 +309,12 @@
         {
           "name": "cd_offset",
           "type": "u4",
-          "doc": "Offset of the central directory from the start of the archive (0xFFFFFFFF: see the ZIP64 record)."
+          "link": {
+            "at": "_ == 0xFFFFFFFF ? null : _",
+            "size": "cd_size",
+            "label": "central directory"
+          },
+          "doc": "Offset of the central directory from the start of the archive (0xFFFFFFFF: see the ZIP64 record). The link goes to this raw offset; when data precedes the archive, use the link on cd_start (the corrected position)."
         },
         {
           "name": "comment_len",
@@ -338,7 +348,12 @@
         {
           "name": "z64_eocd_offset",
           "type": "u8",
-          "doc": "Offset of the ZIP64 end of central directory record."
+          "link": {
+            "at": "_",
+            "size": 56,
+            "label": "ZIP64 end of central directory"
+          },
+          "doc": "Offset of the ZIP64 end of central directory record. The link goes to this stored offset; when data precedes the archive it is off by that length (the stub correction is only known after this record is parsed)."
         },
         {
           "name": "total_disks",
@@ -399,7 +414,12 @@
         {
           "name": "cd_offset",
           "type": "u8",
-          "doc": "Offset of the central directory from the start of the archive."
+          "link": {
+            "at": "_",
+            "size": "cd_size",
+            "label": "central directory"
+          },
+          "doc": "Offset of the central directory from the start of the archive. The link goes to this raw offset; when data precedes the archive, use the link on cd_start (the corrected position)."
         },
         {
           "name": "extensible_data",
@@ -665,7 +685,12 @@
         {
           "name": "local_header_offset",
           "type": "u4",
-          "doc": "Offset of the local file header from the start of the archive (0xFFFFFFFF: see the ZIP64 extra field)."
+          "link": {
+            "at": "_ == 0xFFFFFFFF ? null : _ + _root.delta",
+            "size": 30,
+            "label": "local header"
+          },
+          "doc": "Offset of the local file header from the start of the archive (0xFFFFFFFF: see the ZIP64 extra field). The link selects the 30 fixed bytes of the header at that position (plus any data prepended to the archive)."
         },
         {
           "name": "name_utf8",
@@ -734,6 +759,11 @@
           "name": "lho_eff",
           "type": "value",
           "value": "local_header_offset == 0xFFFFFFFF and zip64 != null and zip64.local_header_offset != null ? zip64.local_header_offset : local_header_offset",
+          "link": {
+            "at": "_ != null ? _ + _root.delta : null",
+            "size": 30,
+            "label": "local header"
+          },
           "doc": "Local header offset in effect (ZIP64 value when the 32-bit field is 0xFFFFFFFF), still relative to the start of the archive."
         },
         {
@@ -744,9 +774,23 @@
           "ref": {
             "type": "local_entry",
             "at": "_",
-            "doc": "Local file header and data of this entry, at the offset in the central directory (plus any data prepended to the archive). Not shown for entries that start on another disk."
+            "doc": "Local file header and data of this entry, at the offset in the central directory (plus any data prepended to the archive). Not shown for entries that start on another disk.",
+            "jumps": [
+              {
+                "label": "local header",
+                "path": "header"
+              },
+              {
+                "label": "data",
+                "path": "data"
+              },
+              {
+                "label": "descriptor",
+                "path": "descriptor"
+              }
+            ]
           },
-          "doc": "Absolute file offset of the local file header (lho_eff + delta). Open it to see the header, the start of the data and the data descriptor."
+          "doc": "Absolute file offset of the local file header (lho_eff + delta). Open it to see the header, the compressed data and the data descriptor, or use the buttons to jump straight to one of them (descriptor exists only with flag bit 3)."
         }
       ]
     },
@@ -859,6 +903,11 @@
           "name": "local_header_offset",
           "type": "u8",
           "if": "_parent._parent._parent.local_header_offset == 0xFFFFFFFF",
+          "link": {
+            "at": "_ + _root.delta",
+            "size": 30,
+            "label": "local header"
+          },
           "doc": "Real local header offset (present when the header field is 0xFFFFFFFF)."
         },
         {
@@ -1109,7 +1158,7 @@
               "message": "the entry data runs into the central directory"
             }
           ],
-          "doc": "The stored (usually compressed) data. Its size is the compressed size from the central directory; only the first bytes are read."
+          "doc": "The entry's compressed data (as stored in the archive; usually deflated). Its size is the compressed size from the central directory; only the first bytes are read."
         },
         {
           "name": "descriptor",

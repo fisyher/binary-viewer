@@ -111,6 +111,9 @@
   function onSelect(node: Node, range: { start: number; end: number } | null) {
     sel = { node, range, offset: node.offset };
   }
+  function onLinkJump(offset: number, size: number) {
+    sel = { node: null, range: size > 0 ? { start: offset, end: offset + size - 1 } : null, offset };
+  }
   function onJump(d: Diagnostic) {
     if (d.offset !== undefined) sel = { node: null, range: null, offset: d.offset };
   }
@@ -137,7 +140,7 @@
             <ul>{#each problems as p, i (i)}<li>{sanitizeText(p, 300)}</li>{/each}</ul>
           </div>
         {:else}
-          <div class="tree"><StructureTree {root} {diagnostics} {loadPage} {loadRef} {onSelect} preserveFor={keep} /></div>
+          <div class="tree"><StructureTree {root} {diagnostics} {loadPage} {loadRef} {onSelect} onJump={onLinkJump} preserveFor={keep} /></div>
           <Diagnostics {diagnostics} {onJump} />
         {/if}
         {#if sel}

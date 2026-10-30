@@ -75,6 +75,26 @@ export interface RefDef {
   type: string;
   at: ExprSource;
   doc?: string;
+  /** Shortcut buttons on the ref node: each opens the ref (if needed) and selects the node at `path` inside the target. */
+  jumps?: RefJump[];
+}
+
+/** A shortcut button on a `ref`: `path` is a dotted chain of child field names inside the target type (e.g. `data`, `header.extra`). */
+export interface RefJump {
+  label: string;
+  path: string;
+}
+
+/**
+ * A navigation link on a field: nothing is parsed. `at` (and `size`) are evaluated in the field's scope (`_` is its
+ * value); a valid target becomes a "go to" button on the node that selects those bytes in the hex view.
+ */
+export interface LinkDef {
+  /** Absolute file offset of the target (a safe integer inside the file: 0..size-1; at or past the end gives no link). */
+  at: ExprSource;
+  /** Bytes to select (clamped to the end of the file). Absent or null: just the byte at `at`. */
+  size?: ExprSource;
+  label?: string;
 }
 
 export interface SwitchType {
@@ -120,6 +140,7 @@ export interface FieldDef {
   /** Only with type `value`: a computed (zero-byte) field. */
   value?: string;
   ref?: RefDef;
+  link?: LinkDef;
   /** With `expect`: a mismatch fails the field (stops the struct / ends the array) instead of only recording a message. */
   fatal?: boolean;
   repeat?: RepeatDef;

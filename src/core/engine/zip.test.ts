@@ -27,6 +27,11 @@ const plain = (m: string) => m.replace(/^zip_file[\w.[\]]*: /, '');
 const warnings = (r: ParseResult) => r.errors.filter((e) => e.severity === 'warning').map((e) => plain(e.message));
 const errors = (r: ParseResult) => r.errors.filter((e) => e.severity === 'error').map((e) => plain(e.message));
 const has = (n: Node, name: string) => (n.children ?? []).some((c) => c.name === name);
+const ZIP_JUMPS = [
+  { label: 'local header', path: 'header' },
+  { label: 'data', path: 'data' },
+  { label: 'descriptor', path: 'descriptor' },
+];
 const T1 = (o: ZipOptions = {}) => buildZip([{ name: 'a.txt', data: 'hi' }], o);
 
 // ------------------------------------------------------------------------------------------------ fixtures
@@ -65,7 +70,7 @@ describe('ZIP: a minimal archive', () => {
     expect(find(e, 'crc32').value).toBe(crc32(utf8('hi')));
     expect(find(e, 'comp_size_eff').value).toBe(2);
     expect(find(e, 'lho_eff').value).toBe(0);
-    expect(refNode(r, 0).ref).toEqual({ typeName: 'local_entry', offset: 0 });
+    expect(refNode(r, 0).ref).toEqual({ typeName: 'local_entry', offset: 0, jumps: ZIP_JUMPS });
 
     const target = await open(r, 0);
     expect(find(target, 'header.sig').value).toBe(0x04034b50);
@@ -269,7 +274,7 @@ describe('ZIP: ZIP64', () => {
       expect(find(n, 'comp_size_eff').value).toBe(String(e.data).length);
       expect(find(n, 'uncomp_size_eff').value).toBe(String(e.data).length);
       expect(find(n, 'lho_eff').value).toBe(layout.entries[i]!.lfh);
-      expect(refNode(r, i).ref).toEqual({ typeName: 'local_entry', offset: layout.entries[i]!.lfh });
+      expect(refNode(r, i).ref).toEqual({ typeName: 'local_entry', offset: layout.entries[i]!.lfh, jumps: ZIP_JUMPS });
     }
     const t = await open(r, 1);
     expect(find(t, 'header.sig').value).toBe(0x04034b50);

@@ -110,6 +110,12 @@
                   {#if f.ref}
                     <div>Reference: can be opened as <code>{t(f.ref.type, 80)}</code> at <code>{t(f.ref.at)}</code>{#if f.ref.doc} — {t(f.ref.doc, 400)}{/if}.</div>
                   {/if}
+                  {#if f.ref?.jumps}
+                    <div>Jump shortcuts: {#each f.ref.jumps as j, ji (ji)}{#if ji > 0}; {/if}{t(j.label, 100)} → <code>{t(j.path, 256)}</code>{/each}.</div>
+                  {/if}
+                  {#if f.link}
+                    <div>Link: jumps to offset <code>{t(f.link.at)}</code>{#if f.link.size !== undefined}{' '}(<code>{t(f.link.size)}</code> bytes){/if}{#if f.link.label}{' '}— {t(f.link.label, 100)}{/if}.</div>
+                  {/if}
                   {#if f.enum}
                     <div>
                       Enum <code>{t(f.enum.name, 80)}</code>{#if f.enum.preview} ({f.enum.preview.map((p) => t(p, 80)).join(', ')}{f.enum.more ? ', …' : ''}){/if}.

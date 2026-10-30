@@ -37,6 +37,22 @@ describe('DocsView', () => {
     expect(container.textContent).toContain('k too big');
   });
 
+  it('documents link and jumps with hostile labels as literal text', () => {
+    const spec = mkSpec({
+      tgt: { fields: [{ name: 'data', type: 'bytes', size: 1 }] },
+      root: {
+        fields: [
+          { name: 'p', type: 'u1', link: { at: '_', size: '2', label: '<img src=x onerror=alert(1)>' } },
+          { name: 'q', type: 'u1', ref: { type: 'tgt', at: '_', jumps: [{ label: '<b>d</b>', path: 'data' }] } },
+        ],
+      },
+    });
+    const { container } = render(DocsView, { spec });
+    expect(container.querySelector('img, b')).toBeNull();
+    expect(container.textContent).toContain('Link: jumps to offset _ (2 bytes) — <img src=x onerror=alert(1)>.');
+    expect(container.textContent).toContain('Jump shortcuts: <b>d</b> → data.');
+  });
+
   it('renders hostile spec text as literal text, never as markup', () => {
     const spec: FormatSpec = mkSpec(
       {

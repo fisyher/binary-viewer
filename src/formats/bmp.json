@@ -115,7 +115,12 @@
         {
           "name": "off_bits",
           "type": "u4",
-          "doc": "bfOffBits: offset from the start of the file to the pixel data."
+          "link": {
+            "at": "_",
+            "size": "_io.size > _ ? _io.size - _ : 0",
+            "label": "pixel data"
+          },
+          "doc": "bfOffBits: offset from the start of the file to the pixel data. The link selects everything from there to the end of the file (the pixel array, plus a trailing colour profile if there is one); the exact pixel array is the pixels field."
         }
       ]
     },
@@ -813,11 +818,20 @@
         {
           "name": "profile_data",
           "type": "u4",
-          "doc": "Offset of the ICC profile data, relative to the start of the DIB header (the size field), for profile-based colour spaces."
+          "link": {
+            "at": "_ != 0 and (cs_type == 0x4D424544 or cs_type == 0x4C494E4B) ? 14 + _ : null",
+            "label": "profile"
+          },
+          "doc": "Offset of the ICC profile data, relative to the start of the DIB header (the size field), for profile-based colour spaces. The link goes to the absolute position (14 + this value) and selects its first byte; the link on profile_size selects the whole profile."
         },
         {
           "name": "profile_size",
           "type": "u4",
+          "link": {
+            "at": "profile_data != 0 and (cs_type == 0x4D424544 or cs_type == 0x4C494E4B) ? 14 + profile_data : null",
+            "size": "_",
+            "label": "profile"
+          },
           "doc": "Size of the embedded or linked profile in bytes."
         },
         {

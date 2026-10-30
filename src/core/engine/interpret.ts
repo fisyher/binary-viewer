@@ -28,6 +28,9 @@
  * - `ifMagic` is a quiet guard: a position that is negative, unsafe, null or outside the enclosing stream, or bytes that
  *   cannot be read, simply mean "no" (the field reads as null). `value` fields consume nothing; an expression error is
  *   reported on their node and they read as null, never failing the struct.
+ * - `link` evaluates `at` (and `size`) in the field's scope (`_` = its value) and records `{offset, size, label?}` on the node;
+ *   nothing is read or parsed. A null, negative, > 2^53 or at-or-past-the-end-of-the-file result is a quiet "no link" (there is
+ *   nothing to select there); only an evaluation error (bad types, unknown members, ...) adds a warning. Absent / null `size` selects one byte.
  * - `ref` records `{typeName, offset}` on the node and retains the owning scope; nothing is parsed until `expandRef`,
  *   which parses the target type over the WHOLE file with that scope as `_parent` and attaches the result under the node.
  */
@@ -77,7 +80,9 @@ export interface Node {
   validation?: string[];
   doc?: string;
   /** Deferred pointer (field `ref`): nothing was parsed; `expandRef` parses the target and sets `loaded`. */
-  ref?: { typeName: string; offset: number; loaded?: boolean };
+  ref?: { typeName: string; offset: number; loaded?: boolean; jumps?: Array<{ label: string; path: string }> };
+  /** Field `link`: an in-file location this node points at (clamped to the file); nothing was parsed there. */
+  link?: { offset: number; size: number; label?: string };
   /** Set on the target node `expandRef` attaches; `findNodeAt` prefers the primary tree over such subtrees. */
   fromRef?: true;
 }
@@ -727,7 +732,11 @@ async function parseField(run: Run, f: FieldDef, parent: Node, pl: Place, cursor
     else if (!r.ok) pl.scope.fields.set(f.name, null);
     const end = isPlaced(f) ? cursor : r.end;
     for (const m of notes) setError(run, r.node, path, 'find', m, 'warning');
-    if (r.ok) attachRef(run, f, r.node, path, pl, r.val, { start: pl.stream.start, end: pl.stream.end, pos: end, unknownPos: lost });
+    if (r.ok) {
+      const io: Io = { start: pl.stream.start, end: pl.stream.end, pos: end, unknownPos: lost };
+      attachRef(run, f, r.node, path, pl, r.val, io);
+      attachLink(run, f, r.node, path, pl, r.val, io);
+    }
     if (f.assert && r.ok && !r.innerFailed && r.val !== undefined) runAsserts(run, f, r.node, path, pl, end, r.val, lost);
     return { end, ok: r.ok };
   } catch (e) {
@@ -768,6 +777,7 @@ function parseComputed(run: Run, f: FieldDef, parent: Node, pl: Place, cursor: n
   pl.scope.fields.set(f.name, val);
   if (!failed) {
     attachRef(run, f, node, path, pl, val, io);
+    attachLink(run, f, node, path, pl, val, io);
     if (f.assert) runAsserts(run, f, node, path, pl, io.pos, val, io.unknownPos);
   }
   return { end: cursor, ok: true };
@@ -956,6 +966,7 @@ function attachRef(run: Run, f: FieldDef, node: Node, path: string, pl: Place, v
     const old = retain ? run.shared.refKeys.get(path) : undefined;
     if (retain && old === undefined && run.shared.refs.size >= run.limits.maxRefs) throw new FieldError(`too many references kept (${run.limits.maxRefs}); this one cannot be opened`, 'limit');
     node.ref = { typeName: ref.type, offset: at };
+    if (ref.jumps !== undefined && ref.jumps.length > 0) node.ref.jumps = ref.jumps.map((j) => ({ label: j.label, path: j.path }));
     if (retain) {
       if (old !== undefined) run.shared.refs.delete(old);
       run.shared.refKeys.set(path, node.id);
@@ -964,6 +975,37 @@ function attachRef(run: Run, f: FieldDef, node: Node, path: string, pl: Place, v
   } catch (e) {
     const { code, message } = classify(e);
     setError(run, node, path, code === 'limit' ? 'limit' : 'ref', `ref: ${message}`, 'warning');
+  }
+}
+
+/**
+ * Record `link` on a freshly parsed node. Quiet when there is nothing sensible to link to (null, negative, unsafe or
+ * out-of-file results); an evaluation error is a warning on the node. Reads nothing.
+ */
+function attachLink(run: Run, f: FieldDef, node: Node, path: string, pl: Place, val: Value | undefined, io: Io): void {
+  const link = f.link;
+  if (link === undefined || run.probe) return;
+  try {
+    const env = makeEnv(pl.scope, io, val);
+    const atV = ev(run, link.at, env);
+    if (atV === null) return;
+    const at = toBigInt(atV, '"link.at"');
+    if (at < 0n || at > MAX_SAFE_BIG || at >= BigInt(run.source.size)) return;
+    const start = Number(at);
+    let size = 1;
+    if (link.size !== undefined) {
+      const sv = ev(run, link.size, env);
+      if (sv !== null) {
+        const s = toBigInt(sv, '"link.size"');
+        if (s < 0n || s > MAX_SAFE_BIG) return;
+        size = Number(s < BigInt(run.source.size - start) ? s : BigInt(run.source.size - start));
+      }
+    }
+    node.link = { offset: start, size };
+    if (link.label !== undefined) node.link.label = link.label;
+  } catch (e) {
+    const { code, message } = classify(e);
+    setError(run, node, path, code === 'limit' ? 'limit' : 'expr', `link: ${message}`, 'warning');
   }
 }
 

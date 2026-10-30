@@ -453,7 +453,8 @@
     return r.nodes;
   }
 
-  function onTreeSelect(node: Node, range: { start: number; end: number } | null) {
+  /** Select an inclusive byte range (clamped to the file) and scroll it into view; with no range, only show where `offset` is. */
+  function selectBytes(range: { start: number; end: number } | null, offset: number) {
     const size = source?.size ?? 0;
     if (range && range.start < size) {
       const end = Math.min(range.end, size - 1);
@@ -465,10 +466,19 @@
       // Zero-size node: select nothing, but show where it sits.
       selection = null;
       nodeRange = null;
-      const ok = Number.isSafeInteger(node.offset) && node.offset >= 0 && node.offset < size;
-      nodeInspectOffset = ok ? node.offset : null;
-      if (ok) hexView?.reveal(node.offset);
+      const ok = Number.isSafeInteger(offset) && offset >= 0 && offset < size;
+      nodeInspectOffset = ok ? offset : null;
+      if (ok) hexView?.reveal(offset);
     }
+  }
+
+  function onTreeSelect(node: Node, range: { start: number; end: number } | null) {
+    selectBytes(range, node.offset);
+  }
+
+  /** A structure-tree `link` button: select `size` bytes at `offset` (size 0: just show the position). */
+  function onTreeJump(offset: number, size: number) {
+    selectBytes(size > 0 ? { start: offset, end: offset + size - 1 } : null, offset);
   }
 
   // Hex -> tree: only on a plain click, throttled, latest wins.
@@ -892,7 +902,7 @@
             <span>Structure</span>
             <button type="button" onclick={() => (treeCollapsed = true)} title="Hide structure" aria-label="Hide structure">&#9666;</button>
           </div>
-          <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} preserveFor={treeKeep} />
+          <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onJump={onTreeJump} preserveFor={treeKeep} />
           <Diagnostics {diagnostics} onJump={(d) => void jumpToDiagnostic(d)} />
         </aside>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

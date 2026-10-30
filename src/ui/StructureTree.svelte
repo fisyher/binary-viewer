@@ -8,6 +8,8 @@
     flattenTree,
     followPath,
     formatNodeValue,
+    linkByteRange,
+    linkLabel,
     loadKey,
     matchNodeIds,
     navigateRows,
@@ -16,6 +18,7 @@
     pathById,
     problemMessages,
     refLoadKey,
+    resolveNodePath,
     sanitizeText,
     virtualWindow,
     type NavKey,
@@ -37,6 +40,7 @@
     loadPage,
     loadRef,
     onSelect,
+    onJump,
     preserveFor = null,
   }: {
     root: Node | null;
@@ -47,6 +51,8 @@
     loadRef?: (nodeId: number) => Promise<Node[]>;
     /** `range` is the inclusive byte range of the node, or null for zero-size nodes. */
     onSelect: (node: Node, range: { start: number; end: number } | null) => void;
+    /** A node's `link` button was used: select `size` bytes at `offset` in the hex view (size 0 = just show the position). Without it no link buttons are shown. */
+    onJump?: (offset: number, size: number) => void;
     /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
     preserveFor?: Node | null;
   } = $props();
@@ -61,6 +67,9 @@
   let viewportHeight = $state(0);
   let loadError = $state<string | null>(null);
   let scroller: HTMLDivElement | undefined = $state();
+  type Jump = { label: string; path: string };
+  let jumpToken = 0; // bumped by every jump click (on any reference): only the newest click may select
+  const wantedJump = new Map<number, { jump: Jump; token: number }>(); // ref node id -> newest jump click waiting for the open
 
   // New tree -> fresh view state (runs before the DOM updates).
   let prevRoot: Node | null = null;
@@ -97,6 +106,7 @@
     selectedKey = null;
     activeKey = null;
     loadError = null;
+    wantedJump.clear();
     scrollTop = 0;
     untrack(() => {
       if (scroller) scroller.scrollTop = 0;
@@ -172,31 +182,33 @@
     }
   }
 
-  /** Open a reference node: attach its target as a child, expand and select it. */
-  async function openRef(node: Node): Promise<void> {
-    const r0 = root;
+  /**
+   * Fetch and attach the target of an unopened reference node. Resolves to the attached nodes, or null when nothing should
+   * follow (already loading, tree replaced, superseded, or failed: the error is shown).
+   */
+  async function attachRef(node: Node, r0: Node): Promise<Node[] | null> {
     const k = refLoadKey(node.id);
-    if (!r0 || !loadRef || !node.ref || node.ref.loaded || loading.has(k)) return;
+    if (!loadRef || !node.ref || node.ref.loaded || loading.has(k)) return null;
     loading = new Set(loading).add(k);
     loadError = null;
     try {
       const nodes = await loadRef(node.id);
-      if (root !== r0) return;
+      if (root !== r0) return null;
       if (nodes.length === 0) {
         loadError = 'Could not open the reference (see Diagnostics).';
-        return;
+        return null;
       }
       if (!node.ref.loaded) {
         node.children = [...(node.children ?? []), ...nodes];
         node.ref = { ...node.ref, loaded: true };
         version++;
       }
-      expanded = new Set([...expanded, node.id, nodes[0]!.id]);
-      selectNode(nodes[0]!, true);
+      return nodes;
     } catch (e) {
       if (root === r0 && !(e instanceof Error && e.name === 'SupersededError')) {
         loadError = sanitizeText(`Could not open the reference: ${e instanceof Error ? e.message : String(e)}`, 300);
       }
+      return null;
     } finally {
       if (root === r0) {
         const n = new Set(loading);
@@ -204,6 +216,79 @@
         loading = n;
       }
     }
+  }
+
+  /** The reference `node` has just been attached: perform the jump wanted for it (if it is still the newest click), else select the target. */
+  function settleRef(node: Node, nodes: Node[]) {
+    const w = wantedJump.get(node.id);
+    wantedJump.delete(node.id);
+    const target = nodes[0]!;
+    if (!w) {
+      expanded = new Set([...expanded, node.id, target.id]);
+      selectNode(target, true);
+    } else if (w.token === jumpToken) performJump(node, target, w.jump);
+    // else: a newer jump click (possibly on another reference) owns the selection; the ref stays attached
+  }
+
+  /** Open a reference node: attach its target as a child, expand and select it (or perform a jump clicked meanwhile). */
+  async function openRef(node: Node): Promise<void> {
+    const r0 = root;
+    if (!r0 || loading.has(refLoadKey(node.id))) return;
+    const nodes = await attachRef(node, r0);
+    if (!nodes || root !== r0) {
+      if (root === r0) wantedJump.delete(node.id); // a replaced tree already cleared its jumps; ids may be reused
+      return;
+    }
+    settleRef(node, nodes);
+  }
+
+  /**
+   * A `ref.jumps` button: open the reference if needed, then select the node at `jump.path` inside its target. Every click
+   * takes a fresh token and replaces the wanted jump of its reference; whatever finishes opening acts on the wanted jump
+   * only if its token is still the newest, so the newest click wins across references too. Superseded loads stay silent.
+   */
+  async function jumpRef(node: Node, jump: Jump): Promise<void> {
+    const r0 = root;
+    if (!r0 || !node.ref) return;
+    wantedJump.set(node.id, { jump, token: ++jumpToken });
+    if (node.ref.loaded) {
+      const target = node.children?.find((c) => c.fromRef);
+      wantedJump.delete(node.id);
+      loadError = null;
+      if (target) performJump(node, target, jump);
+      else loadError = 'The reference has no opened target.';
+      return;
+    }
+    if (loading.has(refLoadKey(node.id))) return; // the loader in flight (jump or Enter) settles with the newest wanted jump
+    const nodes = await attachRef(node, r0);
+    if (!nodes || root !== r0) {
+      if (root === r0) wantedJump.delete(node.id); // a replaced tree already cleared its jumps; ids may be reused
+      return;
+    }
+    settleRef(node, nodes);
+  }
+
+  function performJump(node: Node, target: Node, jump: Jump) {
+    loadError = null;
+    const chain = resolveNodePath(target, jump.path);
+    const open = [node.id, target.id, ...(chain ?? []).slice(0, -1).map((n) => n.id)];
+    expanded = new Set([...expanded, ...open]);
+    if (!chain) {
+      selectNode(target, true);
+      loadError = sanitizeText(`"${jump.label}" is not available: ${jump.path} was not parsed in this ${node.ref?.typeName ?? 'target'} (see Diagnostics).`, 300);
+      return;
+    }
+    selectNode(chain[chain.length - 1]!, true);
+  }
+
+  /** After a link or jump button, keyboard focus goes back to the tree so the arrow keys keep working (the row may unmount). */
+  function refocus() {
+    scroller?.focus({ preventScroll: true });
+  }
+
+  function useLink(node: Node) {
+    const l = node.link;
+    if (l && onJump) onJump(l.offset, linkByteRange(node) ? l.size : 0);
   }
 
   function ensureFirstPage(node: Node) {
@@ -233,6 +318,7 @@
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.altKey || e.ctrlKey || e.metaKey || rows.length === 0) return;
+    if ((e.key === 'Enter' || e.key === ' ') && (e.target as Element | null)?.closest?.('button')) return; // Enter / Space on a link or jump button activates that button
     const index = Math.max(0, rows.findIndex((r) => r.key === activeKey));
     const row = rows[index]!;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -339,8 +425,40 @@
                   >
                   <span class="nm" title={sanitizeText(node.name, 500)}>{sanitizeText(node.name)}</span>
                   {#if node.ref}<span class="refmark" title="Points to {sanitizeText(node.ref.typeName, 64)} at {hex(node.ref.offset)}" aria-hidden="true">↗</span>{/if}
+                  {#each node.ref?.jumps ?? [] as jump, ji (ji)}
+                    <button
+                      type="button"
+                      class="jump"
+                      data-jump
+                      title="Open {sanitizeText(node.ref?.typeName ?? '', 64)} and select {sanitizeText(jump.path, 100)}"
+                      aria-label="Jump to {sanitizeText(jump.label, 60)} of {sanitizeText(node.name, 60)}"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        void jumpRef(node, jump);
+                        refocus();
+                      }}
+                      ondblclick={(e) => e.stopPropagation()}>{sanitizeText(jump.label, 30)}</button
+                    >
+                  {/each}
                 </span>
-                <span class="val" title={formatNodeValue(node)}>{formatNodeValue(node)}</span>
+                <span class="val" title={formatNodeValue(node)}>
+                  <span class="vt">{formatNodeValue(node)}</span>
+                  {#if node.link && onJump}
+                    <button
+                      type="button"
+                      class="jump link"
+                      data-link
+                      title="Select {node.link.size} byte(s) at {hex(node.link.offset)} in the hex view"
+                      aria-label="Go to {sanitizeText(node.link.label ?? hex(node.link.offset), 60)} (offset {hex(node.link.offset)}) from {sanitizeText(node.name, 60)}"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        useLink(node);
+                        refocus();
+                      }}
+                      ondblclick={(e) => e.stopPropagation()}>{linkLabel(node)}</button
+                    >
+                  {/if}
+                </span>
                 <span class="type">{sanitizeText(node.typeName, 60)}</span>
                 <span class="off">{hex(node.offset)}</span>
                 <span class="num">{node.size}</span>
@@ -480,6 +598,42 @@
   .off,
   .num {
     font-family: var(--mono);
+  }
+  .val {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .vt {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .jump {
+    flex: none;
+    margin-left: 6px;
+    padding: 0 5px;
+    height: 17px;
+    line-height: 15px;
+    font-size: 11px;
+    font-family: inherit;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .val .jump {
+    margin-left: 0;
+  }
+  .jump:hover,
+  .jump:focus-visible {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    outline: none;
+  }
+  .row.selected .jump {
+    color: var(--sel-fg);
+    border-color: var(--sel-fg);
   }
   .type {
     color: var(--muted);

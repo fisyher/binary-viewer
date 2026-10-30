@@ -53,10 +53,14 @@ const EXT_RE = /^[a-z0-9_+-]{1,16}$/;
 const FORBIDDEN_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const TOP_KEYS = new Set(['schemaVersion', 'id', 'name', 'endian', 'extensions', 'detect', 'doc', 'root', 'types', 'enums']);
 const TYPE_KEYS = new Set(['doc', 'fields']);
-const FIELD_KEYS = new Set(['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'doc', 'assert']);
+const FIELD_KEYS = new Set(['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'link', 'doc', 'assert']);
 const FIND_KEYS = new Set(['bytes', 'mask', 'from', 'window', 'direction', 'accept']);
 const IFMAGIC_KEYS = new Set(['at', 'bytes', 'mask']);
-const REF_KEYS = new Set(['type', 'at', 'doc']);
+const REF_KEYS = new Set(['type', 'at', 'doc', 'jumps']);
+const JUMP_KEYS = new Set(['label', 'path']);
+const LINK_KEYS = new Set(['at', 'size', 'label']);
+const MAX_JUMPS = 8;
+const MAX_JUMP_DEPTH = 8;
 const MAX_ACCEPT_TIERS = 8;
 const MAX_EXTENSIONS = 64;
 const ASSERT_KEYS = new Set(['expr', 'level', 'message']);
@@ -485,6 +489,10 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
     if ('repeat' in f) c.err(`${p}.ref`, '"ref" cannot be combined with "repeat" (put it on a field inside the element type)');
     validateRef(c, f.ref, `${p}.ref`, x);
   }
+  if ('link' in f) {
+    if ('repeat' in f) c.err(`${p}.link`, '"link" cannot be combined with "repeat" (put it on a field inside the element type)');
+    validateLink(c, f.link, `${p}.link`, x);
+  }
   if ('fatal' in f && !isValue) {
     if (typeof f.fatal !== 'boolean') c.err(`${p}.fatal`, 'must be true or false');
     if (!('expect' in f)) c.err(`${p}.fatal`, '"fatal" only applies together with "expect"');
@@ -595,6 +603,48 @@ function validateRef(c: Ctx, v: unknown, p: string, x: FieldCtx): void {
   if (!('at' in v)) c.err(`${p}.at`, 'is required (an expression for the absolute offset of the target)');
   else checkExprOrInt(c, v.at, `${p}.at`, x.fieldNames);
   optDoc(c, v, p);
+  if ('jumps' in v) {
+    if (!Array.isArray(v.jumps) || v.jumps.length === 0 || v.jumps.length > MAX_JUMPS) return c.err(`${p}.jumps`, `must be an array of 1-${MAX_JUMPS} {label, path}`);
+    const target = typeof v.type === 'string' && x.typeNames.has(v.type) ? v.type : null;
+    (v.jumps as unknown[]).forEach((j, i) => {
+      const jp = `${p}.jumps[${i}]`;
+      if (!isRecord(j)) return c.err(jp, 'must be an object {label, path}');
+      checkKeys(c, j, JUMP_KEYS, jp);
+      if (checkString(c, j.label, `${jp}.label`, 100) && j.label.length === 0) c.err(`${jp}.label`, 'must not be empty');
+      if (checkString(c, j.path, `${jp}.path`, 256) && target !== null) checkJumpPath(c, target, j.path, `${jp}.path`);
+    });
+  }
+}
+
+/**
+ * A jump path is a dotted chain of field names resolved statically from the ref's target type. Every segment but the last
+ * must be a single, non-repeated field of a user type (switch-typed, builtin and repeated fields are rejected because the
+ * node to select would depend on the data); the last may be any field.
+ */
+function checkJumpPath(c: Ctx, target: string, path: string, p: string): void {
+  const parts = path.split('.');
+  if (parts.length > MAX_JUMP_DEPTH) return c.err(p, `path is too deep (max ${MAX_JUMP_DEPTH} segments)`);
+  let cur = target;
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i]!;
+    const fields = fieldsOfType(c, cur);
+    const field = fields?.get(seg);
+    if (!field) return c.err(p, `"${seg}" is not a field of type "${cur}"`);
+    if (i === parts.length - 1) return;
+    if (field.repeat !== undefined) return c.err(p, `"${seg}" is an array; a jump path cannot pass through arrays`);
+    if (typeof field.type !== 'string') return c.err(p, `"${seg}" has a switch type; a jump path cannot pass through it`);
+    if (!c.typesRaw || !Object.hasOwn(c.typesRaw, field.type)) return c.err(p, `"${seg}" is of type "${field.type}", which has no fields to continue into`);
+    cur = field.type;
+  }
+}
+
+function validateLink(c: Ctx, v: unknown, p: string, x: FieldCtx): void {
+  if (!isRecord(v)) return c.err(p, 'must be an object {at, size?, label?}');
+  checkKeys(c, v, LINK_KEYS, p);
+  if (!('at' in v)) c.err(`${p}.at`, 'is required (an expression for the absolute file offset to point at)');
+  else checkExprOrInt(c, v.at, `${p}.at`, x.fieldNames);
+  if ('size' in v) checkExprOrInt(c, v.size, `${p}.size`, x.fieldNames);
+  if ('label' in v) checkString(c, v.label, `${p}.label`, 100);
 }
 
 /** Reject cycles of unconditional nesting and over-deep nesting. Edges with `size`/`at`/`if`/`repeat` are guarded. */
