@@ -1,14 +1,42 @@
 <script lang="ts">
   import { downloadBlob } from '../../core/download';
-  import type { FormatSpec } from '../../core/engine';
+  import { starterSpec } from '../../core/builder';
+  import type { FormatSpec, LazyArray, Node } from '../../core/engine';
   import type { SpecEntry, SpecLibrary } from '../../core/spec-library';
   import { sanitizeText } from '../../core/tree-model';
   import { untrack } from 'svelte';
+  import type { ParseSnapshot } from '../../worker/protocol';
   import ConfirmDialog from '../ConfirmDialog.svelte';
+  import BuilderView from './builder/BuilderView.svelte';
+  import PreviewPane from './PreviewPane.svelte';
   import DocsView from './DocsView.svelte';
   import SpecJsonEditor from './SpecJsonEditor.svelte';
 
-  let { library, onDirtyChange = () => {} }: { library: SpecLibrary; onDirtyChange?: (dirty: boolean) => void } = $props();
+  let {
+    library,
+    onDirtyChange = () => {},
+    previewDoc = null,
+    previewActive = true,
+    previewBusy = false,
+    previewEpoch = 0,
+    parseDraft = async () => null,
+    loadPreviewPage = async () => ({ nodes: [], lazy: null }),
+    onShowInViewer = () => {},
+  }: {
+    library: SpecLibrary;
+    onDirtyChange?: (dirty: boolean) => void;
+    /** Name of the document open in the viewer (null = none: no preview). */
+    previewDoc?: string | null;
+    /** The Formats view is the one showing. */
+    previewActive?: boolean;
+    /** A save of the document is in progress. */
+    previewBusy?: boolean;
+    /** Changes when the viewer finished an engine operation. */
+    previewEpoch?: number;
+    parseDraft?: (text: string) => Promise<ParseSnapshot | null>;
+    loadPreviewPage?: (nodeId: number, start: number, count: number) => Promise<{ nodes: Node[]; lazy: LazyArray | null }>;
+    onShowInViewer?: (range: { start: number; end: number } | null, offset: number) => void;
+  } = $props();
 
   let snap = $state.raw(untrack(() => library.snapshot()));
   $effect(() => {
@@ -23,7 +51,13 @@
   let saving = $state(false);
   let held: SpecEntry | undefined; // the selected entry while a save that renames it is in flight
   const lastValid = new Map<string, FormatSpec>();
-  let tab = $state<'json' | 'docs'>('json');
+  let tab = $state<'builder' | 'json' | 'docs'>('json');
+  // The draft text is shared by the JSON editor, the builder and the preview. null = untouched: follow the saved text.
+  let draft = $state<string | null>(null);
+  let saveStatus = $state<{ ok: boolean; text: string } | null>(null);
+  let jsonEditor: ReturnType<typeof SpecJsonEditor> | undefined = $state();
+  let newForm = $state<{ id: string; name: string; endian: 'le' | 'be'; magic: string; ext: string } | null>(null);
+  let newError = $state<string | null>(null);
   let editorDirty = $state(false);
   let confirm = $state<{ message: string; label: string; run: () => void } | null>(null);
   let error = $state<string | null>(null);
@@ -37,6 +71,7 @@
     if (e) held = e;
     for (const x of snap.entries) if (x.spec) lastValid.set(x.id, x.spec);
   });
+  const draftText = $derived(draft ?? selected?.text ?? '');
   const docsSpec = $derived(selected ? (selected.spec ?? lastValid.get(selected.id) ?? null) : null);
   const docsNote = $derived(
     !selected ? null : !selected.valid && docsSpec ? 'The saved version is invalid; showing the last valid version.' : editorDirty ? 'Showing the last saved version; you have unsaved changes.' : null,
@@ -61,19 +96,46 @@
       error = null;
       selectedId = id;
       editorKey++;
+      draft = null;
     });
   }
 
-  async function createNew() {
+  function openNew() {
+    let id = 'new-format';
+    for (let n = 2; snap.entries.some((e) => e.id === id); n++) id = `new-format-${n}`;
+    newForm = { id, name: 'New format', endian: 'le', magic: '', ext: '' };
+    newError = null;
+  }
+
+  async function submitNew() {
+    const f = newForm;
+    if (!f) return;
+    const id = f.id.trim();
+    const name = f.name.trim();
+    if (name === '') {
+      newError = 'Enter a name.';
+      return;
+    }
+    const st = starterSpec({ id, name, endian: f.endian, magic: f.magic, extension: f.ext });
+    if (!st.ok) {
+      newError = st.error;
+      return;
+    }
     guard(async () => {
+      const r = await library.create(id, name);
+      if (!r.ok) {
+        newError = r.error;
+        return; // the dirty flag stays: nothing was replaced
+      }
       editorDirty = false;
-      const r = await library.create();
-      if (r.ok) {
-        error = null;
-        selectedId = r.id;
-        editorKey++;
-        tab = 'json';
-      } else error = r.error;
+      const sv = await library.save(r.id, st.text);
+      newForm = null;
+      newError = null;
+      error = sv.ok ? null : sv.error;
+      selectedId = r.id;
+      editorKey++;
+      draft = null;
+      tab = 'builder';
     });
   }
 
@@ -87,6 +149,7 @@
         error = null;
         selectedId = r.id;
         editorKey++;
+        draft = null;
         tab = 'json';
       });
     } else error = r.error;
@@ -194,12 +257,39 @@
 <div class="formats">
   <aside class="list" aria-label="Format library">
     <div class="actions">
-      <button type="button" onclick={() => void createNew()}>New</button>
+      <button type="button" onclick={openNew}>New</button>
       <button type="button" onclick={() => void duplicate()} disabled={!selected}>Duplicate</button>
       <button type="button" onclick={askDelete} disabled={!selected || selected.source !== 'user'}>Delete</button>
       <button type="button" onclick={() => importInput?.click()}>Import…</button>
       <input type="file" hidden multiple accept=".json,application/json" bind:this={importInput} onchange={(e) => void onImport(e)} aria-label="Import format files" />
     </div>
+    {#if newForm}
+      <form
+        class="newform"
+        aria-label="New format"
+        onsubmit={(e) => {
+          e.preventDefault();
+          void submitNew();
+        }}
+      >
+        <label>Format id <input type="text" aria-label="New format id" bind:value={newForm.id} /></label>
+        <label>Name <input type="text" aria-label="New format name" bind:value={newForm.name} /></label>
+        <label>
+          Byte order
+          <select aria-label="New format endian" bind:value={newForm.endian}>
+            <option value="le">Little-endian (le)</option>
+            <option value="be">Big-endian (be)</option>
+          </select>
+        </label>
+        <label>Magic bytes (hex, optional) <input type="text" aria-label="New format magic" placeholder="42 4D" bind:value={newForm.magic} /></label>
+        <label>Extension (optional) <input type="text" aria-label="New format extension" placeholder="bmp" bind:value={newForm.ext} /></label>
+        {#if newError}<p class="error" role="alert">{t(newError, 300)}</p>{/if}
+        <div class="actions">
+          <button type="submit">Create</button>
+          <button type="button" onclick={() => (newForm = null)}>Cancel</button>
+        </div>
+      </form>
+    {/if}
     <div class="actions">
       <button type="button" onclick={exportJson} disabled={!selected}>Export JSON</button>
       <button type="button" onclick={() => exportDoc('md')} disabled={!selected?.valid}>Export Markdown</button>
@@ -275,14 +365,36 @@
         </div>
       {/if}
       <div class="tabs" role="tablist" aria-label="Format view">
+        <button type="button" role="tab" id="tab-builder" aria-selected={tab === 'builder'} aria-controls="panel-formats" class:active={tab === 'builder'} onclick={() => (tab = 'builder')}>Builder</button>
         <button type="button" role="tab" id="tab-json" aria-selected={tab === 'json'} aria-controls="panel-formats" class:active={tab === 'json'} onclick={() => (tab = 'json')}>JSON</button>
         <button type="button" role="tab" id="tab-docs" aria-selected={tab === 'docs'} aria-controls="panel-formats" class:active={tab === 'docs'} onclick={() => (tab = 'docs')}>Docs</button>
         <span class="title">{t(selected.name)} <span class="id">({t(selected.id, 64)})</span></span>
       </div>
-      <div class="panel" id="panel-formats" role="tabpanel" aria-labelledby={tab === 'json' ? 'tab-json' : 'tab-docs'}>
+      <div class="panel" id="panel-formats" role="tabpanel" aria-labelledby={tab === 'builder' ? 'tab-builder' : tab === 'json' ? 'tab-json' : 'tab-docs'}>
         {#key editorKey}
           <div class="editor-wrap" style:display={tab === 'json' ? 'block' : 'none'}>
-            <SpecJsonEditor entry={selected} onSave={save} onDuplicate={() => void duplicate()} onDirtyChange={(d) => (editorDirty = d)} />
+            <SpecJsonEditor
+              bind:this={jsonEditor}
+              entry={selected}
+              text={draftText}
+              onText={(v) => (draft = v)}
+              onResult={(r) => (saveStatus = r)}
+              onSave={save}
+              onDuplicate={() => void duplicate()}
+              onDirtyChange={(d) => (editorDirty = d)}
+            />
+          </div>
+          <div class="editor-wrap" style:display={tab === 'builder' ? 'block' : 'none'}>
+            <BuilderView
+              text={draftText}
+              onText={(v) => (draft = v)}
+              readOnly={selected.source === 'builtin'}
+              dirty={editorDirty}
+              status={tab === 'builder' ? saveStatus : null}
+              onSave={() => void jsonEditor?.save()}
+              onRevert={() => jsonEditor?.revert()}
+              onDuplicate={() => void duplicate()}
+            />
           </div>
         {/key}
         {#if tab === 'docs'}
@@ -292,6 +404,7 @@
           </div>
         {/if}
       </div>
+      <PreviewPane text={draftText} docName={previewDoc} active={previewActive} busy={previewBusy} epoch={previewEpoch} {parseDraft} loadPage={loadPreviewPage} {onShowInViewer} />
     {/if}
   </section>
 </div>
@@ -324,6 +437,19 @@
     border-right: 1px solid var(--border);
     background: var(--bg);
     min-height: 0;
+  }
+  .newform {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+  }
+  .newform label {
+    display: flex;
+    flex-direction: column;
   }
   .actions {
     display: flex;

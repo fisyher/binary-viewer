@@ -96,6 +96,7 @@ describe('App: Viewer / Formats mode switch', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'New' }));
+    await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'Create' }));
     await findByLabelText('Spec JSON');
     await fireEvent.click(getByRole('button', { name: 'Viewer' }));
 
@@ -112,7 +113,7 @@ describe('App: Viewer / Formats mode switch', () => {
     await waitFor(() => expect(container.querySelector('button.entry')).not.toBeNull());
     await fireEvent.click([...container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'draft')!);
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
-    await fireEvent.input(area, { target: { value: area.value + '\n' } });
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
     const typed = area.value;
     await fireEvent.click(getByRole('button', { name: 'Viewer' }));
     await fireEvent.click(getByRole('button', { name: 'Formats' }));

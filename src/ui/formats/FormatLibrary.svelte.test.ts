@@ -63,9 +63,10 @@ describe('FormatLibrary', () => {
     expect(getByText('Custom')).toBeTruthy();
   });
 
-  it('New creates a spec, selects it and opens the JSON editor', async () => {
+  it('New creates a spec, selects it and opens the builder', async () => {
     const { container, getByRole, lib, findByLabelText } = await mk();
     await fireEvent.click(getByRole('button', { name: 'New' }));
+    await fireEvent.click(getByRole('button', { name: 'Create' }));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     expect(area.value).toContain('"id": "new-format"');
     expect(lib.get('new-format')).toBeDefined();
@@ -157,7 +158,7 @@ describe('FormatLibrary', () => {
     const { container, getByRole, findByRole, queryByRole, onDirtyChange, findByLabelText } = await mk({ seed: [['one', specText('one')], ['two', specText('two')]] });
     await fireEvent.click(entryButton(container, 'one'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
-    await fireEvent.input(area, { target: { value: area.value + ' ' } });
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt one', 'Fmt one edited') } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     await fireEvent.click(entryButton(container, 'two'));
     const dialog = await findByRole('alertdialog');

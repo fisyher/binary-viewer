@@ -28,6 +28,7 @@
   import StatusBar from './ui/StatusBar.svelte';
   import StructureTree from './ui/StructureTree.svelte';
   import Toolbar from './ui/Toolbar.svelte';
+  import { PreviewUnavailableError } from './ui/formats/preview';
   import { EngineFatalError, createWorkerClient, SupersededError, type EngineClient } from './worker/engine-client';
   import type { DetectionInfo, ParseSnapshot, RangeSegment, SpecInfo } from './worker/protocol';
 
@@ -110,6 +111,19 @@
   let treeWidth = $state(460);
   let treeCollapsed = $state(false);
   let resizing = false;
+  // Live preview of a format draft (Formats view). parseDraft REPLACES the worker's single result slot, so the viewer's
+  // own tree is no longer backed by the worker while `draftOnWorker` is true: every viewer call that needs the slot
+  // is blocked until the viewer re-parses (on switching back to it, or after any viewer engine operation).
+  let draftOnWorker = false;
+  let viewerOps = 0; // viewer engine operations (open/parse) in flight; a draft parse never starts while > 0
+  let previewEpoch = $state(0); // bumped when the last viewer operation finishes: the preview then re-parses
+  const opStart = () => {
+    viewerOps++;
+    draftOnWorker = false;
+  };
+  const opEnd = () => {
+    if (--viewerOps === 0) previewEpoch++;
+  };
 
   $effect(() => saveLittleEndian(littleEndian));
 
@@ -166,6 +180,15 @@
   }
 
   async function startEngine(file: Blob, name: string) {
+    opStart();
+    try {
+      await startEngineInner(file, name);
+    } finally {
+      opEnd();
+    }
+  }
+
+  async function startEngineInner(file: Blob, name: string) {
     resetStructure();
     needsDetect = true;
     const token = engineToken;
@@ -196,6 +219,15 @@
 
   /** `keepView`: a re-parse of edited bytes; the old tree stays up until the new one arrives and keeps its view state. */
   async function runParse(specId: string | null, keepView = false) {
+    opStart();
+    try {
+      await runParseInner(specId, keepView);
+    } finally {
+      opEnd();
+    }
+  }
+
+  async function runParseInner(specId: string | null, keepView: boolean) {
     const token = ++engineToken;
     selectedSpec = specId;
     if (!keepView || specId === null) {
@@ -245,6 +277,15 @@
 
   /** `redetect`: the file was just saved under a (possibly new) name, so format detection may now apply. */
   async function reparse(redetect = false) {
+    opStart();
+    try {
+      await reparseInner(redetect);
+    } finally {
+      opEnd();
+    }
+  }
+
+  async function reparseInner(redetect: boolean) {
     clearTimeout(reparseTimer);
     const ed = editor;
     const base = baseBlob;
@@ -326,6 +367,65 @@
     }
   }
 
+  // ---- Format preview (see draftOnWorker above) ----
+  /**
+   * Parse the open document with an unsaved draft. Goes through the same engineToken machinery as the viewer: it bumps
+   * the token (so a viewer result arriving later is ignored) and its own result is dropped if anything newer started.
+   * Refused (the pane waits for the next trigger) while there is no document, a save is running, or the viewer's own
+   * engine work is in flight, so a preview and a viewer parse can never interleave into a wrong tree.
+   */
+  async function parseDraftPreview(text: string): Promise<ParseSnapshot | null> {
+    const c = client;
+    if (!c || !editor || saving || unreadable || viewerOps > 0 || mode !== 'formats') throw new PreviewUnavailableError('the viewer is busy');
+    const token = ++engineToken;
+    draftOnWorker = true;
+    try {
+      const snap = await c.parseDraft(text);
+      if (token !== engineToken) throw new SupersededError();
+      return snap;
+    } catch (e) {
+      if (e instanceof EngineFatalError) markFatal(e.message);
+      else if (token !== engineToken) throw new SupersededError(); // overtaken (e.g. a save started): whatever failed is moot
+      throw e;
+    }
+  }
+
+  async function loadPreviewPage(nodeId: number, start: number, count: number) {
+    if (!client || !draftOnWorker || viewerOps > 0) throw new Error('the preview is out of date');
+    const r = await client.expand(nodeId, start, count);
+    return { nodes: r.nodes, lazy: r.lazy };
+  }
+
+  /**
+   * Switch views. Returning to the Viewer after a draft preview ran re-parses the viewer's own format (or raw bytes), so
+   * the worker, the tree and the FormatBar agree again. The draft's tree is never shown in the viewer.
+   */
+  function setMode(m: 'viewer' | 'formats') {
+    mode = m;
+    if (m === 'viewer' && draftOnWorker && !saving && !unreadable && client) void runParse(selectedSpec);
+  }
+
+  /**
+   * "Show in viewer" from the preview: the simpler of the two options. The viewer keeps its own format and tree (re-parsed
+   * as above); only the byte range of the previewed node is selected and highlighted.
+   */
+  function showInViewer(range: { start: number; end: number } | null, offset: number) {
+    setMode('viewer'); // clears nodeRange synchronously when it re-parses, so select afterwards
+    const size = source?.size ?? 0;
+    if (range && range.start < size) {
+      const end = Math.min(range.end, size - 1);
+      selection = { anchor: range.start, caret: end };
+      nodeRange = { start: range.start, end };
+      nodeInspectOffset = null;
+      hexView?.reveal(range.start);
+    } else if (Number.isSafeInteger(offset) && offset >= 0 && offset < size) {
+      selection = null;
+      nodeRange = null;
+      nodeInspectOffset = offset;
+      hexView?.reveal(offset);
+    }
+  }
+
   onMount(() => {
     const off = library.subscribe(onLibraryChange);
     void library.init().finally(() => (initializing = false));
@@ -334,6 +434,7 @@
 
   async function loadPage(nodeId: number, start: number, count: number) {
     if (!client) throw new Error('format engine unavailable');
+    if (draftOnWorker) throw new Error('the structure is being refreshed');
     const r = await client.expand(nodeId, start, count);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
     return { nodes: r.nodes, lazy: r.lazy };
@@ -360,7 +461,7 @@
   // Hex -> tree: only on a plain click, throttled, latest wins.
   const locate = throttleLatest(async (offset: number) => {
     const c = client;
-    if (!c || !root) return;
+    if (!c || !root || draftOnWorker) return;
     const t = ++locateToken;
     try {
       const loc = await c.nodeAt(offset);
@@ -373,7 +474,7 @@
 
   async function jumpToDiagnostic(d: Diagnostic) {
     const c = client;
-    if (!c || !root) return;
+    if (!c || !root || draftOnWorker) return;
     const t = ++locateToken;
     try {
       if (d.nodeId !== undefined) {
@@ -396,7 +497,7 @@
     const c = client;
     const w = viewWindow;
     const token = engineToken;
-    if (!c || !root || !w || w.end <= w.start) return;
+    if (!c || !root || !w || w.end <= w.start || draftOnWorker) return;
     try {
       const segs = await c.ranges(w.start, w.end);
       if (token === engineToken) tints = segs;
@@ -750,7 +851,7 @@
     {gotoError}
     {loadError}
     view={mode}
-    onView={(m) => (mode = m)}
+    onView={setMode}
   />
   <div class="stage">
   <div class="pane" class:hidden={mode !== 'viewer'} {...(mode !== 'viewer' ? { inert: true } : {})}>
@@ -822,7 +923,17 @@
   />
   </div>
   <div class="pane" class:hidden={mode !== 'formats'} {...(mode !== 'formats' ? { inert: true } : {})}>
-    <FormatLibrary {library} onDirtyChange={(d) => (formatsDirty = d)} />
+    <FormatLibrary
+      {library}
+      onDirtyChange={(d) => (formatsDirty = d)}
+      previewDoc={editor ? (fileName ?? 'Untitled') : null}
+      previewActive={mode === 'formats'}
+      previewBusy={saving}
+      {previewEpoch}
+      parseDraft={parseDraftPreview}
+      loadPreviewPage={loadPreviewPage}
+      onShowInViewer={showInViewer}
+    />
   </div>
   </div>
 </div>

@@ -16,3 +16,22 @@ export function saveLittleEndian(le: boolean): void {
     // storage unavailable (private mode, quota, disabled): the choice just won't persist
   }
 }
+
+const REWRITE_KEY = 'binaryviewer.builder.hideRewriteNotice';
+
+/** True when the user chose "Don't show again" for the builder's canonical-rewrite notice. Storage errors read as false. */
+export function loadHideRewriteNotice(): boolean {
+  try {
+    return localStorage.getItem(REWRITE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function saveHideRewriteNotice(): void {
+  try {
+    localStorage.setItem(REWRITE_KEY, '1');
+  } catch {
+    // storage unavailable: the notice just shows again next time
+  }
+}

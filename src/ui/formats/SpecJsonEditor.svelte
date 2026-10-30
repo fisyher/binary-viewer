@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type { SaveResult, SpecEntry } from '../../core/spec-library';
+  import { parseJsonValue, sameAsParsed } from '../../core/builder';
   import { checkSpecText, type TextCheck } from '../../core/spec-text';
   import { MAX_SPEC_FILE_BYTES, exceedsBytes } from '../../core/spec-folder';
   import { sanitizeText } from '../../core/tree-model';
@@ -10,18 +11,31 @@
     onSave,
     onDuplicate,
     onDirtyChange = () => {},
+    text: textProp,
+    onText,
+    onResult,
   }: {
     entry: SpecEntry;
     onSave: (text: string) => Promise<SaveResult>;
     onDuplicate: () => void;
     onDirtyChange?: (dirty: boolean) => void;
+    /** Controlled draft text (owned by the parent, shared with the builder). Omit to let the editor own it. */
+    text?: string;
+    onText?: (text: string) => void;
+    /** The latest save outcome (or null), for views that show it elsewhere. */
+    onResult?: (r: { ok: boolean; text: string } | null) => void;
   } = $props();
 
   const MAX_GUTTER_LINES = 100_000;
   const DEBOUNCE_MS = 300;
 
   const readOnly = $derived(entry.source === 'builtin');
-  let text = $state(untrack(() => entry.text));
+  let local = $state(untrack(() => entry.text));
+  const text = $derived(textProp ?? local);
+  function setText(v: string) {
+    local = v;
+    onText?.(v);
+  }
   let base = $state(untrack(() => entry.text)); // the library's text as last seen
   let check = $state.raw<TextCheck>(untrack(() => checkSpecText(entry.text)));
   let saving = $state(false);
@@ -29,14 +43,17 @@
   let area: HTMLTextAreaElement | undefined = $state();
   let gutter: HTMLPreElement | undefined = $state();
 
-  const dirty = $derived(text !== base);
+  // Semantic: a draft that parses to the same JSON as the saved text is not a change (e.g. after a builder undo).
+  // The saved text is parsed once per change of `base`, not on every keystroke.
+  const baseParsed = $derived(parseJsonValue(base));
+  const dirty = $derived(text !== base && !sameAsParsed(text, baseParsed));
 
   // The library changed the text underneath us (folder sync, a save elsewhere): follow it unless the user has edits.
   $effect(() => {
     const t = entry.text;
     untrack(() => {
       if (t === base) return;
-      if (text === base) text = t;
+      if (!dirty) setText(t);
       base = t;
     });
   });
@@ -71,14 +88,16 @@
       result = { ok: false, text: 'Input too large: specs are limited to ' + MAX_SPEC_FILE_BYTES + ' bytes. The change was not applied.' };
       return;
     }
-    text = area.value;
+    setText(area.value);
   }
 
   function syncScroll() {
     if (area && gutter) gutter.scrollTop = area.scrollTop;
   }
 
-  async function save() {
+  $effect(() => onResult?.(result));
+
+  export async function save() {
     const c = checkSpecText(text); // never trust the debounced result for the decision to save
     check = c;
     if (c.syntax || readOnly || saving) return;
@@ -96,8 +115,8 @@
     }
   }
 
-  function revert() {
-    text = base;
+  export function revert() {
+    setText(base);
     check = checkSpecText(base);
     result = null;
   }
