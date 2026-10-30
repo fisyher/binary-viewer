@@ -1,8 +1,10 @@
 <script lang="ts">
   import { BlobByteSource, probeReadable, type ByteSource } from './core/byte-source';
-  import type { Selection } from './core/caret';
+  import { selectionRange, type Selection } from './core/caret';
   import { parseOffset, type OffsetMode } from './core/parse-offset';
   import HexView from './ui/HexView.svelte';
+  import Inspector from './ui/Inspector.svelte';
+  import { loadLittleEndian, saveLittleEndian } from './ui/prefs';
   import StatusBar from './ui/StatusBar.svelte';
   import Toolbar from './ui/Toolbar.svelte';
 
@@ -10,11 +12,15 @@
   let fileName = $state<string | null>(null);
   let selection = $state<Selection | null>(null);
   let gotoError = $state<string | null>(null);
+  let littleEndian = $state(loadLittleEndian());
+  const inspectOffset = $derived(selection ? selectionRange(selection).start : null);
   let readError = $state<string | null>(null);
   let loadError = $state<string | null>(null);
   let dragDepth = $state(0);
   let hexView: ReturnType<typeof HexView> | undefined = $state();
   let fileInput: HTMLInputElement | undefined = $state();
+
+  $effect(() => saveLittleEndian(littleEndian));
 
   let loadToken = 0;
 
@@ -116,16 +122,19 @@
     {gotoError}
     {loadError}
   />
-  {#if source && source.size === 0}
-    <div class="empty"><p>Empty file (0 bytes)</p></div>
-  {:else if source}
-    <HexView bind:this={hexView} {source} bind:selection bind:error={readError} />
-  {:else}
-    <div class="empty">
-      <p>No file open</p>
-      <p class="hint">Click <strong>Open…</strong> or drop a file anywhere on this window.</p>
-    </div>
-  {/if}
+  <div class="main">
+    {#if source && source.size === 0}
+      <div class="empty"><p>Empty file (0 bytes)</p></div>
+    {:else if source}
+      <HexView bind:this={hexView} {source} bind:selection bind:error={readError} />
+    {:else}
+      <div class="empty">
+        <p>No file open</p>
+        <p class="hint">Click <strong>Open…</strong> or drop a file anywhere on this window.</p>
+      </div>
+    {/if}
+    <Inspector source={source && source.size > 0 ? source : null} offset={inspectOffset} bind:littleEndian />
+  </div>
   <StatusBar {selection} error={readError} onRetry={() => hexView?.retry()} />
 </div>
 
@@ -138,6 +147,11 @@
   .app.drag-over {
     outline: 2px dashed var(--accent);
     outline-offset: -4px;
+  }
+  .main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
   }
   .empty {
     flex: 1;
