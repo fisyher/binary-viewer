@@ -10,6 +10,12 @@
   --sel-bg: #bfdbfe;
   --sel-fg: #111827;
   --error: #dc2626;
+  --node-bg: #fde68a;
+  --node-edge: #d97706;
+  --tint-1: rgba(37, 99, 235, 0.1);
+  --tint-2: rgba(22, 163, 74, 0.12);
+  --tint-3: rgba(217, 70, 239, 0.1);
+  --tint-4: rgba(234, 88, 12, 0.12);
   --mono: ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
@@ -26,6 +32,12 @@
     --sel-bg: #1e3a6e;
     --sel-fg: #ffffff;
     --error: #f87171;
+    --node-bg: #6b4e0a;
+    --node-edge: #fbbf24;
+    --tint-1: rgba(96, 165, 250, 0.16);
+    --tint-2: rgba(74, 222, 128, 0.14);
+    --tint-3: rgba(232, 121, 249, 0.15);
+    --tint-4: rgba(251, 146, 60, 0.15);
   }
 }
 

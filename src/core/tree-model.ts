@@ -1,0 +1,307 @@
+/**
+ * Pure helpers behind StructureTree: flattening the expanded tree into rows, the virtual window, key navigation,
+ * value formatting and text sanitising. No DOM, no Svelte.
+ */
+import type { LazyArray, Node } from './engine';
+
+/** Elements requested per page of a lazy array. */
+export const PAGE_SIZE = 200;
+/** Longest display string rendered in a cell. */
+export const MAX_CELL_CHARS = 200;
+
+export type Pages = ReadonlyMap<number, ReadonlyMap<number, readonly Node[]>>;
+
+export interface TreeState {
+  expanded: ReadonlySet<number>;
+  /** Fixed-size lazy arrays only: arrayId -> pageIndex -> element nodes (cached). */
+  pages: Pages;
+  /** `${arrayId}:${start}` of page requests in flight. */
+  loading?: ReadonlySet<string>;
+}
+
+export interface NodeRow {
+  kind: 'node';
+  key: string;
+  node: Node;
+  depth: number;
+  parentKey: string | null;
+  expandable: boolean;
+  expanded: boolean;
+}
+
+export interface MoreRow {
+  kind: 'more';
+  key: string;
+  depth: number;
+  parentKey: string;
+  array: Node;
+  /** First element index to request. */
+  start: number;
+  /** Elements still not loaded in this gap (null = unknown). */
+  remaining: number | null;
+  loading: boolean;
+}
+
+export type Row = NodeRow | MoreRow;
+
+export const nodeKey = (id: number) => `n${id}`;
+export const loadKey = (arrayId: number, start: number) => `${arrayId}:${start}`;
+
+const isFixed = (lz: LazyArray) => lz.elemSize !== null;
+
+/** True when the node can be expanded (has children, or is a lazy array with elements). */
+export function isExpandable(node: Node): boolean {
+  if (node.children && node.children.length > 0) return true;
+  const lz = node.lazy;
+  return lz !== undefined && (lz.count === null || lz.count > 0);
+}
+
+function appendNode(out: Row[], node: Node, depth: number, parentKey: string | null, st: TreeState): void {
+  const key = nodeKey(node.id);
+  const expandable = isExpandable(node);
+  const expanded = expandable && st.expanded.has(node.id);
+  out.push({ kind: 'node', key, node, depth, parentKey, expandable, expanded });
+  if (!expanded || depth > 256) return;
+
+  for (const c of node.children ?? []) appendNode(out, c, depth + 1, key, st);
+  const lz = node.lazy;
+  if (!lz) return;
+
+  const loadingSet = st.loading;
+  if (!isFixed(lz)) {
+    // Variable-size: loaded elements are already in `children`; offer to resume after them.
+    if (lz.resumeOffset !== null && (lz.count === null || lz.loaded < lz.count)) {
+      const start = node.children?.length ?? 0;
+      out.push({
+        kind: 'more',
+        key: `m${node.id}:${start}`,
+        depth: depth + 1,
+        parentKey: key,
+        array: node,
+        start,
+        remaining: lz.count === null ? null : lz.count - start,
+        loading: loadingSet?.has(loadKey(node.id, start)) ?? false,
+      });
+    }
+    return;
+  }
+
+  // Fixed-size: show cached pages in order, with one "load" row per gap of missing pages.
+  const total = lz.count ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const pages = st.pages.get(node.id);
+  const loaded = pages ? [...pages.keys()].filter((p) => p >= 0 && p < totalPages).sort((a, b) => a - b) : [];
+  const gap = (fromPage: number, toPage: number): void => {
+    // Missing pages are [fromPage, toPage).
+    if (toPage <= fromPage) return;
+    const start = fromPage * PAGE_SIZE;
+    out.push({
+      kind: 'more',
+      key: `m${node.id}:${start}`,
+      depth: depth + 1,
+      parentKey: key,
+      array: node,
+      start,
+      remaining: Math.min(total, toPage * PAGE_SIZE) - start,
+      loading: loadingSet?.has(loadKey(node.id, start)) ?? false,
+    });
+  };
+  let next = 0;
+  for (const p of loaded) {
+    gap(next, p);
+    for (const c of pages!.get(p)!) appendNode(out, c, depth + 1, key, st);
+    next = p + 1;
+  }
+  gap(next, totalPages);
+}
+
+/** Flatten the expanded part of the tree into display rows (pre-order). */
+export function flattenTree(root: Node, st: TreeState): Row[] {
+  const out: Row[] = [];
+  appendNode(out, root, 0, null, st);
+  return out;
+}
+
+export interface VirtualWindow {
+  /** First rendered row index. */
+  start: number;
+  /** One past the last rendered row index. */
+  end: number;
+}
+
+/** Rows to render for a scroll position: the visible rows plus `overscan` on both sides, clamped. */
+export function virtualWindow(rowCount: number, scrollTop: number, viewportHeight: number, rowHeight: number, overscan = 6): VirtualWindow {
+  if (rowCount <= 0 || rowHeight <= 0) return { start: 0, end: 0 };
+  const top = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
+  const first = Math.min(rowCount - 1, Math.floor(top / rowHeight));
+  const last = Math.ceil((top + Math.max(0, viewportHeight)) / rowHeight);
+  return { start: Math.max(0, first - overscan), end: Math.min(rowCount, Math.max(first + 1, last) + overscan) };
+}
+
+/** Expanded set that opens the root and its direct (non-lazy) children. */
+export function defaultExpanded(root: Node): Set<number> {
+  const s = new Set<number>([root.id]);
+  for (const c of root.children ?? []) if (!c.lazy && c.children && c.children.length > 0) s.add(c.id);
+  return s;
+}
+
+export type NavKey = 'ArrowDown' | 'ArrowUp' | 'ArrowRight' | 'ArrowLeft' | 'Home' | 'End';
+
+export interface NavResult {
+  /** Row index to make active. */
+  index: number;
+  /** Node id whose expansion changes, with the new state. */
+  toggle?: { id: number; expand: boolean };
+}
+
+/** Result of a navigation key on the row at `index` (null when nothing changes). */
+export function navigateRows(rows: readonly Row[], index: number, key: NavKey): NavResult | null {
+  if (rows.length === 0) return null;
+  const i = Math.min(rows.length - 1, Math.max(0, index));
+  const row = rows[i]!;
+  switch (key) {
+    case 'ArrowDown':
+      return i + 1 < rows.length ? { index: i + 1 } : null;
+    case 'ArrowUp':
+      return i > 0 ? { index: i - 1 } : null;
+    case 'Home':
+      return { index: 0 };
+    case 'End':
+      return { index: rows.length - 1 };
+    case 'ArrowRight':
+      if (row.kind === 'node' && row.expandable) {
+        if (!row.expanded) return { index: i, toggle: { id: row.node.id, expand: true } };
+        return i + 1 < rows.length && rows[i + 1]!.parentKey === row.key ? { index: i + 1 } : null;
+      }
+      return null;
+    case 'ArrowLeft':
+      if (row.kind === 'node' && row.expandable && row.expanded) return { index: i, toggle: { id: row.node.id, expand: false } };
+      if (row.parentKey !== null) {
+        const p = rows.findIndex((r) => r.key === row.parentKey);
+        return p >= 0 ? { index: p } : null;
+      }
+      return null;
+  }
+}
+
+/** Inclusive byte range of a node, or null for zero-size (or nonsensical) nodes. */
+export function nodeByteRange(node: Node): { start: number; end: number } | null {
+  if (!Number.isSafeInteger(node.offset) || !Number.isSafeInteger(node.size) || node.offset < 0 || node.size <= 0) return null;
+  return { start: node.offset, end: node.offset + node.size - 1 };
+}
+
+/**
+ * Chain of nodes from `root` down to the node with `id`, following attached `children` only; null if absent.
+ * Used to expand every ancestor of a node found by the worker.
+ */
+export function pathById(root: Node, id: number): Node[] | null {
+  if (root.id === id) return [root];
+  for (const c of root.children ?? []) {
+    const p = pathById(c, id);
+    if (p) return [root, ...p];
+  }
+  return null;
+}
+
+/** Follow a worker-provided id path from `root`; returns the nodes found (may stop early). */
+export function followPath(root: Node, ids: readonly number[]): Node[] {
+  const out: Node[] = [];
+  let cur: Node | undefined = root;
+  if (ids[0] !== root.id) return out;
+  out.push(root);
+  for (let k = 1; k < ids.length; k++) {
+    cur = cur?.children?.find((c) => c.id === ids[k]);
+    if (!cur) break;
+    out.push(cur);
+  }
+  return out;
+}
+
+const HEX = '0123456789abcdef';
+
+const INVISIBLE = /^[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]$/u;
+
+/**
+ * Make untrusted text safe to show: invisible/format characters (controls, bidi marks and overrides, zero-width
+ * characters, BOM, line/paragraph separators, lone surrogates) become a visible \u{XXXX} escape; letters and
+ * combining marks are kept. Output is at most `max` UTF-16 units plus an ellipsis, and a surrogate pair is never
+ * cut. With `escapeQuoted`, `"` and `\` are backslash-escaped too (for text shown inside quotes), so data that
+ * looks like one of our escapes stays distinguishable. (Rendering is always as text; this only keeps the display honest.)
+ */
+export function sanitizeText(s: string, max = MAX_CELL_CHARS, escapeQuoted = false): string {
+  let out = '';
+  for (const ch of s) {
+    const piece = escapeQuoted && (ch === '"' || ch === '\\') ? '\\' + ch : INVISIBLE.test(ch) ? `\\u{${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}}` : ch;
+    if (out.length + piece.length > max) return out + '\u2026';
+    out += piece;
+  }
+  return out;
+}
+
+function bytesPreview(b: Uint8Array): string {
+  const n = Math.min(b.length, 16);
+  let s = '';
+  for (let i = 0; i < n; i++) s += (i ? ' ' : '') + HEX[b[i]! >> 4] + HEX[b[i]! & 15];
+  return b.length > n ? `${s} … (${b.length} bytes)` : s;
+}
+
+/** Text of the value cell: lazy array summary, enum label (+ display), display, or the formatted raw value. */
+export function formatNodeValue(node: Node): string {
+  if (node.lazy) {
+    const lz = node.lazy;
+    return lz.count === null ? `[${lz.loaded}+] items` : `[${lz.count}] items`;
+  }
+  const base =
+    node.display !== undefined
+      ? node.display
+      : node.value === undefined
+        ? ''
+        : typeof node.value === 'string'
+          ? `"${sanitizeText(node.value, MAX_CELL_CHARS - 3, true)}"` // quotes added after truncation so the closing one survives
+          : node.value instanceof Uint8Array
+            ? bytesPreview(node.value)
+            : String(node.value);
+  if (node.enumLabel !== undefined) return sanitizeText(base === '' ? node.enumLabel : `${node.enumLabel} (${base})`);
+  return sanitizeText(base);
+}
+
+/** Tooltip text for the error/warning badge, or null when the node has no problems. */
+export function problemMessages(node: Node): string[] {
+  const out: string[] = [];
+  if (node.error) out.push(node.error);
+  for (const v of node.validation ?? []) out.push(v);
+  return out;
+}
+
+/** Latest-wins throttle: first call runs now; calls within `ms` collapse into one trailing call with the last args. */
+export function throttleLatest<A extends unknown[]>(fn: (...a: A) => void, ms: number): ((...a: A) => void) & { cancel(): void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastRun = -Infinity;
+  let queued: A | null = null;
+  const run = (a: A) => {
+    lastRun = Date.now();
+    fn(...a);
+  };
+  const throttled = (...a: A) => {
+    const wait = lastRun + ms - Date.now();
+    if (wait <= 0 && timer === null) {
+      run(a);
+      return;
+    }
+    queued = a;
+    if (timer === null) {
+      timer = setTimeout(() => {
+        timer = null;
+        const q = queued;
+        queued = null;
+        if (q) run(q);
+      }, Math.max(0, wait));
+    }
+  };
+  throttled.cancel = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    queued = null;
+  };
+  return throttled;
+}

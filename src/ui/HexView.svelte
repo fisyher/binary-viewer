@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type { ByteSource } from '../core/byte-source';
+  import type { RangeSegment } from '../worker/protocol';
   import { navigate, selectionRange, type CaretMove, type Selection } from '../core/caret';
   import { computeFetchWindow, covers } from '../core/fetch-window';
   import {
@@ -22,12 +23,29 @@
   } from '../core/virtual-scroll';
 
   const ROW_HEIGHT = 20;
+  const TINT_COUNT = 4;
 
   let {
     source,
     selection = $bindable(null),
     error = $bindable(null),
-  }: { source: ByteSource; selection: Selection | null; error: string | null } = $props();
+    nodeRange = null,
+    tints = [],
+    onViewChange,
+    onByteClick,
+  }: {
+    source: ByteSource;
+    selection: Selection | null;
+    error: string | null;
+    /** Byte range (inclusive) of the node selected in the structure tree. */
+    nodeRange?: { start: number; end: number } | null;
+    /** Sorted leaf ranges [start, end) with a group number, for tinting the visible window only. */
+    tints?: RangeSegment[];
+    /** Visible byte window [start, end) changed (rows rendered, not just fully visible). */
+    onViewChange?: (start: number, end: number) => void;
+    /** A plain click (no drag, no shift) landed on a byte. */
+    onByteClick?: (offset: number) => void;
+  } = $props();
 
   let scroller: HTMLDivElement | undefined = $state();
   let viewportHeight = $state(0);
@@ -54,6 +72,21 @@
   const shiftY = $derived(-((topRow - range.start) * ROW_HEIGHT + pixelShift));
   const rows = $derived(Array.from({ length: range.end - range.start }, (_, i) => range.start + i));
   const sel = $derived(selection ? selectionRange(selection) : null);
+  const winStart = $derived(range.start * BYTES_PER_ROW);
+  const winEnd = $derived(Math.min(source.size, range.end * BYTES_PER_ROW));
+  // Tint group per byte of the rendered window (0 = none). Work is bounded by the window, never the file.
+  const tintMap = $derived.by(() => {
+    const map = new Uint8Array(Math.max(0, winEnd - winStart));
+    for (const t of tints) {
+      const a = Math.max(t.start, winStart);
+      const b = Math.min(t.end, winEnd);
+      const v = (((t.group % TINT_COUNT) + TINT_COUNT) % TINT_COUNT) + 1;
+      for (let o = a; o < b; o++) map[o - winStart] = v;
+    }
+    return map;
+  });
+  const tintAt = (o: number) => tintMap[o - winStart] || undefined;
+  const inNode = (o: number) => nodeRange !== null && o >= nodeRange.start && o <= nodeRange.end;
   const fullRows = $derived(Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT)));
 
   // Reset when a new source is opened.
@@ -80,6 +113,13 @@
   });
 
   onDestroy(() => clearTimeout(retryTimer));
+
+  $effect(() => {
+    void source; // a new file showing the same window must still announce it
+    const a = winStart;
+    const b = winEnd;
+    untrack(() => onViewChange?.(a, b));
+  });
 
   /** Re-attempt a failed read now. */
   export function retry() {
@@ -170,6 +210,13 @@
     }
   }
 
+  /** Scroll so `offset` is visible (centred when it was off-screen) without touching the selection. */
+  export function reveal(offset: number) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || source.size <= 0) return;
+    const row = Math.floor(Math.min(offset, source.size - 1) / BYTES_PER_ROW);
+    if (row < topRow || row >= topRow + fullRows) setTop(row - Math.floor(fullRows / 2));
+  }
+
   /** Select a single byte and scroll it into the middle of the view. */
   export function goTo(offset: number) {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset >= source.size) return;
@@ -180,6 +227,7 @@
 
   // ---- Mouse selection ----
   let dragging = false;
+  let clickCandidate: number | null = null; // byte under a plain mousedown; cleared if the drag moves
 
   function offsetFromTarget(t: EventTarget | null): number | null {
     const el = (t as Element | null)?.closest?.('[data-o]');
@@ -196,16 +244,23 @@
     scroller?.focus();
     selection = e.shiftKey && selection ? { anchor: selection.anchor, caret: o } : { anchor: o, caret: o };
     dragging = true;
+    clickCandidate = e.shiftKey ? null : o;
   }
 
   function onWindowMouseMove(e: MouseEvent) {
     if (!dragging || !selection) return;
     const o = offsetFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-    if (o !== null && o !== selection.caret) selection = { anchor: selection.anchor, caret: o };
+    if (o !== null && o !== selection.caret) {
+      selection = { anchor: selection.anchor, caret: o };
+      clickCandidate = null;
+    }
   }
 
   function onWindowMouseUp() {
+    const click = dragging ? clickCandidate : null;
     dragging = false;
+    clickCandidate = null;
+    if (click !== null) onByteClick?.(click);
   }
 
   // ---- Keyboard ----
@@ -265,8 +320,10 @@
                   class="b"
                   class:gap={i === 8}
                   class:sel={sel && o >= sel.start && o <= sel.end}
+                  class:node={inNode(o)}
                   class:caret={selection?.caret === o}
                   data-o={o < source.size ? o : undefined}
+                  data-t={tintAt(o)}
                   >{b === undefined ? (o < source.size ? '··' : '') : byteToHex(b)}</span
                 >
               {/each}
@@ -278,8 +335,10 @@
                 <span
                   class="c"
                   class:sel={sel && o >= sel.start && o <= sel.end}
+                  class:node={inNode(o)}
                   class:caret={selection?.caret === o}
                   data-o={o < source.size ? o : undefined}
+                  data-t={tintAt(o)}
                   >{b === undefined ? (o < source.size ? ' ' : '') : byteToAscii(b)}</span
                 >
               {/each}
@@ -346,6 +405,23 @@
   .ascii {
     display: inline-flex;
     color: var(--ascii);
+  }
+  [data-t='1'] {
+    background: var(--tint-1);
+  }
+  [data-t='2'] {
+    background: var(--tint-2);
+  }
+  [data-t='3'] {
+    background: var(--tint-3);
+  }
+  [data-t='4'] {
+    background: var(--tint-4);
+  }
+  /* The tree-selected node: a distinct amber background plus an underline that stays visible under .sel. */
+  .node {
+    background: var(--node-bg);
+    box-shadow: inset 0 -2px 0 var(--node-edge);
   }
   .sel {
     background: var(--sel-bg);
