@@ -1,0 +1,31 @@
+# Binary File Format Builder-Viewer
+
+This app enable users to open binary files like a Hex-Editor with a hex/ASCII view, offsets, decoding of common structures but that is not all. 
+It should also allow users to create Binary Format Documentation using provided building blocks to customize the decoding of specific structures for each binary file format.
+
+## Requirements
+
+These requirements are high-level requirements that may need further research to derive more in-depth requirements.
+
+Viewer:
+- **Create/Open/Save Files**:  User is able to create new file, open any file and save changes to loaded files
+- **Format Detection/Parsing**: Upon opening the file, the viewer should be able to detect the binary format based on its file extension and supported Binary Format Documentation. 
+- **Hex/ASCII Edit View**: User is able to view the binary file with a Hex View, select a range of bytes to view its structure in a Data Inspector view with highlighting and edit byte values directly.
+- **Binary Data Analyzer/Inspector**: User is able to interact with the UI to jump to different data structure in the Hex View.
+
+
+Viewer requirements are largely inspired by Hex-Editor such as HxD which has a Hex view on the left side and a Data Inspector on the right side. However, the Data Inspector can only handle simple parsing of data such as Numbers of various byte length (2-bytes, 4 bytes etc.), DateTime etc. It
+
+Binary Format Builder:
+- **Create New Binary Format**: User is able to create new binary file format using pre-defined building blocks, which requires some research for various binary file formats.
+- **Generate Documentation**: User is able to generate documentation explaining the details of the format such as Magic Numbers, Structures, Relative Offsets etc.
+- **Well-Known Format**: The app should come pre-build with at least 1 supported example format such as .bmp or .zip. The creation of the Format and Documentation of these well-known formats will be done with the help of Gen-AI but will not be the core feature of this application for now since it requires smart capability to read official binary format specs documents and transform them into the structure defined by this application.
+
+## Architecture and Tech Stack
+
+For now, this app should be a fully **Client-Side** Web-based Application that can run locally or hosted on a static web server. The built Binary Format Specs and Documentation will be saved in a local folder. This allows the app to be hosted on github page without the need to host backend services and databases. 
+
+Tech Stack preferences include Node.js / Javascript frameworks. 
+
+However, please suggest otherwise if there are better tech stack options that better suit these requirements.
+

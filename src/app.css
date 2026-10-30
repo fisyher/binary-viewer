@@ -1,0 +1,60 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f3f4f6;
+  --border: #d1d5db;
+  --fg: #1f2937;
+  --muted: #6b7280;
+  --ascii: #374151;
+  --accent: #2563eb;
+  --sel-bg: #bfdbfe;
+  --sel-fg: #111827;
+  --error: #dc2626;
+  --mono: ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --border: #2d323c;
+    --fg: #e5e7eb;
+    --muted: #8b93a1;
+    --ascii: #a7b0be;
+    --accent: #60a5fa;
+    --sel-bg: #1e3a6e;
+    --sel-fg: #ffffff;
+    --error: #f87171;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.5;
+}
