@@ -15,6 +15,10 @@
  * mask the result with `&` when a fixed width is wanted. Shift counts must be 0..64. Integer results
  * are limited to +-2^256; larger results are an error rather than unbounded memory growth.
  *
+ * Functions: `min(a, b, ...)`, `max(a, b, ...)` (integers) and `lookup(list, "member", value)`: the first element
+ * (a struct) of an array whose `member` equals `value` (same equality as `==`), or null. The member name must be a
+ * string literal. Only elements the interpreter kept (parsed eagerly) are searched; lazy or skimmed ones are not.
+ *
  * Limits: expression length, nesting depth (parens / unary chains / ternaries / call args) and token
  * count are capped. All failures are reported as ExprError (or `{ok:false}` from the safe wrappers).
  */
@@ -29,6 +33,8 @@ export class ExprError extends Error {
 export interface ObjValue {
   readonly isObj: true;
   get(name: string): Value | undefined;
+  /** Arrays only: first kept element whose `member` equals `value`, or null. Spends `budget.left` per element looked at. */
+  lookup?(member: string, value: Value, budget: { left: number; signal?: AbortSignal }): Value;
 }
 export type Value = bigint | number | string | boolean | null | ObjValue;
 
@@ -46,7 +52,7 @@ export type Expr =
   | { k: 'unary'; op: '-' | '~' | '!'; arg: Expr }
   | { k: 'bin'; op: string; l: Expr; r: Expr }
   | { k: 'cond'; c: Expr; a: Expr; b: Expr }
-  | { k: 'call'; fn: 'min' | 'max'; args: Expr[] };
+  | { k: 'call'; fn: 'min' | 'max' | 'lookup'; args: Expr[] };
 
 export interface ExprLimits {
   maxLength: number;
@@ -265,7 +271,7 @@ class Parser {
       case 'id': {
         const next = this.peek();
         if (next.t === 'op' && next.v === '(') {
-          if (t.v !== 'min' && t.v !== 'max') throw new ExprError(`unknown function '${t.v}' at position ${t.pos}`);
+          if (t.v !== 'min' && t.v !== 'max' && t.v !== 'lookup') throw new ExprError(`unknown function '${t.v}' at position ${t.pos}`);
           this.i++;
           const args: Expr[] = [];
           for (;;) {
@@ -279,6 +285,10 @@ class Parser {
             break;
           }
           this.expectOp(')');
+          if (t.v === 'lookup') {
+            if (args.length !== 3) throw new ExprError(`lookup needs 3 arguments (list, "member", value), got ${args.length}`);
+            if (args[1]!.k !== 'str') throw new ExprError(`the second argument of lookup must be a string literal naming a member, at position ${t.pos}`);
+          }
           e = { k: 'call', fn: t.v, args };
         } else if (t.v === 'true' || t.v === 'false') {
           e = { k: 'bool', v: t.v === 'true' };
@@ -368,7 +378,12 @@ export function freeNames(e: Expr, out: Set<string> = new Set()): Set<string> {
 export interface EvalEnv {
   /** Resolve a bare name; undefined means unknown. */
   resolve(name: string): Value | undefined;
+  /** Elements `lookup` may still examine (shared across expressions by the interpreter; default per evaluation). */
+  scan?: { left: number; signal?: AbortSignal };
 }
+
+/** Elements one `lookup` evaluation may examine when the environment carries no shared budget. */
+const DEFAULT_LOOKUP_SCAN = 100_000;
 
 function typeOf(v: Value): string {
   if (v === null) return 'null';
@@ -529,6 +544,13 @@ function evalNode(e: Expr, env: EvalEnv, depth: number): Value {
     case 'cond':
       return needBool(evalNode(e.c, env, d), '?:') ? evalNode(e.a, env, d) : evalNode(e.b, env, d);
     case 'call': {
+      if (e.fn === 'lookup') {
+        const list = evalNode(e.args[0]!, env, d);
+        if (list === null) return null;
+        if (!isObj(list) || list.lookup === undefined) throw new ExprError(`lookup needs an array, got ${typeOf(list)}`);
+        const member = (e.args[1] as { k: 'str'; v: string }).v;
+        return list.lookup(member, evalNode(e.args[2]!, env, d), (env.scan ??= { left: DEFAULT_LOOKUP_SCAN }));
+      }
       let best: bigint | undefined;
       for (const a of e.args) {
         const v = needInt(evalNode(a, env, d), e.fn);

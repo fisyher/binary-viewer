@@ -7,7 +7,7 @@ import * as realEngine from '../core/engine';
 import type { FormatSpec, Node, ParseResult } from '../core/engine';
 import type { DetectionInfo, EngineRequest, EngineResponse, RangeSegment, SpecInfo } from './protocol';
 
-export type EngineApi = Pick<typeof realEngine, 'detect' | 'parse' | 'expandLazy' | 'findNodeAt' | 'lazyElementIndexAt'>;
+export type EngineApi = Pick<typeof realEngine, 'detect' | 'parse' | 'expandLazy' | 'findNodeAt' | 'lazyElementIndexAt'> & Partial<Pick<typeof realEngine, 'expandRef'>>;
 
 export interface HandlerDeps {
   /** Built-in specs (already validated). User specs arrive later through `setSpecs`. */
@@ -237,6 +237,22 @@ export function createEngineHandler(deps: HandlerDeps) {
         const newErrors = r.errors.slice(errorsSent);
         errorsSent = r.errors.length;
         return { id, type: 'expand', nodes, lazy, newErrors };
+      }
+      case 'expandRef': {
+        if (!result) return { id, type: 'error', message: 'no parse result' };
+        if (!isCount(req.nodeId)) return { id, type: 'error', message: 'invalid reference node' };
+        const gen = generation;
+        const r = result;
+        const nodes = await (engine.expandRef ?? realEngine.expandRef)(r, req.nodeId, { signal: lifeCtl?.signal });
+        if (gen !== generation) return null;
+        if (nodes.length > 0) {
+          // The target was attached under the ref node: ids, parents and byte extents changed.
+          index = null;
+          extents = null;
+        }
+        const newErrors = r.errors.slice(errorsSent);
+        errorsSent = r.errors.length;
+        return { id, type: 'expandRef', nodes, newErrors };
       }
       case 'nodeAt': {
         if (!result) return { id, type: 'located', path: null, lazyIndex: null };

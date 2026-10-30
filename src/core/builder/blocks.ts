@@ -8,7 +8,7 @@
  * cannot use `bytes` + `expect`. Hex magic is therefore a `str` field with `encoding: "latin1"` (one byte = one
  * character, so any byte sequence is representable) and the expected text; plain-text magic is an ordinary `str`.
  */
-import { parseExpr, parseEnumKey, parseHexBytes, isBuiltinType } from '../engine';
+import { parseExpr, parseEnumKey, parseHexBytes, isBuiltinType, MAX_FIND_WINDOW, MAX_SIGNATURE_BYTES } from '../engine';
 import {
   NAME_RE,
   addDetect,
@@ -67,10 +67,10 @@ export interface BlockDef {
 
 // ------------------------------------------------------------------ shared pieces
 
-const RESERVED = new Set(['and', 'or', 'not', 'null', 'true', 'false', 'min', 'max', '__proto__', 'constructor', 'prototype']);
+const RESERVED = new Set(['and', 'or', 'not', 'null', 'true', 'false', 'min', 'max', 'lookup', '__proto__', 'constructor', 'prototype']);
 
 export function fieldNameProblem(name: string): string | null {
-  if (!NAME_RE.test(name) || RESERVED.has(name)) return `"${name}" is not a valid field name (letters, digits, underscore; starts with a letter; and/or/not/null/true/false/min/max are reserved).`;
+  if (!NAME_RE.test(name) || RESERVED.has(name)) return `"${name}" is not a valid field name (letters, digits, underscore; starts with a letter; and/or/not/null/true/false/min/max/lookup are reserved).`;
   return null;
 }
 
@@ -90,7 +90,7 @@ const ENDIAN_OPTIONS: Option[] = [
   { value: 'le', label: 'Little-endian (le)' },
   { value: 'be', label: 'Big-endian (be)' },
 ];
-const ENCODING_OPTIONS: Option[] = ['ascii', 'latin1', 'utf8', 'utf16le', 'utf16be'].map((t) => ({ value: t, label: t }));
+const ENCODING_OPTIONS: Option[] = ['ascii', 'latin1', 'cp437', 'utf8', 'utf16le', 'utf16be'].map((t) => ({ value: t, label: t }));
 const defaultEndian = (m: BuilderModel) => (m.meta.endian ? 'spec' : 'le');
 
 /** `u4` / `u4le` ...; null (with `error`) when the spec default is requested but the spec declares none. */
@@ -532,6 +532,66 @@ export const BLOCKS: BlockDef[] = [
     },
   },
   {
+    id: 'computed',
+    label: 'Computed value',
+    group: 'Structure',
+    description: 'A value calculated from an expression. It takes no bytes; later fields can use it by name (for example as a size or an offset).',
+    params: [nameParam('computed'), field('expr', 'Expression', 'expr', '', { help: 'For example total * 4 + 2.' })],
+    apply(m, ctx, v) {
+      const n = nameOf(m, ctx, v);
+      if ('error' in n) return bad(n.error);
+      const expr = (v.expr ?? '').trim();
+      if (!expr) return bad('Enter the expression.');
+      const r = parseExpr(expr);
+      if (!r.ok) return bad(`Bad expression: ${r.error}`);
+      return { ok: true, model: insertAll(m, ctx, [{ name: n.name, type: 'value', value: expr }]) };
+    },
+  },
+  {
+    id: 'find',
+    label: 'Signature search',
+    group: 'Structure',
+    description:
+      'Places a field by searching a window of the stream for a signature (for example the end-of-central-directory record, found backward from the end). The cursor does not move. Nearest match wins.',
+    params: [
+      nameParam('found'),
+      field('type', 'Type at the match', 'type', 'u4', { sized: true }),
+      field('size', 'Size (for str / bytes)', 'expr', '', { help: 'A number or an expression.' }),
+      field('bytes', 'Signature (hex bytes)', 'text', '50 4B 05 06', { help: `Up to ${MAX_SIGNATURE_BYTES} bytes.` }),
+      field('mask', 'Mask (optional hex)', 'text', '', { help: 'Same length as the signature; only set bits are compared.' }),
+      field('direction', 'Search direction', 'select', 'backward', { options: [{ value: 'backward', label: 'Backward (before the start offset)' }, { value: 'forward', label: 'Forward (from the start offset)' }] }),
+      field('from', 'Start offset', 'expr', '_io.end', { help: 'An absolute offset expression.' }),
+      field('window', 'Window (bytes)', 'number', '65557', { help: `Up to ${MAX_FIND_WINDOW}.` }),
+    ],
+    apply(m, ctx, v) {
+      const n = nameOf(m, ctx, v);
+      if ('error' in n) return bad(n.error);
+      const sig = parseHexBytes(v.bytes ?? '', MAX_SIGNATURE_BYTES);
+      if (!sig) return bad(`Enter 1 to ${MAX_SIGNATURE_BYTES} hex bytes for the signature, for example "50 4B 05 06".`);
+      const maskText = (v.mask ?? '').trim();
+      let mask: Uint8Array | null = null;
+      if (maskText !== '') {
+        mask = parseHexBytes(maskText, MAX_SIGNATURE_BYTES);
+        if (!mask || mask.length !== sig.length) return bad('The mask must be hex bytes with the same length as the signature.');
+        if (mask.every((b) => b === 0)) return bad('The mask must not be all zero.');
+      }
+      const from = (v.from ?? '').trim();
+      if (!from) return bad('Enter the offset to search from.');
+      const fe = parseExpr(from);
+      if (!fe.ok) return bad(`Bad start offset: ${fe.error}`);
+      const w = posInt(v.window, 'The window', 1, MAX_FIND_WINDOW);
+      if ('error' in w) return bad(w.error);
+      const f = sizedField(m, n.name, v.type ?? 'u4', v.size ?? '');
+      if ('error' in f) return bad(f.error);
+      const find: Record<string, unknown> = { bytes: hexOf(sig) };
+      if (mask) find.mask = hexOf(mask);
+      find.from = /^\d{1,15}$/.test(from) ? Number(from) : from;
+      find.window = w.n;
+      find.direction = v.direction === 'forward' ? 'forward' : 'backward';
+      return { ok: true, model: insertAll(m, ctx, [{ ...f.field, find } as unknown as FieldModel]) };
+    },
+  },
+  {
     id: 'assert',
     label: 'Assert / validation',
     group: 'Identification',
@@ -564,6 +624,7 @@ export const blockById = (id: string): BlockDef | undefined => BLOCKS.find((b) =
 /** Why `ref` cannot be used as a field type (null = fine). `sized` types (str, bytes) need a size elsewhere. */
 function typeRefProblem(m: BuilderModel, ref: string, allowSized: boolean): string | null {
   if (!ref) return 'Choose a type.';
+  if (ref === 'value') return '"value" fields come from the Computed value block.';
   if (ref === 'str' || ref === 'bytes') return allowSized ? null : `"${ref}" needs a size; use the String or Raw bytes blocks.`;
   if (isBuiltinType(ref)) {
     const multi = /^[usf][248](le|be)?$/.test(ref) && !/(le|be)$/.test(ref);

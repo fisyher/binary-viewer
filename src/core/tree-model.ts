@@ -42,16 +42,28 @@ export interface MoreRow {
   loading: boolean;
 }
 
-export type Row = NodeRow | MoreRow;
+/** "Open <type> @ offset" affordance under a node that carries an unopened `ref`. */
+export interface RefRow {
+  kind: 'ref';
+  key: string;
+  depth: number;
+  parentKey: string;
+  node: Node;
+  loading: boolean;
+}
+
+export type Row = NodeRow | MoreRow | RefRow;
 
 export const nodeKey = (id: number) => `n${id}`;
 export const loadKey = (arrayId: number, start: number) => `${arrayId}:${start}`;
+export const refLoadKey = (nodeId: number) => `ref:${nodeId}`;
 
 const isFixed = (lz: LazyArray) => lz.elemSize !== null;
 
-/** True when the node can be expanded (has children, or is a lazy array with elements). */
+/** True when the node can be expanded (has children, is a lazy array with elements, or has a reference to open). */
 export function isExpandable(node: Node): boolean {
   if (node.children && node.children.length > 0) return true;
+  if (node.ref !== undefined && !node.ref.loaded) return true;
   const lz = node.lazy;
   return lz !== undefined && (lz.count === null || lz.count > 0);
 }
@@ -64,6 +76,9 @@ function appendNode(out: Row[], node: Node, depth: number, parentKey: string | n
   if (!expanded || depth > 256) return;
 
   for (const c of node.children ?? []) appendNode(out, c, depth + 1, key, st);
+  if (node.ref !== undefined && !node.ref.loaded) {
+    out.push({ kind: 'ref', key: `r${node.id}`, depth: depth + 1, parentKey: key, node, loading: st.loading?.has(refLoadKey(node.id)) ?? false });
+  }
   const lz = node.lazy;
   if (!lz) return;
 

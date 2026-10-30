@@ -34,6 +34,10 @@ export interface ExpandResult {
   lazy: LazyArray | null;
   newErrors: Diagnostic[];
 }
+export interface RefResult {
+  nodes: Node[];
+  newErrors: Diagnostic[];
+}
 export interface Located {
   path: number[] | null;
   lazyIndex: number | null;
@@ -47,6 +51,8 @@ export interface EngineClient {
   /** Replace the worker's custom spec set. Never superseded by open/parse. */
   setSpecs(specTexts: string[]): Promise<SetSpecsResult>;
   expand(nodeId: number, start: number, count: number): Promise<ExpandResult>;
+  /** Open a `ref` node: parse its target type and get the node(s) to attach under it. */
+  expandRef(nodeId: number): Promise<RefResult>;
   /** Abort the running parse; the pending parse() resolves with a partial snapshot (stats.aborted). */
   cancel(): void;
   nodeAt(offset: number): Promise<Located>;
@@ -141,6 +147,10 @@ export function createClient(t: Transport): EngineClient {
     expand: async (nodeId, start, count) => {
       const { nodes, lazy, newErrors } = await send<'expand'>({ type: 'expand', nodeId, start, count });
       return { nodes, lazy, newErrors };
+    },
+    expandRef: async (nodeId) => {
+      const { nodes, newErrors } = await send<'expandRef'>({ type: 'expandRef', nodeId });
+      return { nodes, newErrors };
     },
     cancel() {
       send<'cancel'>({ type: 'cancel' }).catch(() => {});

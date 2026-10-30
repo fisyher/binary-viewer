@@ -15,6 +15,7 @@
     nodeKey,
     pathById,
     problemMessages,
+    refLoadKey,
     sanitizeText,
     virtualWindow,
     type NavKey,
@@ -34,6 +35,7 @@
     root,
     diagnostics = [],
     loadPage,
+    loadRef,
     onSelect,
     preserveFor = null,
   }: {
@@ -41,6 +43,8 @@
     diagnostics?: Diagnostic[];
     /** Fetch `count` elements of lazy array `nodeId` starting at `start` (from the worker). */
     loadPage: (nodeId: number, start: number, count: number) => Promise<PageResult>;
+    /** Open the `ref` of node `nodeId` (from the worker): resolves to the target node(s) to attach under it. */
+    loadRef?: (nodeId: number) => Promise<Node[]>;
     /** `range` is the inclusive byte range of the node, or null for zero-size nodes. */
     onSelect: (node: Node, range: { start: number; end: number } | null) => void;
     /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
@@ -168,6 +172,40 @@
     }
   }
 
+  /** Open a reference node: attach its target as a child, expand and select it. */
+  async function openRef(node: Node): Promise<void> {
+    const r0 = root;
+    const k = refLoadKey(node.id);
+    if (!r0 || !loadRef || !node.ref || node.ref.loaded || loading.has(k)) return;
+    loading = new Set(loading).add(k);
+    loadError = null;
+    try {
+      const nodes = await loadRef(node.id);
+      if (root !== r0) return;
+      if (nodes.length === 0) {
+        loadError = 'Could not open the reference (see Diagnostics).';
+        return;
+      }
+      if (!node.ref.loaded) {
+        node.children = [...(node.children ?? []), ...nodes];
+        node.ref = { ...node.ref, loaded: true };
+        version++;
+      }
+      expanded = new Set([...expanded, node.id, nodes[0]!.id]);
+      selectNode(nodes[0]!, true);
+    } catch (e) {
+      if (root === r0 && !(e instanceof Error && e.name === 'SupersededError')) {
+        loadError = sanitizeText(`Could not open the reference: ${e instanceof Error ? e.message : String(e)}`, 300);
+      }
+    } finally {
+      if (root === r0) {
+        const n = new Set(loading);
+        n.delete(k);
+        loading = n;
+      }
+    }
+  }
+
   function ensureFirstPage(node: Node) {
     const lz = node.lazy;
     if (!lz) return;
@@ -189,6 +227,7 @@
   function onRowClick(row: Row) {
     activeKey = row.key;
     if (row.kind === 'more') void load(row.array, row.start);
+    else if (row.kind === 'ref') void openRef(row.node);
     else selectNode(row.node);
   }
 
@@ -199,6 +238,7 @@
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (row.kind === 'more') void load(row.array, row.start);
+      else if (row.kind === 'ref') void openRef(row.node);
       else if (row.expandable) setExpanded(row.node, !row.expanded);
       return;
     }
@@ -298,6 +338,7 @@
                     }}>{row.expandable ? (row.expanded ? '▾' : '▸') : ''}</span
                   >
                   <span class="nm" title={sanitizeText(node.name, 500)}>{sanitizeText(node.name)}</span>
+                  {#if node.ref}<span class="refmark" title="Points to {sanitizeText(node.ref.typeName, 64)} at {hex(node.ref.offset)}" aria-hidden="true">↗</span>{/if}
                 </span>
                 <span class="val" title={formatNodeValue(node)}>{formatNodeValue(node)}</span>
                 <span class="type">{sanitizeText(node.typeName, 60)}</span>
@@ -308,6 +349,24 @@
                     {@const sev = node.error ? 'error' : (severity.get(node.id) ?? 'warning')}
                     <span class="badge {sev}" title={problems.map((p) => sanitizeText(p, 500)).join('\n')} data-badge={sev}>!</span>
                   {/if}
+                </span>
+              </div>
+            {:else if row.kind === 'ref'}
+              <div
+                class="row more"
+                class:active={row.key === activeKey}
+                style:height="{ROW_HEIGHT}px"
+                role="treeitem"
+                tabindex="-1"
+                aria-selected="false"
+                aria-level={row.depth + 1}
+                data-key={row.key}
+                data-ref
+                onclick={() => onRowClick(row)}
+                onkeydown={() => {}}
+              >
+                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                  {row.loading || !row.node.ref ? 'Opening…' : `▸ open ${sanitizeText(row.node.ref.typeName, 64)} @ ${hex(row.node.ref.offset)}`}
                 </span>
               </div>
             {:else}
@@ -435,6 +494,11 @@
   .more {
     color: var(--accent);
     cursor: pointer;
+  }
+  .refmark {
+    flex: none;
+    margin-left: 4px;
+    color: var(--accent);
   }
   .empty {
     color: var(--muted);

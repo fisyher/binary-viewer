@@ -60,7 +60,8 @@
   const patch = (i: number, p: Partial<FieldModel>) => commit(editField(model, typeName, i, p));
   const isSwitch = (f: FieldModel) => typeof f.type === 'object' && f.type !== null;
   const typeValue = (f: FieldModel) => (isSwitch(f) ? '__switch__' : typeof f.type === 'string' ? f.type : '');
-  const known = (v: string) => PRIMITIVE_GROUPS.some((g) => g.types.includes(v)) || userTypes.includes(v);
+  const known = (v: string) => v === 'value' || PRIMITIVE_GROUPS.some((g) => g.types.includes(v)) || userTypes.includes(v);
+  const isValue = (f: FieldModel) => f.type === 'value';
   const repKind = (f: FieldModel) => (f.repeat === undefined ? '' : f.repeat === 'eos' ? 'eos' : typeof f.repeat === 'object' && f.repeat && 'until' in f.repeat ? 'until' : 'count');
   const repText = (f: FieldModel) => (typeof f.repeat === 'object' && f.repeat ? ('until' in f.repeat ? f.repeat.until : f.repeat.count) : '');
   const switchOf = (f: FieldModel) => f.type as unknown as { switch?: unknown; cases?: Record<string, string>; default?: string };
@@ -193,13 +194,20 @@
                 {#each PRIMITIVE_GROUPS as g (g.label)}
                   <optgroup label={g.label}>{#each g.types as ty (ty)}<option value={ty}>{ty}</option>{/each}</optgroup>
                 {/each}
+                <optgroup label="Computed"><option value="value">value (no bytes)</option></optgroup>
                 {#if userTypes.length > 0}<optgroup label="Types">{#each userTypes as ty (ty)}<option value={ty}>{sanitizeText(ty, 64)}</option>{/each}</optgroup>{/if}
                 <option value="__switch__">switch…</option>
                 {#if !isSwitch(f) && !known(typeValue(f))}<option value={typeValue(f)}>{sanitizeText(typeValue(f) || '(none)', 64)}</option>{/if}
               </select>
               {#if msgs(i, 'type')}<div class="fb">{sanitizeText(msgs(i, 'type')!, 300)}</div>{/if}
             </td>
-            <td><ExprInput numeric value={f.size} label="Size of field {i + 1}" disabled={readOnly} suggestions={[...exprSuggestions(model, typeName, i), 'eos']} issue={msgs(i, 'size')} onCommit={(v) => patch(i, { size: v as never })} /></td>
+            <td>
+              {#if isValue(f)}
+                <ExprInput value={f.value} label="Value of field {i + 1}" placeholder="expression" disabled={readOnly} suggestions={exprSuggestions(model, typeName, i)} issue={msgs(i, 'value')} onCommit={(v) => patch(i, { value: v as never })} />
+              {:else}
+                <ExprInput numeric value={f.size} label="Size of field {i + 1}" disabled={readOnly} suggestions={[...exprSuggestions(model, typeName, i), 'eos']} issue={msgs(i, 'size')} onCommit={(v) => patch(i, { size: v as never })} />
+              {/if}
+            </td>
             <td class="rep">
               <select disabled={readOnly} aria-label="Repeat of field {i + 1}" value={repKind(f)} onchange={(e) => changeRepeat(i, (e.currentTarget as HTMLSelectElement).value, String(repText(f) ?? ''))}>
                 <option value="">once</option>

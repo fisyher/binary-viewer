@@ -78,7 +78,10 @@ const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype']);
 const META_KEYS = ['schemaVersion', 'id', 'name', 'endian', 'extensions', 'detect', 'doc', 'root'] as const;
 const TOP_ORDER = [...META_KEYS, 'types', 'enums'];
 const TYPE_ORDER = ['doc', 'fields'];
-export const FIELD_ORDER = ['name', 'type', 'size', 'terminator', 'encoding', 'at', 'if', 'repeat', 'enum', 'bits', 'expect', 'assert', 'doc'];
+export const FIELD_ORDER = ['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'assert', 'doc'];
+const FIND_ORDER = ['bytes', 'mask', 'from', 'window', 'direction', 'accept'];
+const IFMAGIC_ORDER = ['at', 'bytes', 'mask'];
+const REF_ORDER = ['type', 'at', 'doc'];
 const SWITCH_ORDER = ['switch', 'cases', 'default'];
 const DETECT_ORDER = ['at', 'bytes', 'mask'];
 const BIT_ORDER = ['name', 'offset', 'width', 'doc'];
@@ -184,6 +187,9 @@ function fieldJson(f: FieldModel): Rec {
   if (isRec(o.type)) o.type = ordered(o.type, SWITCH_ORDER);
   if (o.bits !== undefined) o.bits = orderedList(o.bits, BIT_ORDER);
   if (o.assert !== undefined) o.assert = orderedList(o.assert, ASSERT_ORDER);
+  if (isRec(o.find)) o.find = ordered(o.find, FIND_ORDER);
+  if (isRec(o.ifMagic)) o.ifMagic = ordered(o.ifMagic, IFMAGIC_ORDER);
+  if (isRec(o.ref)) o.ref = ordered(o.ref, REF_ORDER);
   return ordered(o, FIELD_ORDER);
 }
 
@@ -457,6 +463,12 @@ export function editField(model: BuilderModel, typeName: string, index: number, 
  */
 export function setFieldType(model: BuilderModel, typeName: string, index: number, type: FieldDef['type']): BuilderModel {
   const patch: Record<string, unknown> = { type };
+  if (type === 'value') {
+    // a computed field consumes no bytes and is not placed: drop everything that would make the validator object
+    for (const k of ['size', 'encoding', 'terminator', 'bits', 'enum', 'expect', 'fatal', 'repeat', 'at', 'find']) patch[k] = undefined;
+    return editField(model, typeName, index, patch as Partial<FieldModel>);
+  }
+  patch.value = undefined;
   const isPrim = typeof type === 'string' && /^[usf][1248](le|be)?$/.test(type);
   const isInt = typeof type === 'string' && /^[us][1248](le|be)?$/.test(type);
   if (isPrim) patch.size = undefined;
@@ -606,7 +618,10 @@ export interface Reference {
   typeName: string;
   fieldIndex: number;
   fieldName: string;
-  /** Which expression of the field: `size`, `at`, `if`, `repeat.count`, `repeat.until`, `type.switch`, `type.cases[k]`, `assert[i].expr`. */
+  /**
+   * Which expression of the field: `size`, `at`, `if`, `repeat.count`, `repeat.until`, `type.switch`, `type.cases[k]`,
+   * `assert[i].expr`, `find.from`, `find.accept[i]`, `ifMagic.at`, `value`, `ref.at`.
+   */
   slot: string;
   expr: string;
 }
@@ -629,6 +644,13 @@ export function fieldExpressions(f: FieldDef): Array<{ slot: string; expr: strin
     if (isRec(f.type.cases)) for (const k of Object.keys(f.type.cases)) add(`type.cases[${k}]`, k);
   }
   if (Array.isArray(f.assert)) f.assert.forEach((a, i) => isRec(a) && add(`assert[${i}].expr`, a.expr));
+  if (isRec(f.find)) {
+    add('find.from', f.find.from);
+    if (Array.isArray(f.find.accept)) f.find.accept.forEach((a, i) => add(`find.accept[${i}]`, a));
+  }
+  if (isRec(f.ifMagic)) add('ifMagic.at', f.ifMagic.at);
+  add('value', f.value);
+  if (isRec(f.ref)) add('ref.at', f.ref.at);
   return out;
 }
 

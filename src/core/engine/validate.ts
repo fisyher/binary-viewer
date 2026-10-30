@@ -5,7 +5,7 @@
 import type { Expr } from './expr';
 import { DEFAULT_EXPR_LIMITS, freeNames, parseExpr } from './expr';
 import type { BitField, Encoding, FormatSpec, RepeatDef } from './schema';
-import { ENCODINGS, isBuiltinType, needsSpecEndian, parseEnumKey, parseHexBytes, primitiveInfo } from './schema';
+import { ENCODINGS, MAX_FIND_WINDOW, MAX_SIGNATURE_BYTES, isBuiltinType, needsSpecEndian, parseEnumKey, parseHexBytes, primitiveInfo } from './schema';
 
 export interface SpecLimits {
   maxSpecBytes: number;
@@ -20,6 +20,8 @@ export interface SpecLimits {
   maxEnumEntries: number;
   maxDocLength: number;
   maxBitFields: number;
+  /** Largest literal `find.window`. */
+  maxFindWindow: number;
 }
 
 export const DEFAULT_SPEC_LIMITS: SpecLimits = {
@@ -34,6 +36,7 @@ export const DEFAULT_SPEC_LIMITS: SpecLimits = {
   maxEnumEntries: 4096,
   maxDocLength: 20_000,
   maxBitFields: 64,
+  maxFindWindow: MAX_FIND_WINDOW,
 };
 
 export interface SpecIssue {
@@ -50,13 +53,17 @@ const EXT_RE = /^[a-z0-9_+-]{1,16}$/;
 const FORBIDDEN_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const TOP_KEYS = new Set(['schemaVersion', 'id', 'name', 'endian', 'extensions', 'detect', 'doc', 'root', 'types', 'enums']);
 const TYPE_KEYS = new Set(['doc', 'fields']);
-const FIELD_KEYS = new Set(['name', 'type', 'size', 'terminator', 'encoding', 'at', 'if', 'repeat', 'enum', 'bits', 'expect', 'doc', 'assert']);
+const FIELD_KEYS = new Set(['name', 'type', 'size', 'terminator', 'encoding', 'at', 'find', 'if', 'ifMagic', 'repeat', 'enum', 'bits', 'expect', 'fatal', 'value', 'ref', 'doc', 'assert']);
+const FIND_KEYS = new Set(['bytes', 'mask', 'from', 'window', 'direction', 'accept']);
+const IFMAGIC_KEYS = new Set(['at', 'bytes', 'mask']);
+const REF_KEYS = new Set(['type', 'at', 'doc']);
+const MAX_ACCEPT_TIERS = 8;
 const ASSERT_KEYS = new Set(['expr', 'level', 'message']);
-const RESERVED_WORDS = new Set(['and', 'or', 'not', 'null', 'true', 'false', 'min', 'max']);
+const RESERVED_WORDS = new Set(['and', 'or', 'not', 'null', 'true', 'false', 'min', 'max', 'lookup']);
 const SWITCH_KEYS = new Set(['switch', 'cases', 'default']);
 const DETECT_KEYS = new Set(['at', 'bytes', 'mask']);
 const BIT_KEYS = new Set(['name', 'offset', 'width', 'doc']);
-const RESERVED_EXPR_NAMES = new Set(['_parent', '_root', '_index', '_', '_io']);
+const RESERVED_EXPR_NAMES = new Set(['_parent', '_root', '_index', '_', '_io', '_start']);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -185,6 +192,7 @@ function checkMemberPaths(c: Ctx, ast: Expr, path: string): void {
     for (let i = 1; i < parts.length; i++) {
       if ('any' in st) return;
       const m = parts[i]!;
+      if (m === '_start') return; // every struct exposes its start offset
       const maps = st.types.map((t) => ({ t, fields: fieldsOfType(c, t) }));
       if (maps.some((x) => x.fields === null)) return;
       const having = maps.filter((x) => x.fields!.has(m));
@@ -205,9 +213,13 @@ function checkExprOrInt(c: Ctx, v: unknown, path: string, names: Set<string> | n
   } else checkExpr(c, v, path, names);
 }
 
-function checkTypeName(c: Ctx, name: unknown, path: string, specEndian: boolean, typeNames: Set<string>): void {
+function checkTypeName(c: Ctx, name: unknown, path: string, specEndian: boolean, typeNames: Set<string>, allowValue = false): void {
   if (typeof name !== 'string') {
     c.err(path, 'must be a type name string');
+    return;
+  }
+  if (name === 'value') {
+    if (!allowValue) c.err(path, '"value" is only valid as the type of a field, not inside a switch');
     return;
   }
   const prim = primitiveInfo(name);
@@ -372,7 +384,7 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
   const concrete: string[] = [];
   const t = f.type;
   if (typeof t === 'string') {
-    checkTypeName(c, t, `${p}.type`, x.specEndian, x.typeNames);
+    checkTypeName(c, t, `${p}.type`, x.specEndian, x.typeNames, true);
     concrete.push(t);
   } else if (isRecord(t)) {
     checkKeys(c, t, SWITCH_KEYS, `${p}.type`);
@@ -396,7 +408,7 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
 
   const isSwitch = isRecord(t);
   const hasSize = f.size !== undefined && f.size !== 'eos';
-  const guarded = hasSize || f.at !== undefined || f.if !== undefined || f.repeat !== undefined;
+  const guarded = hasSize || f.at !== undefined || f.find !== undefined || f.if !== undefined || f.ifMagic !== undefined || f.repeat !== undefined;
   for (const ct of concrete) if (x.typeNames.has(ct)) x.out.push({ to: ct, guarded, path: `${p}.type` });
 
   const prims = concrete.map((n) => primitiveInfo(n));
@@ -409,12 +421,19 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
   const anyStr = concrete.some((n) => n === 'str');
   const anyPrim = prims.some((q) => q !== null);
 
+  const isValue = single === 'value';
+  if (isValue && 'size' in f) c.err(`${p}.size`, '"value" fields take no bytes; remove "size"');
+  else if ('size' in f && 'repeat' in f) {
+    c.err(`${p}.size`, '"size" together with "repeat" is not supported (the size would be ignored); put the sized element in its own type and repeat that');
+  }
   if ('size' in f) {
-    if (f.size === 'eos') {
+    if (isValue) {
+      /* reported above */
+    } else if (f.size === 'eos') {
       /* ok for bytes/str/user types */
     } else checkExprOrInt(c, f.size, `${p}.size`, x.fieldNames);
     if (anyPrim && !anyStrOrBytes && !anyUser) c.err(`${p}.size`, 'primitive numeric types have a fixed size; remove "size"');
-  } else {
+  } else if (!isValue) {
     if (anyBytes) c.err(`${p}.size`, '"bytes" needs "size" (a number, an expression, or "eos")');
     if (anyStr && !('terminator' in f)) c.err(`${p}.size`, '"str" needs "size" or "terminator"');
   }
@@ -447,6 +466,28 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
   }
   if ('at' in f) checkExprOrInt(c, f.at, `${p}.at`, x.fieldNames);
   if ('if' in f) checkExpr(c, f.if, `${p}.if`, x.fieldNames);
+  if ('find' in f) {
+    if ('at' in f) c.err(`${p}.find`, '"find" and "at" both place the field; use only one');
+    if ('repeat' in f) c.err(`${p}.find`, '"find" cannot be combined with "repeat"');
+    if (isValue) c.err(`${p}.find`, '"value" fields are not placed; remove "find"');
+    validateFind(c, f.find, `${p}.find`, x, !isSwitch && typeof t === 'string' && x.typeNames.has(t) ? t : null);
+  }
+  if ('ifMagic' in f) validateIfMagic(c, f.ifMagic, `${p}.ifMagic`, x);
+  if (isValue) {
+    if ('at' in f) c.err(`${p}.at`, '"value" fields are not placed; remove "at"');
+    if ('repeat' in f) c.err(`${p}.repeat`, '"value" fields cannot repeat');
+    for (const k of ['terminator', 'encoding', 'enum', 'bits', 'expect', 'fatal'] as const) if (k in f) c.err(`${p}.${k}`, `"${k}" does not apply to a "value" field`);
+    if (typeof f.value !== 'string') c.err(`${p}.value`, 'a "value" field needs "value": an expression string');
+    else checkExpr(c, f.value, `${p}.value`, x.fieldNames);
+  } else if ('value' in f) c.err(`${p}.value`, '"value" is only valid on a field of type "value"');
+  if ('ref' in f) {
+    if ('repeat' in f) c.err(`${p}.ref`, '"ref" cannot be combined with "repeat" (put it on a field inside the element type)');
+    validateRef(c, f.ref, `${p}.ref`, x);
+  }
+  if ('fatal' in f && !isValue) {
+    if (typeof f.fatal !== 'boolean') c.err(`${p}.fatal`, 'must be true or false');
+    if (!('expect' in f)) c.err(`${p}.fatal`, '"fatal" only applies together with "expect"');
+  }
 
   if ('repeat' in f) {
     const r = f.repeat as RepeatDef | unknown;
@@ -500,6 +541,59 @@ function validateField(c: Ctx, f: unknown, p: string, x: FieldCtx): void {
       if (typeof e === 'number' ? !Number.isSafeInteger(e) : parseEnumKey(e) === null) c.err(`${p}.expect`, 'must be an integer (or a decimal/0x string for 64-bit values)');
     } else if (typeof e !== 'number') c.err(`${p}.expect`, 'must be a number for float types');
   }
+}
+
+function checkHexPair(c: Ctx, o: Record<string, unknown>, p: string): void {
+  const bytes = typeof o.bytes === 'string' ? parseHexBytes(o.bytes, MAX_SIGNATURE_BYTES) : null;
+  if (!bytes) c.err(`${p}.bytes`, `must be 1-${MAX_SIGNATURE_BYTES} hex bytes, e.g. "50 4B 05 06"`);
+  if ('mask' in o) {
+    const m = typeof o.mask === 'string' ? parseHexBytes(o.mask, MAX_SIGNATURE_BYTES) : null;
+    if (!m) c.err(`${p}.mask`, 'must be hex bytes');
+    else if (bytes && m.length !== bytes.length) c.err(`${p}.mask`, 'must have the same length as "bytes"');
+    else if (m.every((b) => b === 0)) c.err(`${p}.mask`, 'must not be all zero (it would match everywhere)');
+  }
+}
+
+function validateFind(c: Ctx, v: unknown, p: string, x: FieldCtx, ownType: string | null): void {
+  if (!isRecord(v)) return c.err(p, 'must be an object {bytes, from, window, direction, accept?}');
+  checkKeys(c, v, FIND_KEYS, p);
+  checkHexPair(c, v, p);
+  if (!('from' in v)) c.err(`${p}.from`, 'is required (an expression for the absolute offset to search from)');
+  else checkExprOrInt(c, v.from, `${p}.from`, x.fieldNames);
+  if (typeof v.window !== 'number' || !Number.isSafeInteger(v.window) || v.window < 1) c.err(`${p}.window`, 'must be a positive integer number of bytes');
+  else if (v.window > c.lim.maxFindWindow) c.err(`${p}.window`, `too large (${v.window} > ${c.lim.maxFindWindow} bytes)`);
+  if (v.direction !== 'backward' && v.direction !== 'forward') c.err(`${p}.direction`, 'must be "backward" or "forward"');
+  if ('accept' in v) {
+    if (!Array.isArray(v.accept) || v.accept.length === 0 || v.accept.length > MAX_ACCEPT_TIERS) {
+      return c.err(`${p}.accept`, `must be an array of 1-${MAX_ACCEPT_TIERS} expression strings`);
+    }
+    // Accept expressions see the probe-parsed field, so a user type's own field names are what they may mention.
+    const own = ownType !== null ? fieldsOfType(c, ownType) : null;
+    const saved = c.curFields;
+    c.curFields = own;
+    try {
+      (v.accept as unknown[]).forEach((e, i) => checkExpr(c, e, `${p}.accept[${i}]`, own ? new Set(own.keys()) : null));
+    } finally {
+      c.curFields = saved;
+    }
+  }
+}
+
+function validateIfMagic(c: Ctx, v: unknown, p: string, x: FieldCtx): void {
+  if (!isRecord(v)) return c.err(p, 'must be an object {at, bytes, mask?}');
+  checkKeys(c, v, IFMAGIC_KEYS, p);
+  checkHexPair(c, v, p);
+  if (!('at' in v)) c.err(`${p}.at`, 'is required (an expression for the absolute offset of the bytes)');
+  else checkExprOrInt(c, v.at, `${p}.at`, x.fieldNames);
+}
+
+function validateRef(c: Ctx, v: unknown, p: string, x: FieldCtx): void {
+  if (!isRecord(v)) return c.err(p, 'must be an object {type, at, doc?}');
+  checkKeys(c, v, REF_KEYS, p);
+  if (typeof v.type !== 'string' || !x.typeNames.has(v.type)) c.err(`${p}.type`, `must be the name of a type defined in "types"${typeof v.type === 'string' ? ` (unknown "${v.type}")` : ''}`);
+  if (!('at' in v)) c.err(`${p}.at`, 'is required (an expression for the absolute offset of the target)');
+  else checkExprOrInt(c, v.at, `${p}.at`, x.fieldNames);
+  optDoc(c, v, p);
 }
 
 /** Reject cycles of unconditional nesting and over-deep nesting. Edges with `size`/`at`/`if`/`repeat` are guarded. */

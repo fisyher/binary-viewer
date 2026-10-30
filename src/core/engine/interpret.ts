@@ -21,15 +21,24 @@
  *   siblings and `at` fields are kept) and the continuation count is unknown. A step/node/abort Halt during a skim
  *   ends the whole parse with a partial tree and no continuation for that array.
  * - Elements are attached to their array only once fully parsed, so a Halt never leaves a half-built element.
+ * - `find` places a field by a bounded signature search (the whole window is read in <= 64 KiB chunks through the
+ *   normal read budget); with `accept`, candidates are probe-parsed in a throw-away run with its own small budget (no
+ *   nodes, no diagnostics) and the probe's reads are charged to the real run. A failed search is a field error like a
+ *   failed `at`.
+ * - `ifMagic` is a quiet guard: a position that is negative, unsafe, null or outside the enclosing stream, or bytes that
+ *   cannot be read, simply mean "no" (the field reads as null). `value` fields consume nothing; an expression error is
+ *   reported on their node and they read as null, never failing the struct.
+ * - `ref` records `{typeName, offset}` on the node and retains the owning scope; nothing is parsed until `expandRef`,
+ *   which parses the target type over the WHOLE file with that scope as `_parent` and attaches the result under the node.
  */
 import type { ByteSource } from '../byte-source';
 import { MAX_READ } from '../byte-source';
 import { hexBytes, readUint, viewOf } from '../inspector/bytes';
 import type { EvalEnv, Expr, ObjValue, Value } from './expr';
 import { ExprError, DEFAULT_EXPR_LIMITS, evalExpr, parseExpr, toBigInt, toNonNegativeInt, valuesEqual, describeValue } from './expr';
-import { staticElemSize } from './layout';
+import { isPlaced, staticElemSize } from './layout';
 import type { Encoding, FieldDef, FormatSpec } from './schema';
-import { ownGet, parseEnumKey, primitiveInfo } from './schema';
+import { MAX_FIND_WINDOW, MAX_SIGNATURE_BYTES, ownGet, parseEnumKey, parseHexBytes, primitiveInfo } from './schema';
 import type { PrimitiveInfo } from './schema';
 
 // ------------------------------------------------------------------ public types
@@ -67,11 +76,15 @@ export interface Node {
   /** `expect` mismatches; parsing continued. */
   validation?: string[];
   doc?: string;
+  /** Deferred pointer (field `ref`): nothing was parsed; `expandRef` parses the target and sets `loaded`. */
+  ref?: { typeName: string; offset: number; loaded?: boolean };
+  /** Set on the target node `expandRef` attaches; `findNodeAt` prefers the primary tree over such subtrees. */
+  fromRef?: true;
 }
 
 export interface Diagnostic {
   severity: 'error' | 'warning';
-  code: 'read' | 'expr' | 'bounds' | 'validation' | 'cycle' | 'limit' | 'aborted' | 'array' | 'spec' | 'lazy' | 'internal' | 'parse';
+  code: 'read' | 'expr' | 'bounds' | 'validation' | 'cycle' | 'limit' | 'aborted' | 'array' | 'spec' | 'lazy' | 'internal' | 'parse' | 'find' | 'ref';
   message: string;
   path?: string;
   offset?: number;
@@ -122,6 +135,18 @@ export interface Limits {
   maxDiagnostics: number;
   exprMaxLength: number;
   exprMaxDepth: number;
+  /** Largest `find.window` the interpreter will scan. */
+  maxFindWindow: number;
+  /** Most `find` candidates probed (and remembered) per search; further matches are only counted. */
+  maxFindCandidates: number;
+  /** Interpreter steps one `find` probe may use (also caps the nodes it may build). */
+  maxProbeSteps: number;
+  /** Elements all `lookup()` calls together may examine per parse / per expansion call. */
+  maxLookupScan: number;
+  /** Most `ref` nodes retained (for later `expandRef`) per parse. */
+  maxRefs: number;
+  /** Nodes all `expandRef` calls together may create per parse result (each call also has the usual per-call budgets). */
+  maxRefNodesTotal: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -140,6 +165,12 @@ export const DEFAULT_LIMITS: Limits = {
   maxDiagnostics: 1000,
   exprMaxLength: DEFAULT_EXPR_LIMITS.maxLength,
   exprMaxDepth: DEFAULT_EXPR_LIMITS.maxDepth,
+  maxFindWindow: MAX_FIND_WINDOW,
+  maxFindCandidates: 256,
+  maxProbeSteps: 10_000,
+  maxLookupScan: 5_000_000,
+  maxRefs: 100_000,
+  maxRefNodesTotal: 1_000_000,
 };
 
 export interface ParseOptions {
@@ -165,6 +196,8 @@ class FieldError extends Error {
   constructor(
     message: string,
     readonly code: Diagnostic['code'] = 'parse',
+    /** A read that returned fewer bytes than asked (the data is not there), as opposed to a failing source. */
+    readonly short = false,
   ) {
     super(message);
   }
@@ -182,19 +215,35 @@ class Scope implements ObjValue {
   constructor(
     readonly parent: Scope | null,
     readonly index?: number,
+    /** Absolute offset where the struct begins (`_start`). */
+    readonly start: number = 0,
   ) {
     this.root = parent ? parent.root : this;
   }
   get(name: string): Value | undefined {
-    return this.fields.get(name);
+    return name === '_start' ? BigInt(this.start) : this.fields.get(name);
   }
 }
 
 class ListObj implements ObjValue {
   readonly isObj = true as const;
-  constructor(private readonly len: number | null) {}
+  /** `elems`: scopes of the elements that were KEPT (parsed eagerly); lazy / skimmed elements are not searchable. */
+  constructor(
+    private readonly len: number | null,
+    private readonly elems: readonly Scope[] = [],
+  ) {}
   get(name: string): Value | undefined {
     return name === 'length' && this.len !== null ? BigInt(this.len) : undefined;
+  }
+  lookup(member: string, value: Value, budget: { left: number; signal?: AbortSignal }): Value {
+    let n = 0;
+    for (const el of this.elems) {
+      if (--budget.left < 0) throw new ExprError('lookup scan budget exhausted');
+      if ((++n & 1023) === 0 && budget.signal?.aborted) throw new ExprError('aborted');
+      const v = el.fields.get(member);
+      if (v !== undefined && valuesEqual(v, value)) return el;
+    }
+    return null;
   }
 }
 
@@ -228,6 +277,8 @@ interface ArrayState {
   ok: boolean;
   /** Where skimmed (not retained) elements begin: resume point for expandLazy. */
   boundary: { index: number; pos: number } | null;
+  /** Scopes of kept struct elements, for `lookup` (only while the array is first parsed; undefined when resumed). */
+  elems?: Scope[];
 }
 
 interface LazyEntry {
@@ -250,7 +301,29 @@ interface Shared {
   exprCache: Map<string, Expr>;
   enumMaps: Map<string, Map<bigint, string>>;
   lazies: Map<number, LazyEntry>;
+  refs: Map<number, RefEntry>;
+  refKeys: Map<string, number>;
+  /** Nodes created by all expandRef calls so far. */
+  refNodes: number;
+  sigCache: Map<string, Sig>;
   result: ParseResult | null;
+}
+
+interface RefEntry {
+  node: Node;
+  typeName: string;
+  offset: number;
+  /** Scope of the struct that owns the ref field: `_parent` of the expanded target. */
+  scope: Scope;
+  path: string;
+  /** The attached target node(s) once expanded. */
+  expanded: Node[] | null;
+  lock: Promise<void>;
+}
+
+interface Sig {
+  want: Uint8Array;
+  mask: Uint8Array | null;
 }
 
 interface Run {
@@ -264,6 +337,12 @@ interface Run {
   active: Set<string>;
   skim: number;
   skimNodes: number;
+  /** A throw-away `find` probe: nothing it builds is retained or registered. */
+  probe: boolean;
+  /** Shared budget of `lookup` element visits. */
+  scan: { left: number; signal?: AbortSignal };
+  /** Private id counter of a probe (ids are never shared with the real tree). */
+  probeIds: number;
 }
 
 const internals = new WeakMap<ParseResult, Shared>();
@@ -281,6 +360,9 @@ function makeRun(shared: Shared, signal?: AbortSignal): Run {
     active: new Set(),
     skim: 0,
     skimNodes: 0,
+    probe: false,
+    scan: { left: shared.limits.maxLookupScan, signal },
+    probeIds: -2,
   };
 }
 
@@ -319,7 +401,7 @@ function newNode(run: Run, attach: Node | null, name: string, typeName: string, 
   } else if (++run.skimNodes > run.limits.maxSkimNodes) {
     throw new SkimOverflow(`skim budget exhausted (${run.limits.maxSkimNodes} nodes)`);
   }
-  const node: Node = { id: run.shared.nextId++, name, typeName, offset, size };
+  const node: Node = { id: run.probe ? run.probeIds-- : run.shared.nextId++, name, typeName, offset, size };
   if (attach) (attach.children ??= []).push(node);
   return node;
 }
@@ -394,6 +476,8 @@ function makeEnv(scope: Scope, io: Io, current?: Value, index?: number): EvalEnv
           return scope.parent ?? undefined;
         case '_root':
           return scope.root;
+        case '_start':
+          return BigInt(scope.start);
         case '_index': {
           const i = index ?? scope.index;
           return i === undefined ? undefined : BigInt(i);
@@ -408,6 +492,7 @@ function makeEnv(scope: Scope, io: Io, current?: Value, index?: number): EvalEnv
 }
 
 function ev(run: Run, src: number | string, env: EvalEnv): Value {
+  env.scan ??= run.scan;
   return evalExpr(getExpr(run.shared, src), env);
 }
 
@@ -425,7 +510,7 @@ async function readAt(run: Run, offset: number, length: number): Promise<Uint8Ar
   }
   run.stats.reads++;
   run.stats.bytesRead += data.length;
-  if (data.length !== length) throw new FieldError(`short read at offset ${offset}: wanted ${length} bytes, got ${data.length}`, 'read');
+  if (data.length !== length) throw new FieldError(`short read at offset ${offset}: wanted ${length} bytes, got ${data.length}`, 'read', true);
   return data;
 }
 
@@ -461,8 +546,17 @@ function enumMap(shared: Shared, name: string): Map<bigint, string> {
 
 // ------------------------------------------------------------------ string decoding (lossy, never throws)
 
+/** IBM code page 437, bytes 0x80..0xFF (0x00..0x7F decode as ASCII, control codes included). */
+const CP437_HIGH =
+  'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0';
+
 function decodeString(bytes: Uint8Array, enc: Encoding): string {
   switch (enc) {
+    case 'cp437': {
+      let s = '';
+      for (const b of bytes) s += b < 0x80 ? String.fromCharCode(b) : CP437_HIGH[b - 0x80]!;
+      return s;
+    }
     case 'ascii': {
       let s = '';
       for (const b of bytes) s += b < 0x80 ? String.fromCharCode(b) : '�';
@@ -568,7 +662,7 @@ async function parseStructBody(run: Run, node: Node, typeName: string, pl: Place
     let ok = true;
     let lost = false; // a sequential field failed: only `at` fields are still meaningful
     for (const f of def.fields) {
-      if (lost && f.at === undefined) {
+      if (lost && !isPlaced(f)) {
         pl.scope.fields.set(f.name, null); // skipped after a failure: defined as null, never parsed
         continue;
       }
@@ -578,7 +672,7 @@ async function parseStructBody(run: Run, node: Node, typeName: string, pl: Place
       node.size = Math.max(node.size, cursor - pos);
       if (!r.ok) {
         ok = false;
-        if (f.at === undefined) lost = true;
+        if (!isPlaced(f)) lost = true;
       }
     }
     return { end: cursor, ok };
@@ -591,11 +685,16 @@ async function parseField(run: Run, f: FieldDef, parent: Node, pl: Place, cursor
   const path = `${pl.path}.${f.name}`;
   let pos = cursor;
   const io0: Io = { start: pl.stream.start, end: pl.stream.end, pos: cursor, unknownPos: lost };
-  if (f.if !== undefined) {
+  if (f.if !== undefined || f.ifMagic !== undefined) {
     try {
-      const c = ev(run, f.if, makeEnv(pl.scope, io0));
-      if (typeof c !== 'boolean') throw new FieldError(`"if" must evaluate to a boolean, got ${describeValue(c)}`, 'expr');
-      if (!c) {
+      let pass = true;
+      if (f.if !== undefined) {
+        const c = ev(run, f.if, makeEnv(pl.scope, io0));
+        if (typeof c !== 'boolean') throw new FieldError(`"if" must evaluate to a boolean, got ${describeValue(c)}`, 'expr');
+        pass = c;
+      }
+      if (pass && f.ifMagic !== undefined) pass = await checkIfMagic(run, f.ifMagic, pl, io0);
+      if (!pass) {
         pl.scope.fields.set(f.name, null); // skipped fields stay defined as null
         return { end: cursor, ok: true };
       }
@@ -606,17 +705,25 @@ async function parseField(run: Run, f: FieldDef, parent: Node, pl: Place, cursor
       return { end: cursor, ok: true }; // the cursor is unaffected, so the struct carries on
     }
   }
+  if (f.type === 'value') return parseComputed(run, f, parent, pl, cursor, path, io0);
+  let notes: string[] = [];
   try {
     if (f.at !== undefined) {
       const a = toNonNegativeInt(ev(run, f.at, makeEnv(pl.scope, io0)), '"at"');
       pos = a;
       if (a > run.source.size) throw new FieldError(`"at" ${a} is outside the file (size ${run.source.size})`, 'bounds');
       if (a < pl.stream.start || a > pl.stream.end) throw new FieldError(`"at" ${a} is outside the enclosing substream [${pl.stream.start}, ${pl.stream.end})`, 'bounds');
+    } else if (f.find !== undefined) {
+      const found = await resolveFind(run, f, pl, io0);
+      pos = found.pos;
+      notes = found.notes;
     }
     const r = f.repeat !== undefined ? await parseRepeat(run, f, parent, pl, pos) : await parseValue(run, f, f.name, parent, pl, pos, undefined);
     if (r.val !== undefined) pl.scope.fields.set(f.name, r.val);
     else if (!r.ok) pl.scope.fields.set(f.name, null);
-    const end = f.at !== undefined ? cursor : r.end;
+    const end = isPlaced(f) ? cursor : r.end;
+    for (const m of notes) setError(run, r.node, path, 'find', m, 'warning');
+    if (r.ok) attachRef(run, f, r.node, path, pl, r.val, { start: pl.stream.start, end: pl.stream.end, pos: end, unknownPos: lost });
     if (f.assert && r.ok && r.val !== undefined) runAsserts(run, f, r.node, path, pl, end, r.val, lost);
     return { end, ok: r.ok };
   } catch (e) {
@@ -624,6 +731,235 @@ async function parseField(run: Run, f: FieldDef, parent: Node, pl: Place, cursor
     errorNode(run, parent, f.name, typeLabel(f), pos, path, code, message);
     pl.scope.fields.set(f.name, null);
     return { end: cursor, ok: false };
+  }
+}
+
+/** A `value` field: consumes nothing, defines its name from an expression; an expression error never fails the struct. */
+function parseComputed(run: Run, f: FieldDef, parent: Node, pl: Place, cursor: number, path: string, io: Io): { end: number; ok: boolean } {
+  const node = newNode(run, parent, f.name, 'value', cursor, 0);
+  if (f.doc !== undefined) node.doc = f.doc;
+  let val: Value = null;
+  let failed = false;
+  try {
+    if (typeof f.value !== 'string') throw new FieldError('a "value" field needs a "value" expression', 'spec');
+    val = ev(run, f.value, makeEnv(pl.scope, io));
+  } catch (e) {
+    const { code, message } = classify(e);
+    setError(run, node, path, code, message);
+    failed = true;
+    val = null;
+  }
+  if (val === null) node.display = 'null';
+  else if (typeof val === 'bigint') {
+    node.value = val >= -MAX_SAFE_BIG && val <= MAX_SAFE_BIG ? Number(val) : val;
+    node.display = formatInt(val, false);
+  } else if (typeof val === 'number') {
+    node.value = val;
+    node.display = String(val);
+  } else if (typeof val === 'string') {
+    node.value = val;
+    node.display = previewString(val);
+  } else if (typeof val === 'boolean') node.display = String(val);
+  else node.display = '(struct)';
+  pl.scope.fields.set(f.name, val);
+  if (!failed) {
+    attachRef(run, f, node, path, pl, val, io);
+    if (f.assert) runAsserts(run, f, node, path, pl, io.pos, val, io.unknownPos);
+  }
+  return { end: cursor, ok: true };
+}
+
+const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+
+function getSig(shared: Shared, bytes: unknown, mask: unknown): Sig {
+  const key = `${String(bytes)}|${String(mask)}`;
+  let sig = shared.sigCache.get(key);
+  if (!sig) {
+    const want = typeof bytes === 'string' ? parseHexBytes(bytes, MAX_SIGNATURE_BYTES) : null;
+    const m = mask === undefined ? null : typeof mask === 'string' ? parseHexBytes(mask, MAX_SIGNATURE_BYTES) : undefined;
+    if (!want || m === undefined || (m !== null && (m.length !== want.length || m.every((b) => b === 0)))) throw new FieldError('invalid signature bytes or mask', 'spec');
+    sig = { want, mask: m };
+    if (shared.sigCache.size < 1000) shared.sigCache.set(key, sig);
+  }
+  return sig;
+}
+
+function sigAt(buf: Uint8Array, i: number, sig: Sig): boolean {
+  for (let k = 0; k < sig.want.length; k++) {
+    const m = sig.mask ? sig.mask[k]! : 0xff;
+    if ((buf[i + k]! & m) !== (sig.want[k]! & m)) return false;
+  }
+  return true;
+}
+
+/** `ifMagic`: true when the bytes match. Position problems and unreadable bytes are a quiet false; bad expressions throw. */
+async function checkIfMagic(run: Run, g: NonNullable<FieldDef['ifMagic']>, pl: Place, io: Io): Promise<boolean> {
+  const sig = getSig(run.shared, g.bytes, g.mask);
+  const v = ev(run, g.at, makeEnv(pl.scope, io));
+  if (v === null) return false;
+  const a = toBigInt(v, '"ifMagic.at"');
+  if (a < 0n || a > MAX_SAFE_BIG) return false;
+  const at = Number(a);
+  if (at < pl.stream.start || at + sig.want.length > pl.stream.end) return false;
+  let got: Uint8Array;
+  try {
+    got = await readAt(run, at, sig.want.length);
+  } catch (e) {
+    // Only a short read (the data really is not there) is a quiet no; an I/O failure is reported on the field.
+    if (e instanceof FieldError && e.short) return false;
+    throw e;
+  }
+  return sigAt(got, 0, sig);
+}
+
+const FIND_CHUNK = 64 * 1024;
+
+interface FoundAt {
+  pos: number;
+  /** Warnings to attach to the field's node once it exists. */
+  notes: string[];
+}
+
+/** Resolve a field's `find` to a position. Throws FieldError when nothing (acceptable) is found. */
+async function resolveFind(run: Run, f: FieldDef, pl: Place, io: Io): Promise<FoundAt> {
+  const fd = f.find!;
+  const sig = getSig(run.shared, fd.bytes, fd.mask);
+  const n = sig.want.length;
+  const from = toNonNegativeInt(ev(run, fd.from, makeEnv(pl.scope, io)), '"find.from"');
+  const window = fd.window;
+  if (!Number.isSafeInteger(window) || window < 1) throw new FieldError('"find.window" must be a positive integer', 'spec');
+  if (window > run.limits.maxFindWindow) throw new FieldError(`"find.window" ${window} exceeds the limit of ${run.limits.maxFindWindow} bytes`, 'limit');
+  if (fd.direction !== 'backward' && fd.direction !== 'forward') throw new FieldError('"find.direction" must be "backward" or "forward"', 'spec');
+  const backward = fd.direction === 'backward';
+  const lo = backward ? Math.max(pl.stream.start, from - window) : Math.max(pl.stream.start, from);
+  const hi = backward ? Math.min(pl.stream.end, from) : Math.min(pl.stream.end, from + window);
+
+  // Scan the whole (clipped) window in chunks that overlap by n-1 bytes, collecting matches nearest-to-`from` first.
+  const cap = Math.max(1, run.limits.maxFindCandidates);
+  const cands: number[] = [];
+  let total = 0;
+  const hit = (at: number): void => {
+    total++;
+    if (cands.length < cap) cands.push(at);
+  };
+  if (hi - lo >= n) {
+    let edge = backward ? hi : lo;
+    for (;;) {
+      const a = backward ? Math.max(lo, edge - FIND_CHUNK) : edge;
+      const b = backward ? edge : Math.min(hi, edge + FIND_CHUNK);
+      const buf = await readAt(run, a, b - a);
+      if (backward) {
+        for (let i = buf.length - n; i >= 0; i--) if (sigAt(buf, i, sig)) hit(a + i);
+        if (a <= lo) break;
+        edge = a + n - 1;
+      } else {
+        for (let i = 0; i + n <= buf.length; i++) if (sigAt(buf, i, sig)) hit(a + i);
+        if (b >= hi) break;
+        edge = b - (n - 1);
+      }
+    }
+  }
+  const where = `${hi - lo}-byte window ${backward ? 'before' : 'from'} offset ${from}`;
+  if (cands.length === 0) throw new FieldError(`signature ${fd.bytes.trim()} not found in the ${where}`, 'find');
+
+  let pick: number | null = null;
+  const notes: string[] = [];
+  const capped = total > cands.length;
+  if (fd.accept === undefined) pick = cands[0]!;
+  else {
+    const probes = new Map<number, ProbeResult>();
+    tiers: for (const tier of fd.accept) {
+      for (const cand of cands) {
+        await tick(run);
+        let pr = probes.get(cand);
+        if (!pr) probes.set(cand, (pr = await probeField(run, f, pl, cand)));
+        if (probeAccepts(run, tier, pr, pl, cand)) {
+          pick = cand;
+          break tiers;
+        }
+      }
+    }
+    if (pick === null) {
+      throw new FieldError(
+        `no candidate in the ${where} was accepted (${cands.length} of ${total} match${total === 1 ? '' : 'es'} probed${capped ? `; candidate limit ${cap} reached, ${total - cands.length} later match(es) not examined` : ''})`,
+        'find',
+      );
+    }
+  }
+  if (total > 1) notes.push(`${total - 1} other match${total === 2 ? '' : 'es'} in search window`);
+  if (capped && fd.accept !== undefined) notes.push(`candidate limit (${cap}) reached; ${total - cands.length} later match(es) were not examined`);
+  return { pos: pick, notes };
+}
+
+interface ProbeResult {
+  /** The probe-parsed value (a Scope for struct types); undefined when parsing could not even start. */
+  val: Value | undefined;
+  end: number;
+}
+
+/** Parse the field's own type at `cand` in a throw-away run: no nodes kept, no diagnostics, own small budget. */
+async function probeField(run: Run, f: FieldDef, pl: Place, cand: number): Promise<ProbeResult> {
+  const p = makeRun(run.shared, run.signal);
+  p.probe = true;
+  p.scan = run.scan; // a probe spends the real run's lookup budget (nested probes too)
+  const P = run.limits.maxProbeSteps;
+  p.limits = {
+    ...run.limits,
+    maxNodes: P,
+    maxSkimNodes: P,
+    maxSteps: P,
+    maxReads: Math.min(1000, run.limits.maxReads - run.stats.reads),
+    maxBytesRead: Math.min(1 << 20, run.limits.maxBytesRead - run.stats.bytesRead),
+  };
+  const holder: Node = { id: -1, name: '', typeName: '', offset: 0, size: 0, children: [] };
+  const out: ProbeResult = { val: undefined, end: cand };
+  try {
+    const r = await parseValue(p, f, f.name, holder, pl, cand, undefined);
+    out.val = r.val;
+    out.end = r.end;
+  } catch (e) {
+    if (e instanceof Halt && e.code === 'aborted') throw e;
+    // anything else (probe budget, bad data, bad spec) just means this candidate has no usable value
+  }
+  run.stats.reads += p.stats.reads;
+  run.stats.bytesRead += p.stats.bytesRead;
+  run.stats.steps += p.stats.steps;
+  if (run.stats.steps > run.limits.maxSteps) throw new Halt('limit', `step budget exhausted (${run.limits.maxSteps}); the tree is partial`);
+  return out;
+}
+
+/** Evaluate one `accept` tier in a probe's scope (its fields, `_start`, `_io`); any failure means "not accepted". */
+function probeAccepts(run: Run, tier: string, pr: ProbeResult, pl: Place, cand: number): boolean {
+  if (pr.val === undefined) return false;
+  const scope = pr.val instanceof Scope ? pr.val : new Scope(pl.scope, undefined, cand);
+  try {
+    return ev(run, tier, makeEnv(scope, { start: pl.stream.start, end: pl.stream.end, pos: pr.end }, pr.val)) === true;
+  } catch (e) {
+    if (e instanceof Halt) throw e;
+    return false;
+  }
+}
+
+/** Record `ref` on a freshly parsed node (a bad target is a warning, never an error). */
+function attachRef(run: Run, f: FieldDef, node: Node, path: string, pl: Place, val: Value | undefined, io: Io): void {
+  const ref = f.ref;
+  if (ref === undefined) return;
+  try {
+    const at = toNonNegativeInt(ev(run, ref.at, makeEnv(pl.scope, io, val)), '"ref.at"');
+    if (at > run.source.size) throw new FieldError(`target offset ${at} is outside the file (size ${run.source.size})`, 'bounds');
+    const retain = run.skim === 0 && !run.probe;
+    // Retention is keyed by tree path: reloading a lazy page replaces the old entry instead of accumulating.
+    const old = retain ? run.shared.refKeys.get(path) : undefined;
+    if (retain && old === undefined && run.shared.refs.size >= run.limits.maxRefs) throw new FieldError(`too many references kept (${run.limits.maxRefs}); this one cannot be opened`, 'limit');
+    node.ref = { typeName: ref.type, offset: at };
+    if (retain) {
+      if (old !== undefined) run.shared.refs.delete(old);
+      run.shared.refKeys.set(path, node.id);
+    }
+    if (retain) run.shared.refs.set(node.id, { node, typeName: ref.type, offset: at, scope: pl.scope, path, expanded: null, lock: Promise.resolve() });
+  } catch (e) {
+    const { code, message } = classify(e);
+    setError(run, node, path, code === 'limit' ? 'limit' : 'ref', `ref: ${message}`, 'warning');
   }
 }
 
@@ -682,13 +1018,14 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
     const bytes = await readAt(run, pos, prim.size);
     const node = newNode(run, attach, name, typeName, pos, prim.size);
     let val: Value;
+    let stop = false;
     if (prim.kind === 'float') {
       const dv = viewOf(bytes);
       const x = prim.size === 4 ? dv.getFloat32(0, le) : dv.getFloat64(0, le);
       node.value = x;
       node.display = String(x);
       val = x;
-      checkExpect(run, f, node, path, x, prim.size === 4);
+      stop = checkExpect(run, f, node, path, x, prim.size === 4);
     } else {
       const u = readUint(bytes, 0, prim.size, le)!;
       const big = prim.signed ? BigInt.asIntN(prim.size * 8, u) : u;
@@ -710,9 +1047,9 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
           if (b.doc !== undefined) child.doc = b.doc;
         }
       }
-      checkExpect(run, f, node, path, big);
+      stop = checkExpect(run, f, node, path, big);
     }
-    return finish(node, pos + prim.size, true, val);
+    return finish(node, pos + prim.size, !stop, val);
   }
 
   if (typeName === 'str') {
@@ -745,8 +1082,8 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
     const s = decodeString(content, enc);
     node.value = s;
     node.display = previewString(s) + (truncatedStr ? ` (truncated, ${consumed} bytes)` : '');
-    checkExpect(run, f, node, path, s);
-    return finish(node, pos + consumed, true, s);
+    const stop = checkExpect(run, f, node, path, s);
+    return finish(node, pos + consumed, !stop, s);
   }
 
   if (typeName === 'bytes') {
@@ -761,7 +1098,7 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
 
   // user type
   const node = newNode(run, attach, name, typeName, pos, 0);
-  const scope = new Scope(pl.scope, index);
+  const scope = new Scope(pl.scope, index, pos);
   const cpl: Place = { stream: size !== null ? { start: pos, end: pos + size } : stream, scope, depth: pl.depth + 1, path };
   const r = await parseStructBody(run, node, typeName, cpl, pos);
   let end = r.end;
@@ -772,19 +1109,25 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
   return finish(node, end, r.ok, scope);
 }
 
-function checkExpect(run: Run, f: FieldDef, node: Node, path: string, got: bigint | number | string, f32 = false): void {
-  if (f.expect === undefined) return;
+/** Records an `expect` mismatch. Returns true when it is FATAL (`fatal: true`): the caller must fail the field. */
+function checkExpect(run: Run, f: FieldDef, node: Node, path: string, got: bigint | number | string, f32 = false): boolean {
+  if (f.expect === undefined) return false;
   let want: bigint | number | string;
   if (typeof got === 'bigint') {
     const k = typeof f.expect === 'number' ? BigInt(Math.trunc(f.expect)) : parseEnumKey(f.expect);
-    if (k === null) return;
+    if (k === null) return false;
     want = k;
   } else want = f.expect;
   if (f32 && typeof want === 'number') want = Math.fround(want); // f4 values are single precision
-  if (want === got) return; // note: -0 === 0
+  if (want === got) return false; // note: -0 === 0
   const msg = `expected ${typeof want === 'string' ? JSON.stringify(want) : String(want)}, found ${typeof got === 'string' ? JSON.stringify(got) : String(got)}`;
+  if (f.fatal === true) {
+    setError(run, node, path, 'validation', msg);
+    return true;
+  }
   (node.validation ??= []).push(msg);
   addDiag(run, { severity: 'error', code: 'validation', message: `${path}: ${msg}`, path, offset: node.offset, nodeId: node.id });
+  return false;
 }
 
 // ---- arrays
@@ -823,7 +1166,7 @@ async function parseRepeat(run: Run, f: FieldDef, attach: Node, pl: Place, pos: 
   const path = `${pl.path}.${f.name}`;
   if (clampMsg) setError(run, arr, path, 'array', clampMsg);
 
-  const st: ArrayState = { field: f, pl, node: arr, kind, target, elemType: typeLabel(f), elemFixed, start: pos, nextIndex: 0, pos, done: false, ok: true, boundary: null };
+  const st: ArrayState = { field: f, pl, node: arr, kind, target, elemType: typeLabel(f), elemFixed, start: pos, nextIndex: 0, pos, done: false, ok: true, boundary: null, elems: [] };
   if (kind === 'eos' && elemFixed !== null && avail % elemFixed !== 0) {
     setError(run, arr, path, 'array', `${avail % elemFixed} trailing byte(s) do not form a whole ${st.elemType} element`, 'warning');
   }
@@ -832,16 +1175,16 @@ async function parseRepeat(run: Run, f: FieldDef, attach: Node, pl: Place, pos: 
   if (elemFixed !== null && kind !== 'until' && target > run.limits.eagerElements) {
     arr.size = target * elemFixed;
     arr.lazy = { start: pos, count: target, elemType: st.elemType, elemSize: elemFixed, loaded: 0, resumeOffset: null };
-    if (run.skim === 0) run.shared.lazies.set(arr.id, { node: arr, field: f, pl, elemSize: elemFixed, count: target, rs: null, lock: Promise.resolve() });
+    if (run.skim === 0 && !run.probe) run.shared.lazies.set(arr.id, { node: arr, field: f, pl, elemSize: elemFixed, count: target, rs: null, lock: Promise.resolve() });
     return { node: arr, end: pos + arr.size, ok: true, val: new ListObj(target) };
   }
 
-  const sequential = f.at === undefined;
+  const sequential = !isPlaced(f);
   await runArray(run, st, sequential ? Infinity : run.limits.eagerElements, run.limits.eagerElements);
   arr.size = st.pos - st.start;
   if (st.boundary !== null || !st.done) {
     const b = st.boundary ?? { index: st.nextIndex, pos: st.pos };
-    const rs: ArrayState = { ...st, nextIndex: b.index, pos: b.pos, done: false, ok: true, boundary: null };
+    const rs: ArrayState = { ...st, nextIndex: b.index, pos: b.pos, done: false, ok: true, boundary: null, elems: undefined };
     arr.lazy = {
       start: pos,
       count: st.done && st.ok ? st.nextIndex : kind === 'count' && st.ok ? target : null,
@@ -850,9 +1193,9 @@ async function parseRepeat(run: Run, f: FieldDef, attach: Node, pl: Place, pos: 
       loaded: b.index,
       resumeOffset: b.pos,
     };
-    if (run.skim === 0) run.shared.lazies.set(arr.id, { node: arr, field: f, pl, elemSize: null, count: arr.lazy.count, rs, lock: Promise.resolve() });
+    if (run.skim === 0 && !run.probe) run.shared.lazies.set(arr.id, { node: arr, field: f, pl, elemSize: null, count: arr.lazy.count, rs, lock: Promise.resolve() });
   }
-  return { node: arr, end: st.pos, ok: st.ok, val: new ListObj(st.ok ? (st.done ? st.nextIndex : kind === 'count' ? target : null) : null) };
+  return { node: arr, end: st.pos, ok: st.ok, val: new ListObj(st.ok ? (st.done ? st.nextIndex : kind === 'count' ? target : null) : null, st.elems) };
 }
 
 /** First error message in a (discarded) subtree, depth-first. */
@@ -922,7 +1265,10 @@ async function runArray(run: Run, st: ArrayState, limitIndex: number, keepBelow:
     } finally {
       if (!keep) run.skim--;
     }
-    if (keep) for (const c of holder.children) (st.node.children ??= []).push(c);
+    if (keep) {
+      for (const c of holder.children) (st.node.children ??= []).push(c);
+      if (st.elems && r.val instanceof Scope) st.elems.push(r.val);
+    }
     st.nextIndex = i + 1;
     const prev = st.pos;
     st.pos = Math.max(st.pos, r.end);
@@ -957,7 +1303,7 @@ async function runArray(run: Run, st: ArrayState, limitIndex: number, keepBelow:
 
 export async function parse(spec: FormatSpec, source: ByteSource, opts: ParseOptions = {}): Promise<ParseResult> {
   const limits: Limits = { ...DEFAULT_LIMITS, ...opts.limits };
-  const shared: Shared = { spec, source, limits, nextId: 1, exprCache: new Map(), enumMaps: new Map(), lazies: new Map(), result: null };
+  const shared: Shared = { spec, source, limits, nextId: 1, exprCache: new Map(), enumMaps: new Map(), lazies: new Map(), refs: new Map(), refKeys: new Map(), refNodes: 0, sigCache: new Map(), result: null };
   const run = makeRun(shared, opts.signal);
   const rootName = typeof spec.root === 'string' ? spec.root : '(root)';
   const root: Node = { id: shared.nextId++, name: rootName, typeName: rootName, offset: 0, size: 0, children: [] };
@@ -1044,6 +1390,61 @@ export async function expandLazy(result: ParseResult, nodeId: number, range: Laz
   }
 }
 
+/**
+ * Open a `ref` node: parse its target type at the recorded offset as a detached subtree over the WHOLE file (so it may
+ * lie outside the substream the ref was found in), with the ref field's owning struct scope as `_parent` of the new
+ * scope. The result is attached as a child of the ref node (`node.ref.loaded` becomes true) and returned; opening it
+ * again returns the same nodes. Budgets are fresh per call; refs inside the target are again only opened on demand.
+ * Never throws; problems become error nodes / `result.errors`. An abort returns [] and leaves the ref unopened.
+ */
+export async function expandRef(result: ParseResult, nodeId: number, opts: { signal?: AbortSignal } = {}): Promise<Node[]> {
+  const shared = internals.get(result);
+  const entry = shared?.refs.get(nodeId);
+  if (!shared || !entry) {
+    pushResultDiag(result, shared, { severity: 'error', code: 'ref', message: `node ${nodeId} is not a reference of this parse result`, nodeId });
+    return [];
+  }
+  const prev = entry.lock;
+  let release!: () => void;
+  entry.lock = new Promise<void>((r) => (release = r));
+  await prev;
+  const run = makeRun(shared, opts.signal);
+  try {
+    if (entry.expanded) return entry.expanded;
+    const remaining = shared.limits.maxRefNodesTotal - shared.refNodes;
+    if (remaining <= 0) {
+      addDiag(run, { severity: 'error', code: 'limit', message: `reference expansion budget exhausted (${shared.limits.maxRefNodesTotal} nodes opened so far); no more references can be opened`, nodeId, path: entry.path });
+      return [];
+    }
+    run.limits = { ...run.limits, maxNodes: Math.min(run.limits.maxNodes, remaining) };
+    const holder: Node = { id: -1, name: '', typeName: '', offset: 0, size: 0, children: [] };
+    const node = newNode(run, holder, entry.typeName, entry.typeName, entry.offset, 0);
+    const pl: Place = { stream: { start: 0, end: shared.source.size }, scope: new Scope(entry.scope, undefined, entry.offset), depth: 0, path: `${entry.path}->${entry.typeName}` };
+    try {
+      const r = await parseStructBody(run, node, entry.typeName, pl, entry.offset);
+      node.size = Math.max(node.size, r.end - entry.offset);
+    } catch (e) {
+      if (!(e instanceof Halt)) throw e;
+      handleTop(run, node, e);
+      if (e.code === 'aborted') return [];
+    }
+    node.fromRef = true;
+    (entry.node.children ??= []).push(node);
+    entry.node.ref = { ...entry.node.ref!, loaded: true };
+    entry.expanded = [node];
+    return entry.expanded;
+  } catch (e) {
+    handleTop(run, { id: -1, name: '', typeName: '', offset: 0, size: 0 }, e);
+    return [];
+  } finally {
+    shared.refNodes += run.stats.nodes;
+    for (const d of run.diags) pushResultDiag(result, shared, d);
+    if (run.stats.truncated) result.stats.truncated = true;
+    if (run.stats.aborted) result.stats.aborted = true;
+    release();
+  }
+}
+
 async function expandFixed(run: Run, entry: LazyEntry, start: number, count: number): Promise<Node[]> {
   const total = entry.count ?? 0;
   const end = Math.min(total, start + count);
@@ -1106,19 +1507,44 @@ async function expandVariable(run: Run, entry: LazyEntry, start: number, count: 
  * place children outside their parent's sequential extent. At equal depth the narrowest range wins, then the
  * earliest child. Nodes returned by `expandLazy` for fixed-size arrays are detached from the tree, so pass such a
  * node (or a holder containing them) as `root` to search inside it.
+ * Opened `ref` targets (nodes flagged `fromRef`) are searched separately. The primary-tree hit wins when it really owns
+ * the byte, i.e. it is NOT the ref node or one of its ancestors (those merely enclose the target, which may lie inside
+ * their extent); an unrelated sibling or leaf that owns the byte still wins over the target.
  */
 export function findNodeAt(root: Node, offset: number): Node | null {
   if (!Number.isFinite(offset)) return null;
-  const r = search(root, offset, 0);
-  return r ? r.node : null;
+  const primary = search(root, offset, 0, false);
+  const viaRef = searchRefTargets(root, offset, []);
+  if (!viaRef) return primary ? primary.node : null;
+  if (primary && !viaRef.owners.includes(primary.node)) return primary.node;
+  return viaRef.node;
 }
 
-function search(node: Node, offset: number, depth: number): { node: Node; depth: number } | null {
+/** Best hit inside any opened ref target; `owners` = the ref node and its ancestors (root first). */
+function searchRefTargets(node: Node, offset: number, stack: Node[]): { node: Node; depth: number; owners: Node[] } | null {
+  let best: { node: Node; depth: number; owners: Node[] } | null = null;
+  stack.push(node);
+  for (const c of node.children ?? []) {
+    if (c.typeName === 'bits') continue;
+    let cand: { node: Node; depth: number; owners: Node[] } | null;
+    if (c.fromRef) {
+      const r = search(c, offset, 0, true);
+      cand = r ? { ...r, owners: [...stack] } : null;
+    } else cand = searchRefTargets(c, offset, stack);
+    if (!cand) continue;
+    if (best === null || cand.depth > best.depth || (cand.depth === best.depth && cand.node.size < best.node.size)) best = cand;
+  }
+  stack.pop();
+  return best;
+}
+
+function search(node: Node, offset: number, depth: number, allowRef: boolean): { node: Node; depth: number } | null {
   let best: { node: Node; depth: number } | null = null;
   if (node.children) {
     for (const c of node.children) {
       if (c.typeName === 'bits') continue; // bit fields share their integer's range; select the integer
-      const r = search(c, offset, depth + 1);
+      if (c.fromRef && !allowRef) continue;
+      const r = search(c, offset, depth + 1, allowRef);
       if (r && (best === null || r.depth > best.depth || (r.depth === best.depth && r.node.size < best.node.size))) best = r;
     }
   }

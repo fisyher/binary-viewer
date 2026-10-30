@@ -12,7 +12,7 @@ export function exprFeedback(src: string): ExprFeedback {
 }
 
 /** Context names every expression may use. `_` (the field's own value) only in `assert` and `repeat.until`. */
-export const CONTEXT_NAMES = ['_io.size', '_parent', '_root', '_index'] as const;
+export const CONTEXT_NAMES = ['_io.size', '_parent', '_root', '_index', '_start', 'lookup'] as const;
 
 /**
  * Suggestions for an expression of field `index` in `typeName`: the EARLIER fields of that type (later ones are not

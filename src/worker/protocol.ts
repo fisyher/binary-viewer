@@ -8,7 +8,9 @@
  * - `parseDraft` (parse with an unsaved spec text, validated in the worker) supersedes exactly like `parse` and answers with a `parse` response.
  * - `setSpecs` replaces the custom spec set. It does not supersede anything (a running parse keeps the spec it started with).
  * - `cancel` aborts the running parse only; that parse still answers with a partial snapshot (stats.aborted).
- * - Everything else (`expand`, `nodeAt`, `nodeById`, `ranges`) works on the current parse result.
+ * - Everything else (`expand`, `expandRef`, `nodeAt`, `nodeById`, `ranges`) works on the current parse result.
+ * - `expandRef` opens a `ref` node: the worker parses the target type, attaches it under the node in its own tree and
+ *   returns the new node(s); the client attaches the same nodes to its copy. Opening twice returns the same nodes.
  * All payloads are structured-cloneable (Node values may be BigInt / Uint8Array).
  */
 import type { Diagnostic, LazyArray, Node, ParseStats } from '../core/engine';
@@ -52,6 +54,7 @@ export type EngineRequest =
   /** Raw JSON texts of the user's specs. The worker re-validates each one; invalid ones are left out and reported. */
   | { id: number; type: 'setSpecs'; specTexts: string[] }
   | { id: number; type: 'expand'; nodeId: number; start: number; count: number }
+  | { id: number; type: 'expandRef'; nodeId: number }
   | { id: number; type: 'cancel' }
   | { id: number; type: 'nodeAt'; offset: number }
   | { id: number; type: 'nodeById'; nodeId: number }
@@ -63,6 +66,7 @@ export type EngineResponse =
   /** `rejected`: one readable message per text that was not accepted. */
   | { id: number; type: 'setSpecs'; specs: SpecInfo[]; rejected: string[] }
   | { id: number; type: 'expand'; nodes: Node[]; lazy: LazyArray | null; newErrors: Diagnostic[] }
+  | { id: number; type: 'expandRef'; nodes: Node[]; newErrors: Diagnostic[] }
   | { id: number; type: 'cancel' }
   /** `path` = node ids from the root to the node (inclusive); null when nothing matched. */
   | { id: number; type: 'located'; path: number[] | null; lazyIndex: number | null }

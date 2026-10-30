@@ -4,7 +4,7 @@
  * headings, lists or table breakage can be injected. Code spans never go through the prose escaper: their content
  * is literal, only newlines and pipes are neutralised and the fence is made longer than any backtick run inside.
  */
-import { staticAdvance, staticElemSize, constInt } from './layout';
+import { isPlaced, staticAdvance, staticElemSize, constInt } from './layout';
 import type { FieldDef, FormatSpec } from './schema';
 import { primitiveInfo } from './schema';
 
@@ -50,7 +50,11 @@ function hexOff(n: number): string {
 // ---------------------------------------------------------------------------------------------------------------
 
 export type DocTypeRef = { kind: 'simple'; name: string } | { kind: 'switch'; on: string; cases: { key: string; type: string }[]; default?: string };
-export type DocPosition = { kind: 'at'; expr: string } | { kind: 'offset'; offset: number } | { kind: 'variable' };
+export type DocPosition =
+  | { kind: 'at'; expr: string }
+  | { kind: 'find'; direction: 'backward' | 'forward'; from: string; window: number; bytes: string }
+  | { kind: 'offset'; offset: number }
+  | { kind: 'variable' };
 export type DocSizeBase = { kind: 'eos' } | { kind: 'expr'; expr: string } | { kind: 'static'; bytes: number } | { kind: 'terminator'; terminator: string } | { kind: 'variable' };
 export type DocRepeat = { kind: 'eos' } | { kind: 'count'; expr: string } | { kind: 'until'; expr: string };
 
@@ -78,6 +82,15 @@ export interface DocField {
   enum?: { name: string; preview?: string[]; more: boolean };
   asserts: DocAssert[];
   expect?: string;
+  /** `expect` mismatch stops parsing (`fatal`). */
+  fatal?: boolean;
+  /** `find`: mask and acceptance tiers (the rest is in `position`). */
+  findMask?: string;
+  findAccept?: string[];
+  ifMagic?: { at: string; bytes: string; mask?: string };
+  /** `value` fields: the expression. */
+  value?: string;
+  ref?: { type: string; at: string; doc?: string };
   bits: DocBit[];
 }
 export interface DocType {
@@ -152,7 +165,9 @@ export function buildDocModel(spec: FormatSpec): DocModel {
     for (const f of def.fields) {
       let position: DocPosition;
       if (f.at !== undefined) position = { kind: 'at', expr: String(f.at) };
-      else if (cursor === null) position = { kind: 'variable' };
+      else if (f.find !== undefined) {
+        position = { kind: 'find', direction: f.find.direction === 'forward' ? 'forward' : 'backward', from: String(f.find.from), window: Number(f.find.window), bytes: String(f.find.bytes).trim() };
+      } else if (cursor === null) position = { kind: 'variable' };
       else position = { kind: 'offset', offset: cursor };
       const e = f.enum !== undefined && spec.enums && Object.hasOwn(spec.enums, f.enum) ? spec.enums[f.enum] : undefined;
       const field: DocField = {
@@ -175,8 +190,14 @@ export function buildDocModel(spec: FormatSpec): DocModel {
       if (f.if !== undefined) field.ifExpr = f.if;
       if (f.enum !== undefined) field.enum = { name: f.enum, ...(e ? { preview: Object.values(e).slice(0, 4) } : {}), more: e ? Object.keys(e).length > 4 : false };
       if (f.expect !== undefined) field.expect = String(f.expect);
+      if (f.fatal === true) field.fatal = true;
+      if (f.find?.mask !== undefined) field.findMask = String(f.find.mask).trim();
+      if (Array.isArray(f.find?.accept)) field.findAccept = f.find!.accept.map(String);
+      if (f.ifMagic !== undefined) field.ifMagic = { at: String(f.ifMagic.at), bytes: String(f.ifMagic.bytes).trim(), ...(f.ifMagic.mask !== undefined ? { mask: String(f.ifMagic.mask).trim() } : {}) };
+      if (f.value !== undefined) field.value = String(f.value);
+      if (f.ref !== undefined) field.ref = { type: String(f.ref.type), at: String(f.ref.at), ...(f.ref.doc ? { doc: f.ref.doc } : {}) };
       fields.push(field);
-      if (f.at === undefined && cursor !== null) {
+      if (!isPlaced(f) && cursor !== null) {
         const adv = staticAdvance(spec, f);
         cursor = adv === null ? null : cursor + adv;
       }
@@ -210,6 +231,7 @@ function mdType(t: DocTypeRef): string {
 }
 
 function mdPosition(p: DocPosition): string {
+  if (p.kind === 'find') return `found by searching ${p.direction} from ${code(p.from)} (window ${p.window} bytes) for ${code(p.bytes)}`;
   return p.kind === 'at' ? `at ${code(p.expr)}` : p.kind === 'variable' ? 'variable' : hexOff(p.offset);
 }
 
@@ -226,13 +248,18 @@ function mdSize(s: DocField['size']): string {
 function mdDesc(f: DocField): string {
   const parts: string[] = [];
   if (f.doc) parts.push(esc(f.doc));
+  if (f.value !== undefined) parts.push(`Computed value (no bytes): ${code(f.value)}.`);
   if (f.ifExpr !== undefined) parts.push(`Present only if ${code(f.ifExpr)}.`);
+  if (f.ifMagic) parts.push(`Present only if the bytes ${code(f.ifMagic.bytes)}${f.ifMagic.mask ? ` (mask ${code(f.ifMagic.mask)})` : ''} are at ${code(f.ifMagic.at)}.`);
+  if (f.findMask !== undefined) parts.push(`Search mask: ${code(f.findMask)}.`);
+  if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${code(a)}`).join('; ') + '.');
+  if (f.ref) parts.push(`Reference: can be opened as ${code(f.ref.type)} at ${code(f.ref.at)}${f.ref.doc ? ' — ' + esc(f.ref.doc) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(esc).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${code(f.enum.name)}${vals}.`);
   }
   for (const a of f.asserts) parts.push(`Check (${a.level}): ${code(a.expr)}${a.message ? ' — ' + esc(a.message) : ''}.`);
-  if (f.expect !== undefined) parts.push(`Expected value: ${code(f.expect)}.`);
+  if (f.expect !== undefined) parts.push(`Expected value: ${code(f.expect)}${f.fatal ? ' (a mismatch stops parsing)' : ''}.`);
   if (f.bits.length > 0) {
     parts.push('Bits (bit 0 = least significant): ' + f.bits.map((b) => `${code(b.name)} [${b.range}]${b.doc ? ' ' + esc(b.doc) : ''}`).join('; ') + '.');
   }
@@ -292,6 +319,7 @@ function htmlType(t: DocTypeRef): string {
 }
 
 function htmlPosition(p: DocPosition): string {
+  if (p.kind === 'find') return `found by searching ${h(p.direction)} from ${hcode(p.from)} (window ${p.window} bytes) for ${hcode(p.bytes)}`;
   return p.kind === 'at' ? `at ${hcode(p.expr)}` : p.kind === 'variable' ? 'variable' : h(hexOff(p.offset));
 }
 
@@ -308,13 +336,18 @@ function htmlSize(s: DocField['size']): string {
 function htmlDesc(f: DocField): string {
   const parts: string[] = [];
   if (f.doc) parts.push(h(f.doc));
+  if (f.value !== undefined) parts.push(`Computed value (no bytes): ${hcode(f.value)}.`);
   if (f.ifExpr !== undefined) parts.push(`Present only if ${hcode(f.ifExpr)}.`);
+  if (f.ifMagic) parts.push(`Present only if the bytes ${hcode(f.ifMagic.bytes)}${f.ifMagic.mask ? ` (mask ${hcode(f.ifMagic.mask)})` : ''} are at ${hcode(f.ifMagic.at)}.`);
+  if (f.findMask !== undefined) parts.push(`Search mask: ${hcode(f.findMask)}.`);
+  if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${hcode(a)}`).join('; ') + '.');
+  if (f.ref) parts.push(`Reference: can be opened as ${hcode(f.ref.type)} at ${hcode(f.ref.at)}${f.ref.doc ? ' — ' + h(f.ref.doc) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(h).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${hcode(f.enum.name)}${vals}.`);
   }
   for (const a of f.asserts) parts.push(`Check (${h(a.level)}): ${hcode(a.expr)}${a.message ? ' — ' + h(a.message) : ''}.`);
-  if (f.expect !== undefined) parts.push(`Expected value: ${hcode(f.expect)}.`);
+  if (f.expect !== undefined) parts.push(`Expected value: ${hcode(f.expect)}${f.fatal ? ' (a mismatch stops parsing)' : ''}.`);
   if (f.bits.length > 0) parts.push('Bits (bit 0 = least significant): ' + f.bits.map((b) => `${hcode(b.name)} [${h(b.range)}]${b.doc ? ' ' + h(b.doc) : ''}`).join('; ') + '.');
   return parts.join(' ');
 }

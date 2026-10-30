@@ -18,6 +18,7 @@
     epoch,
     parseDraft,
     loadPage,
+    loadRef,
     onShowInViewer,
   }: {
     /** The draft spec text. */
@@ -32,6 +33,7 @@
     epoch: number;
     parseDraft: (text: string) => Promise<ParseSnapshot | null>;
     loadPage: (nodeId: number, start: number, count: number) => Promise<{ nodes: Node[]; lazy: LazyArray | null }>;
+    loadRef?: (nodeId: number) => Promise<Node[]>;
     onShowInViewer: (range: { start: number; end: number } | null, offset: number) => void;
   } = $props();
 
@@ -135,7 +137,7 @@
             <ul>{#each problems as p, i (i)}<li>{sanitizeText(p, 300)}</li>{/each}</ul>
           </div>
         {:else}
-          <div class="tree"><StructureTree {root} {diagnostics} {loadPage} {onSelect} preserveFor={keep} /></div>
+          <div class="tree"><StructureTree {root} {diagnostics} {loadPage} {loadRef} {onSelect} preserveFor={keep} /></div>
           <Diagnostics {diagnostics} {onJump} />
         {/if}
         {#if sel}

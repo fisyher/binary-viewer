@@ -309,6 +309,7 @@ describe('building blocks', () => {
       if ('on' in v) v.on = 'tag';
       if ('offsetField' in v) v.offsetField = 'len';
       if (b.id === 'conditional') v.cond = 'tag == 1';
+      if (b.id === 'computed') v.expr = 'tag + 1';
       if (b.id === 'assert') v.target = 'tag';
       const r = applyBlock(b, m, ctx, v);
       expect(r.ok, `${b.id}: ${r.ok ? '' : r.error}`).toBe(true);
@@ -319,7 +320,7 @@ describe('building blocks', () => {
     }
   });
   it('covers the required catalogue', () => {
-    expect(BLOCKS.map((b) => b.id)).toEqual(['integer', 'float', 'magic', 'str-fixed', 'str-nul', 'str-prefixed', 'bytes', 'enum', 'flags', 'struct', 'array', 'switch', 'pointer', 'conditional', 'padding', 'assert']);
+    expect(BLOCKS.map((b) => b.id)).toEqual(['integer', 'float', 'magic', 'str-fixed', 'str-nul', 'str-prefixed', 'bytes', 'enum', 'flags', 'struct', 'array', 'switch', 'pointer', 'conditional', 'padding', 'computed', 'find', 'assert']);
   });
   it('length-prefixed string adds the length field and links size', () => {
     const b = BLOCKS.find((x) => x.id === 'str-prefixed')!;
@@ -392,7 +393,7 @@ describe('issue paths and expressions', () => {
     expect(exprFeedback('a + 1')).toEqual({ ok: true });
     expect(exprFeedback('')).toEqual({ ok: true });
     const s = exprSuggestions(base(), 'root', 1, { withValue: true });
-    expect(s).toEqual(['magic', '_', '_io.size', '_parent', '_root', '_index']);
+    expect(s).toEqual(['magic', '_', '_io.size', '_parent', '_root', '_index', '_start', 'lookup']);
     expect(exprSuggestions(base(), 'root', 0)).not.toContain('magic');
     expect(textToExpr(' 12 ')).toBe(12);
     expect(textToExpr('n * 2')).toBe('n * 2');

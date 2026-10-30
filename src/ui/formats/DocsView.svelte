@@ -21,6 +21,7 @@
   }
 
   function position(p: DocPosition): string {
+    if (p.kind === 'find') return `found by searching ${p.direction} from ${p.from} (window ${p.window} bytes) for ${p.bytes}`;
     return p.kind === 'at' ? `at ${p.expr}` : p.kind === 'variable' ? 'variable' : `0x${p.offset.toString(16).toUpperCase().padStart(2, '0')} (${p.offset})`;
   }
 
@@ -92,7 +93,23 @@
                 <td>{t(size(f.size))}</td>
                 <td>
                   {#if f.doc}<div>{t(f.doc, 2000)}</div>{/if}
+                  {#if f.value !== undefined}<div>Computed value (no bytes): <code>{t(f.value)}</code>.</div>{/if}
                   {#if f.ifExpr !== undefined}<div>Present only if <code>{t(f.ifExpr)}</code>.</div>{/if}
+                  {#if f.ifMagic}
+                    <div>
+                      Present only if the bytes <code>{t(f.ifMagic.bytes, 200)}</code>{#if f.ifMagic.mask} (mask <code>{t(f.ifMagic.mask, 200)}</code>){/if} are at <code>{t(f.ifMagic.at)}</code>.
+                    </div>
+                  {/if}
+                  {#if f.findMask !== undefined}<div>Search mask: <code>{t(f.findMask, 200)}</code>.</div>{/if}
+                  {#if f.findAccept}
+                    <div>
+                      Search candidates are tried nearest first and accepted by the first condition that holds:
+                      {#each f.findAccept as a, ai (ai)}{#if ai > 0}; {/if}{ai + 1}. <code>{t(a)}</code>{/each}.
+                    </div>
+                  {/if}
+                  {#if f.ref}
+                    <div>Reference: can be opened as <code>{t(f.ref.type, 80)}</code> at <code>{t(f.ref.at)}</code>{#if f.ref.doc} — {t(f.ref.doc, 400)}{/if}.</div>
+                  {/if}
                   {#if f.enum}
                     <div>
                       Enum <code>{t(f.enum.name, 80)}</code>{#if f.enum.preview} ({f.enum.preview.map((p) => t(p, 80)).join(', ')}{f.enum.more ? ', …' : ''}){/if}.
@@ -101,7 +118,7 @@
                   {#each f.asserts as a, ai (ai)}
                     <div class="assert">Check ({a.level}): <code>{t(a.expr)}</code>{#if a.message} — {t(a.message, 400)}{/if}.</div>
                   {/each}
-                  {#if f.expect !== undefined}<div>Expected value: <code>{t(f.expect, 80)}</code>.</div>{/if}
+                  {#if f.expect !== undefined}<div>Expected value: <code>{t(f.expect, 80)}</code>{f.fatal ? ' (a mismatch stops parsing)' : ''}.</div>{/if}
                   {#if f.bits.length > 0}
                     <div>
                       Bits (bit 0 = least significant):

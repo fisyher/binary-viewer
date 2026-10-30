@@ -21,6 +21,7 @@
     previewEpoch = 0,
     parseDraft = async () => null,
     loadPreviewPage = async () => ({ nodes: [], lazy: null }),
+    loadPreviewRef = undefined,
     onShowInViewer = () => {},
   }: {
     library: SpecLibrary;
@@ -35,6 +36,7 @@
     previewEpoch?: number;
     parseDraft?: (text: string) => Promise<ParseSnapshot | null>;
     loadPreviewPage?: (nodeId: number, start: number, count: number) => Promise<{ nodes: Node[]; lazy: LazyArray | null }>;
+    loadPreviewRef?: (nodeId: number) => Promise<Node[]>;
     onShowInViewer?: (range: { start: number; end: number } | null, offset: number) => void;
   } = $props();
 
@@ -404,7 +406,7 @@
           </div>
         {/if}
       </div>
-      <PreviewPane text={draftText} docName={previewDoc} active={previewActive} busy={previewBusy} epoch={previewEpoch} {parseDraft} loadPage={loadPreviewPage} {onShowInViewer} />
+      <PreviewPane text={draftText} docName={previewDoc} active={previewActive} busy={previewBusy} epoch={previewEpoch} {parseDraft} loadPage={loadPreviewPage} loadRef={loadPreviewRef} {onShowInViewer} />
     {/if}
   </section>
 </div>

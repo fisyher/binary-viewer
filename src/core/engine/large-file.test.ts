@@ -91,4 +91,31 @@ describe('4 GiB source', () => {
     expect(reads.map((x) => x.length)).toEqual([4, 1]);
     expect(reads[1]!.offset).toBe(SIZE - 1);
   });
+
+  it('find backward from the end reads about one window, never the whole file', async () => {
+    const { source, reads } = fakeHuge();
+    const byteAt = (i: number): number => (i * 31 + 7) & 0xff;
+    // The pattern repeats every 256 bytes; pick a 4-byte signature and find the last occurrence below the end.
+    const base = SIZE - 5000;
+    const sig = [0, 1, 2, 3].map((k) => byteAt(base + k));
+    const hex = sig.map((b) => b.toString(16).padStart(2, '0')).join(' ');
+    let expected = SIZE - 4;
+    while (!sig.every((b, k) => byteAt(expected + k) === b)) expected--;
+    const window = 70_000;
+    const s = mkSpec({
+      root: { fields: [{ name: 'hit', type: 'u4', find: { bytes: hex, from: '_io.end', window, direction: 'backward' } }] },
+    });
+    const r = await parse(s, source);
+    expect(r.errors.filter((e) => e.severity === 'error')).toEqual([]);
+    expect(find(r.root, 'hit').offset).toBe(expected);
+    const total = reads.reduce((a, x) => a + x.length, 0);
+    expect(total).toBe(r.stats.bytesRead);
+    expect(total).toBeGreaterThanOrEqual(window); // the window was really scanned (for the "other matches" count)
+    expect(total).toBeLessThan(window + 64); // ... and nothing else: window + chunk overlaps + the 4-byte parse
+    expect(Math.max(...reads.map((x) => x.length))).toBeLessThanOrEqual(65_536);
+    for (const x of reads) {
+      expect(x.offset).toBeGreaterThanOrEqual(SIZE - window);
+      expect(x.offset + x.length).toBeLessThanOrEqual(SIZE);
+    }
+  });
 });

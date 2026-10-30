@@ -57,7 +57,7 @@ describe('Builder: editing', () => {
   it('every palette block has help text', async () => {
     const { container } = await open([['two', two]], 'two');
     const blocks = [...container.querySelectorAll('.palette .block')];
-    expect(blocks.length).toBe(16);
+    expect(blocks.length).toBe(18);
     for (const b of blocks) expect(b.querySelector('.bd')!.textContent!.length).toBeGreaterThan(10);
   });
 
@@ -238,6 +238,6 @@ describe('Builder: states', () => {
     expect(spec().types.root.fields[1].if).toBe('a == 1');
     const list = container.querySelector(`#${input.getAttribute('list')}`)!;
     const opts = [...list.querySelectorAll('option')].map((o) => o.getAttribute('value'));
-    expect(opts).toEqual(['a', '_io.size', '_parent', '_root', '_index']);
+    expect(opts).toEqual(['a', '_io.size', '_parent', '_root', '_index', '_start', 'lookup']);
   });
 });

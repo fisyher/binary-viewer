@@ -390,6 +390,11 @@
     }
   }
 
+  async function loadPreviewRef(nodeId: number) {
+    if (!client || !draftOnWorker || viewerOps > 0) throw new Error('the preview is out of date');
+    return (await client.expandRef(nodeId)).nodes;
+  }
+
   async function loadPreviewPage(nodeId: number, start: number, count: number) {
     if (!client || !draftOnWorker || viewerOps > 0) throw new Error('the preview is out of date');
     const r = await client.expand(nodeId, start, count);
@@ -438,6 +443,14 @@
     const r = await client.expand(nodeId, start, count);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
     return { nodes: r.nodes, lazy: r.lazy };
+  }
+
+  async function loadRef(nodeId: number) {
+    if (!client) throw new Error('format engine unavailable');
+    if (draftOnWorker) throw new Error('the structure is being refreshed');
+    const r = await client.expandRef(nodeId);
+    if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
+    return r.nodes;
   }
 
   function onTreeSelect(node: Node, range: { start: number; end: number } | null) {
@@ -879,7 +892,7 @@
             <span>Structure</span>
             <button type="button" onclick={() => (treeCollapsed = true)} title="Hide structure" aria-label="Hide structure">&#9666;</button>
           </div>
-          <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} onSelect={onTreeSelect} preserveFor={treeKeep} />
+          <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} preserveFor={treeKeep} />
           <Diagnostics {diagnostics} onJump={(d) => void jumpToDiagnostic(d)} />
         </aside>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -932,6 +945,7 @@
       {previewEpoch}
       parseDraft={parseDraftPreview}
       loadPreviewPage={loadPreviewPage}
+      loadPreviewRef={loadPreviewRef}
       onShowInViewer={showInViewer}
     />
   </div>

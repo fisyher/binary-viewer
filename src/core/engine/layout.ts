@@ -20,6 +20,7 @@ const memos = new WeakMap<FormatSpec, Map<string, number | null>>();
  */
 export function staticElemSize(spec: FormatSpec, f: FieldDef): number | null {
   if (typeof f.type !== 'string') return null;
+  if (f.type === 'value') return 0; // computed fields consume no bytes
   if (f.size !== undefined) return f.size === 'eos' ? null : constInt(f.size);
   const prim = primitiveInfo(f.type);
   if (prim) return prim.size;
@@ -27,10 +28,16 @@ export function staticElemSize(spec: FormatSpec, f: FieldDef): number | null {
   return staticTypeSize(spec, f.type);
 }
 
-/** Bytes a field advances its parent cursor by (0 for `at`), or null when not statically known. */
+/** True when the field is positioned by `at` or `find` (the parent cursor does not move for it). */
+export function isPlaced(f: FieldDef): boolean {
+  return f.at !== undefined || f.find !== undefined;
+}
+
+/** Bytes a field advances its parent cursor by (0 for `at` / `find` / `value`), or null when not statically known. */
 export function staticAdvance(spec: FormatSpec, f: FieldDef): number | null {
-  if (f.if !== undefined) return null;
-  if (f.at !== undefined) return 0;
+  if (f.type === 'value') return 0;
+  if (f.if !== undefined || f.ifMagic !== undefined) return null;
+  if (isPlaced(f)) return 0;
   const e = staticElemSize(spec, f);
   if (e === null) return null;
   if (f.repeat === undefined) return e;
@@ -54,8 +61,9 @@ export function staticTypeSize(spec: FormatSpec, typeName: string, visiting: Set
   for (const f of def.fields) {
     // staticElemSize recurses through staticTypeSize; pass the visiting set via a local walk.
     let adv: number | null;
-    if (f.if !== undefined) adv = null;
-    else if (f.at !== undefined) adv = 0;
+    if (f.type === 'value') adv = 0;
+    else if (f.if !== undefined || f.ifMagic !== undefined) adv = null;
+    else if (isPlaced(f)) adv = 0;
     else {
       const e: number | null =
         typeof f.type === 'string' && f.size === undefined && primitiveInfo(f.type) === null && f.type !== 'str' && f.type !== 'bytes'

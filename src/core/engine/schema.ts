@@ -15,14 +15,22 @@
  * `<` `<=` `>` `>=`, `|`, `^`, `&`, `<<` `>>`, `+` `-`, `*` `/` `%`, unary `-` `~` `!`/`not`. When in doubt,
  * use parentheses. `&&`, `||` and `?:` short-circuit. Skipped/failed fields read as `null` (see expr.ts).
  *
- * `if` / `repeat` / `size` / `at` on a field also count as "progress" for recursive types: a type may contain
- * itself through a field that has any of them (the interpreter's depth, step and (type, offset) cycle limits
- * are the safety net).
+ * `if` / `ifMagic` / `repeat` / `size` / `at` / `find` on a field also count as "progress" for recursive types: a type
+ * may contain itself through a field that has any of them (the interpreter's depth, step and (type, offset) cycle
+ * limits are the safety net).
+ *
+ * Positioning: `at` (absolute offset) or `find` (bounded signature search) place a field without moving the parent
+ * cursor; they are mutually exclusive. Every struct scope exposes `_start`, the absolute offset where it begins.
  */
 
 export type Endian = 'le' | 'be';
-export type Encoding = 'ascii' | 'latin1' | 'utf8' | 'utf16le' | 'utf16be';
-export const ENCODINGS: readonly Encoding[] = ['ascii', 'latin1', 'utf8', 'utf16le', 'utf16be'];
+export type Encoding = 'ascii' | 'latin1' | 'cp437' | 'utf8' | 'utf16le' | 'utf16be';
+export const ENCODINGS: readonly Encoding[] = ['ascii', 'latin1', 'cp437', 'utf8', 'utf16le', 'utf16be'];
+
+/** Largest `find.window` the validator accepts and the interpreter's default `maxFindWindow` (1 MiB). */
+export const MAX_FIND_WINDOW = 1 << 20;
+/** Most hex bytes in a `detect`, `find` or `ifMagic` signature. */
+export const MAX_SIGNATURE_BYTES = 64;
 
 /** A number literal or an expression string. */
 export type ExprSource = number | string;
@@ -34,6 +42,39 @@ export interface DetectRule {
   bytes: string;
   /** Optional hex mask, same length as `bytes`; only masked bits are compared. */
   mask?: string;
+}
+
+/** Bounded signature search used instead of `at` to place a field. */
+export interface FindDef {
+  /** Hex bytes, whitespace allowed. */
+  bytes: string;
+  /** Optional hex mask, same length as `bytes`. */
+  mask?: string;
+  /** Expression for the absolute offset the window is measured from (a safe non-negative integer). */
+  from: ExprSource;
+  /** Window size in bytes (a literal, 1..MAX_FIND_WINDOW). */
+  window: number;
+  /** `backward`: the window is [from - window, from); `forward`: [from, from + window). */
+  direction: 'backward' | 'forward';
+  /**
+   * Tiers of acceptance expressions, tried in order. Each candidate (nearest to `from` first) is probe-parsed as the
+   * field's own type; the first candidate a tier accepts wins. Without `accept` the nearest candidate wins.
+   */
+  accept?: string[];
+}
+
+/** Guard: the field is only parsed when these bytes are at `at` (a quiet no when out of range). */
+export interface IfMagicDef {
+  at: ExprSource;
+  bytes: string;
+  mask?: string;
+}
+
+/** A deferred pointer: the target type is only parsed when the user opens it. */
+export interface RefDef {
+  type: string;
+  at: ExprSource;
+  doc?: string;
 }
 
 export interface SwitchType {
@@ -72,7 +113,15 @@ export interface FieldDef {
   encoding?: Encoding;
   /** Absolute file offset; the parent cursor is not advanced. */
   at?: ExprSource;
+  /** Alternative to `at`: search for a signature. */
+  find?: FindDef;
   if?: string;
+  ifMagic?: IfMagicDef;
+  /** Only with type `value`: a computed (zero-byte) field. */
+  value?: string;
+  ref?: RefDef;
+  /** With `expect`: a mismatch fails the field (stops the struct / ends the array) instead of only recording a message. */
+  fatal?: boolean;
   repeat?: RepeatDef;
   enum?: string;
   bits?: BitField[];
@@ -121,7 +170,7 @@ export function primitiveInfo(name: string): PrimitiveInfo | null {
 }
 
 export function isBuiltinType(name: string): boolean {
-  return name === 'str' || name === 'bytes' || primitiveInfo(name) !== null;
+  return name === 'str' || name === 'bytes' || name === 'value' || primitiveInfo(name) !== null;
 }
 
 /** True when the type is multi-byte and has no explicit suffix, i.e. it needs the spec's `endian`. */
