@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { BlobByteSource, MemoryByteSource, probeReadable, type ByteSource } from './core/byte-source';
   import { selectionRange, type Selection } from './core/caret';
   import type { Diagnostic, Node } from './core/engine';
+  import { createAppLibrary } from './core/app-library';
   import { EditBuffer } from './core/edit-buffer';
   import type { ParseStatus } from './core/format-status';
   import { parseOffset, type OffsetMode } from './core/parse-offset';
@@ -15,10 +16,12 @@
     writeToHandle,
     type SaveHandle,
   } from './core/save';
+  import type { SpecLibrary } from './core/spec-library';
   import { throttleLatest } from './core/tree-model';
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import Diagnostics from './ui/Diagnostics.svelte';
   import FormatBar from './ui/FormatBar.svelte';
+  import FormatLibrary from './ui/formats/FormatLibrary.svelte';
   import HexView from './ui/HexView.svelte';
   import Inspector from './ui/Inspector.svelte';
   import { loadLittleEndian, saveLittleEndian } from './ui/prefs';
@@ -28,7 +31,24 @@
   import { EngineFatalError, createWorkerClient, SupersededError, type EngineClient } from './worker/engine-client';
   import type { DetectionInfo, ParseSnapshot, RangeSegment, SpecInfo } from './worker/protocol';
 
-  let { createClient = createWorkerClient }: { createClient?: () => EngineClient } = $props();
+  let {
+    createClient = createWorkerClient,
+    createLibrary = createAppLibrary,
+  }: { createClient?: () => EngineClient; createLibrary?: () => SpecLibrary } = $props();
+
+  // Top-level view. Both views stay mounted (the inactive one is hidden), so the open document, its scroll position
+  // and any unsaved spec draft survive switching.
+  let mode = $state<'viewer' | 'formats'>('viewer');
+  let formatsDirty = $state(false);
+  // The user's format library (IndexedDB + optional folder). Its valid specs are mirrored into the engine worker.
+  const library: SpecLibrary = untrack(() => createLibrary());
+  let rawChosen = false; // the user explicitly picked "None (raw)": library changes must not auto-select a format
+  // What the worker already has: `id:rev` of the custom specs last sent (rev changes whenever a spec's text does).
+  let sentSpecsKey = '';
+  let sentRevs = new Map<string, number>();
+  let initializing = true; // the library is still loading: a first spec sync is startup, not a user change
+  let specsDirty = false; // the library changed while a save blocked the reparse; resumeEngine catches up
+  let specRejected = $state<string | null>(null);
 
   // The document: an EditBuffer over the opened file (or an empty buffer for "New"). `baseBlob` is the file the
   // buffer's orig pieces refer to; the engine worker gets `editor.toBlob(baseBlob)` after edits.
@@ -95,7 +115,7 @@
 
   // Warn before leaving the page with unsaved edits; the listener exists only while dirty.
   $effect(() => {
-    if (!dirty) return;
+    if (!dirty && !formatsDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = true;
@@ -237,7 +257,18 @@
       needsDetect = false;
       specs = o.specs;
       detections = o.detections;
-      await runParse(selectedSpec ?? (redetect ? (o.detections[0]?.specId ?? null) : null), true);
+      // Keep the chosen format while it still exists. A custom one that was deleted or became invalid falls back
+      // to "None (raw)" (never to another format) with a notice.
+      const top = o.detections[0]?.specId ?? null;
+      specsDirty = false;
+      let target: string | null;
+      if (selectedSpec === null) target = redetect ? top : null;
+      else if (o.specs.some((s) => s.id === selectedSpec)) target = selectedSpec;
+      else {
+        notice = 'Format "' + selectedSpec + '" was removed; showing raw bytes.';
+        target = null;
+      }
+      await runParse(target, true);
     } catch (e) {
       if (e instanceof EngineFatalError) markFatal(e.message);
       else if (token === engineToken && !(e instanceof SupersededError)) {
@@ -246,6 +277,60 @@
       }
     }
   }
+
+  // ---- Custom formats: mirror the library's valid specs into the worker, then re-detect for the open file ----
+  function onLibraryChange() {
+    const key = library.validUserKey();
+    if (key === sentSpecsKey) return;
+    const prev = sentRevs;
+    const next = new Map(library.list().filter((e) => e.source === 'user' && e.valid).map((e) => [e.id, e.rev] as const));
+    sentSpecsKey = key;
+    sentRevs = next;
+    void applySpecs(library.validUserTexts(), key, prev, next, initializing);
+  }
+
+  /**
+   * Hand the library's valid specs to the worker. The open document is only re-parsed when that matters: at startup
+   * (a file opened before the library loaded), when the selected spec's text changed, or when it disappeared (then
+   * the view falls back to raw bytes with a notice). A library change never switches the open file to another
+   * format; new specs just show up in the list.
+   */
+  async function applySpecs(texts: string[], key: string, prev: Map<string, number>, next: Map<string, number>, initial: boolean) {
+    const c = getClient();
+    if (!c) return;
+    try {
+      const oldSpecs = specs;
+      const r = await c.setSpecs(texts);
+      if (key !== sentSpecsKey) return; // a newer change is already on its way
+      specs = r.specs;
+      detections = detections.filter((d) => r.specs.some((s) => s.id === d.specId));
+      specRejected = r.rejected.length > 0 ? ('Some custom formats were rejected by the engine: ' + r.rejected.join('; ')).slice(0, 300) : null;
+      if (!editor || !baseBlob) return;
+      const sel = selectedSpec;
+      const gone = sel !== null && !r.specs.some((s) => s.id === sel);
+      const changed = sel !== null && !gone && prev.get(sel) !== next.get(sel);
+      if (!initial && !gone && !changed) return;
+      if (saving || unreadable) {
+        specsDirty = true; // resumeEngine / the save's own reparse catches up
+        return;
+      }
+      if (gone && !initial) {
+        notice = 'Format "' + (oldSpecs.find((s) => s.id === sel)?.name ?? sel) + '" was removed; showing raw bytes.';
+        await runParse(null);
+      } else {
+        await reparse(initial && !rawChosen);
+      }
+    } catch (e) {
+      if (e instanceof EngineFatalError) markFatal(e.message);
+      else if (!(e instanceof SupersededError)) specRejected = ('Format engine error: ' + (e instanceof Error ? e.message : String(e))).slice(0, 300);
+    }
+  }
+
+  onMount(() => {
+    const off = library.subscribe(onLibraryChange);
+    void library.init().finally(() => (initializing = false));
+    return off;
+  });
 
   async function loadPage(nodeId: number, start: number, count: number) {
     if (!client) throw new Error('format engine unavailable');
@@ -394,6 +479,8 @@
     info = null;
     unreadable = false;
     treeKeep = null;
+    rawChosen = false;
+    mode = 'viewer';
   }
 
   /** Run `action` now, or after the user agrees to discard unsaved edits. Never while a save is running. */
@@ -662,15 +749,22 @@
     onGoTo={goTo}
     {gotoError}
     {loadError}
+    view={mode}
+    onView={(m) => (mode = m)}
   />
+  <div class="stage">
+  <div class="pane" class:hidden={mode !== 'viewer'} {...(mode !== 'viewer' ? { inert: true } : {})}>
   {#if source}
     <FormatBar
       {specs}
       {detections}
       selected={selectedSpec}
       {status}
-      errorText={engineError}
-      onSelect={(id) => void runParse(id)}
+      errorText={engineError ?? specRejected}
+      onSelect={(id) => {
+        rawChosen = id === null;
+        void runParse(id);
+      }}
       onCancel={() => client?.cancel()}
     />
   {/if}
@@ -726,6 +820,11 @@
     insertMode={source ? insertMode : null}
     onRetry={() => hexView?.retry()}
   />
+  </div>
+  <div class="pane" class:hidden={mode !== 'formats'} {...(mode !== 'formats' ? { inert: true } : {})}>
+    <FormatLibrary {library} onDirtyChange={(d) => (formatsDirty = d)} />
+  </div>
+  </div>
 </div>
 {#if confirm}
   {@const pending = confirm}
@@ -749,6 +848,22 @@
   .app.drag-over {
     outline: 2px dashed var(--accent);
     outline-offset: -4px;
+  }
+  .stage {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  .pane {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .pane.hidden {
+    visibility: hidden;
+    pointer-events: none;
   }
   .main {
     flex: 1;

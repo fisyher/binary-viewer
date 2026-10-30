@@ -25,6 +25,10 @@ export interface OpenResult {
   specErrors: string[];
   detections: DetectionInfo[];
 }
+export interface SetSpecsResult {
+  specs: SpecInfo[];
+  rejected: string[];
+}
 export interface ExpandResult {
   nodes: Node[];
   lazy: LazyArray | null;
@@ -38,6 +42,10 @@ export interface Located {
 export interface EngineClient {
   open(file: Blob | null, fileName: string): Promise<OpenResult>;
   parse(specId: string | null): Promise<ParseSnapshot | null>;
+  /** Parse the open document with an unsaved spec text (validated in the worker). Supersedes like parse(). */
+  parseDraft(specText: string): Promise<ParseSnapshot | null>;
+  /** Replace the worker's custom spec set. Never superseded by open/parse. */
+  setSpecs(specTexts: string[]): Promise<SetSpecsResult>;
   expand(nodeId: number, start: number, count: number): Promise<ExpandResult>;
   /** Abort the running parse; the pending parse() resolves with a partial snapshot (stats.aborted). */
   cancel(): void;
@@ -114,13 +122,21 @@ export function createClient(t: Transport): EngineClient {
 
   return {
     open(file, fileName) {
-      rejectWhere(() => true, () => new SupersededError());
+      rejectWhere((k) => k !== 'setSpecs', () => new SupersededError());
       return send<'open'>({ type: 'open', file, fileName });
     },
     async parse(specId) {
       // A parse supersedes everything in flight, including a pending open (same rule as the worker's handler).
-      rejectWhere((k) => k !== 'cancel', () => new SupersededError());
+      rejectWhere((k) => k !== 'cancel' && k !== 'setSpecs', () => new SupersededError());
       return (await send<'parse'>({ type: 'parse', specId })).snapshot;
+    },
+    async parseDraft(specText) {
+      rejectWhere((k) => k !== 'cancel' && k !== 'setSpecs', () => new SupersededError());
+      return (await send<'parse'>({ type: 'parseDraft', specText })).snapshot;
+    },
+    setSpecs: async (specTexts) => {
+      const { specs, rejected } = await send<'setSpecs'>({ type: 'setSpecs', specTexts });
+      return { specs, rejected };
     },
     expand: async (nodeId, start, count) => {
       const { nodes, lazy, newErrors } = await send<'expand'>({ type: 'expand', nodeId, start, count });

@@ -23,6 +23,8 @@
     onCancel: () => void;
   } = $props();
 
+  const custom = $derived(new Set(specs.filter((s) => s.custom).map((s) => s.id)));
+  const tag = (id: string) => (custom.has(id) ? ' (custom)' : '');
   const others = $derived(specs.filter((s) => !detections.some((d) => d.specId === s.id)));
   const top = $derived(detections[0]);
   const suggestion = $derived(top && selected === top.specId && !top.magicMatched);
@@ -39,10 +41,10 @@
     <select value={selected ?? ''} onchange={change} aria-label="Format">
       <option value="">None (raw)</option>
       {#each detections as d (d.specId)}
-        <option value={d.specId}>{sanitizeText(describeDetection(d), 120)}</option>
+        <option value={d.specId}>{sanitizeText(describeDetection(d), 120)}{tag(d.specId)}</option>
       {/each}
       {#each others as s (s.id)}
-        <option value={s.id}>{sanitizeText(s.name, 120)}</option>
+        <option value={s.id}>{sanitizeText(s.name, 120)}{tag(s.id)}</option>
       {/each}
     </select>
   </label>

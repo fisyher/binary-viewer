@@ -5,6 +5,8 @@
  * Ordering rules (enforced by the worker's handler, see engine-handler.ts):
  * - `open` and `parse` supersede any older in-flight `open`/`parse` (a `parse` therefore also supersedes a pending `open`): the old one is aborted and gets NO response.
  *   The client rejects its own pending promises for superseded requests with SupersededError.
+ * - `parseDraft` (parse with an unsaved spec text, validated in the worker) supersedes exactly like `parse` and answers with a `parse` response.
+ * - `setSpecs` replaces the custom spec set. It does not supersede anything (a running parse keeps the spec it started with).
  * - `cancel` aborts the running parse only; that parse still answers with a partial snapshot (stats.aborted).
  * - Everything else (`expand`, `nodeAt`, `nodeById`, `ranges`) works on the current parse result.
  * All payloads are structured-cloneable (Node values may be BigInt / Uint8Array).
@@ -14,6 +16,8 @@ import type { Diagnostic, LazyArray, Node, ParseStats } from '../core/engine';
 export interface SpecInfo {
   id: string;
   name: string;
+  /** True for user-created specs (as opposed to built-ins). */
+  custom?: boolean;
 }
 
 export interface DetectionInfo {
@@ -43,6 +47,10 @@ export type EngineRequest =
   | { id: number; type: 'open'; file: Blob | null; fileName: string }
   /** `specId` null = "None (raw)": drop the current result. */
   | { id: number; type: 'parse'; specId: string | null }
+  /** Unsaved spec JSON text: validated (loadSpec) in the worker, then parsed against the open document. */
+  | { id: number; type: 'parseDraft'; specText: string }
+  /** Raw JSON texts of the user's specs. The worker re-validates each one; invalid ones are left out and reported. */
+  | { id: number; type: 'setSpecs'; specTexts: string[] }
   | { id: number; type: 'expand'; nodeId: number; start: number; count: number }
   | { id: number; type: 'cancel' }
   | { id: number; type: 'nodeAt'; offset: number }
@@ -52,6 +60,8 @@ export type EngineRequest =
 export type EngineResponse =
   | { id: number; type: 'open'; size: number; specs: SpecInfo[]; specErrors: string[]; detections: DetectionInfo[] }
   | { id: number; type: 'parse'; snapshot: ParseSnapshot | null }
+  /** `rejected`: one readable message per text that was not accepted. */
+  | { id: number; type: 'setSpecs'; specs: SpecInfo[]; rejected: string[] }
   | { id: number; type: 'expand'; nodes: Node[]; lazy: LazyArray | null; newErrors: Diagnostic[] }
   | { id: number; type: 'cancel' }
   /** `path` = node ids from the root to the node (inclusive); null when nothing matched. */

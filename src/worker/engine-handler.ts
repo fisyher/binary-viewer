@@ -5,11 +5,12 @@
 import { BlobByteSource, MemoryByteSource, type ByteSource } from '../core/byte-source';
 import * as realEngine from '../core/engine';
 import type { FormatSpec, Node, ParseResult } from '../core/engine';
-import type { DetectionInfo, EngineRequest, EngineResponse, RangeSegment } from './protocol';
+import type { DetectionInfo, EngineRequest, EngineResponse, RangeSegment, SpecInfo } from './protocol';
 
 export type EngineApi = Pick<typeof realEngine, 'detect' | 'parse' | 'expandLazy' | 'findNodeAt' | 'lazyElementIndexAt'>;
 
 export interface HandlerDeps {
+  /** Built-in specs (already validated). User specs arrive later through `setSpecs`. */
   specs: readonly FormatSpec[];
   specErrors: readonly string[];
   post(res: EngineResponse): void;
@@ -20,6 +21,13 @@ export interface HandlerDeps {
 /** Largest byte window a `ranges` request may cover, and the most segments it returns. */
 export const MAX_RANGE_WINDOW = 1 << 20;
 export const MAX_SEGMENTS = 4096;
+/** Most custom specs the worker accepts in one `setSpecs`. */
+export const MAX_CUSTOM_SPECS = 500;
+/** Hard limits on one `setSpecs` request, checked before anything is validated. */
+export const MAX_SETSPECS_ITEMS = 1000;
+export const MAX_SETSPECS_BYTES = 64 * 1024 * 1024;
+/** Most rejection messages returned (the rest are summarised). */
+export const MAX_REJECTED_MESSAGES = 50;
 
 interface TreeIndex {
   nodes: Map<number, Node>;
@@ -46,7 +54,11 @@ const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isS
 export function createEngineHandler(deps: HandlerDeps) {
   const engine: EngineApi = deps.engine ?? realEngine;
   const makeSource = deps.makeSource ?? ((f: Blob | null) => (f ? new BlobByteSource(f) : new MemoryByteSource(new Uint8Array(0))));
-  const names = new Map(deps.specs.map((s) => [s.id, s.name] as const));
+  const builtinIds = new Set(deps.specs.map((s) => s.id));
+  let custom: FormatSpec[] = [];
+  let specs: readonly FormatSpec[] = deps.specs;
+  let names = new Map(specs.map((s) => [s.id, s.name] as const));
+  const infos = (): SpecInfo[] => specs.map((s) => (builtinIds.has(s.id) ? { id: s.id, name: s.name } : { id: s.id, name: s.name, custom: true }));
 
   let source: ByteSource | null = null;
   let result: ParseResult | null = null;
@@ -56,6 +68,10 @@ export function createEngineHandler(deps: HandlerDeps) {
   let generation = 0; // bumped by open/parse; responses from older generations are dropped
   let parseCtl: AbortController | null = null;
   let lifeCtl: AbortController | null = null; // aborted when the result it belongs to is superseded
+
+  // The generation each open/parse/parseDraft request created for itself (see handle()).
+  const ownGen = new WeakMap<object, number>();
+  let current: EngineRequest | null = null;
 
   function supersede(): number {
     parseCtl?.abort();
@@ -122,38 +138,82 @@ export function createEngineHandler(deps: HandlerDeps) {
     return out.sort((a, b) => a.start - b.start).slice(0, MAX_SEGMENTS);
   }
 
+  async function runParse(id: number, gen: number, spec: FormatSpec): Promise<EngineResponse | null> {
+    if (!source) return { id, type: 'error', message: 'no file is open' };
+    const ctl = (parseCtl = new AbortController());
+    lifeCtl = new AbortController();
+    const r = await engine.parse(spec, source, { signal: ctl.signal });
+    if (gen !== generation) return null;
+    result = r;
+    errorsSent = r.errors.length; // the snapshot carries them all
+    return { id, type: 'parse', snapshot: { specId: spec.id, root: r.root, errors: r.errors, stats: r.stats } };
+  }
+
   async function dispatch(req: EngineRequest): Promise<EngineResponse | null> {
     const id = req.id;
     switch (req.type) {
       case 'open': {
         const gen = supersede();
+        if (current) ownGen.set(current, gen);
         const fileName = typeof req.fileName === 'string' ? req.fileName : '';
         source = makeSource(req.file);
-        const found = await engine.detect(deps.specs, fileName, source);
+        const found = await engine.detect(specs, fileName, source);
         if (gen !== generation) return null;
         const detections: DetectionInfo[] = found.map((d) => ({ ...d, name: names.get(d.specId) ?? d.specId }));
         return {
           id,
           type: 'open',
           size: source.size,
-          specs: deps.specs.map((s) => ({ id: s.id, name: s.name })),
+          specs: infos(),
           specErrors: [...deps.specErrors],
           detections,
         };
       }
       case 'parse': {
         const gen = supersede();
+        if (current) ownGen.set(current, gen);
         if (req.specId === null) return { id, type: 'parse', snapshot: null };
-        const spec = deps.specs.find((s) => s.id === req.specId);
+        const spec = specs.find((s) => s.id === req.specId);
         if (!spec) return { id, type: 'error', message: `unknown format "${String(req.specId)}"` };
-        if (!source) return { id, type: 'error', message: 'no file is open' };
-        const ctl = (parseCtl = new AbortController());
-        lifeCtl = new AbortController();
-        const r = await engine.parse(spec, source, { signal: ctl.signal });
-        if (gen !== generation) return null;
-        result = r;
-        errorsSent = r.errors.length; // the snapshot carries them all
-        return { id, type: 'parse', snapshot: { specId: spec.id, root: r.root, errors: r.errors, stats: r.stats } };
+        return runParse(id, gen, spec);
+      }
+      case 'parseDraft': {
+        const gen = supersede();
+        if (current) ownGen.set(current, gen);
+        if (typeof req.specText !== 'string') return { id, type: 'error', message: 'invalid spec text' };
+        // The main thread's copy is not trusted: the draft is validated here with the usual limits.
+        const v = realEngine.loadSpec(req.specText);
+        if (!v.ok) return { id, type: 'error', message: `invalid spec: ${realEngine.formatIssues(v.errors.slice(0, 5))}` };
+        return runParse(id, gen, v.spec);
+      }
+      case 'setSpecs': {
+        if (!Array.isArray(req.specTexts)) return { id, type: 'error', message: 'invalid spec list' };
+        if (req.specTexts.length > MAX_SETSPECS_ITEMS) return { id, type: 'error', message: `too many specs (${req.specTexts.length} > ${MAX_SETSPECS_ITEMS})` };
+        let totalBytes = 0;
+        for (const t of req.specTexts as unknown[]) if (typeof t === 'string') totalBytes += t.length;
+        if (totalBytes > MAX_SETSPECS_BYTES) return { id, type: 'error', message: 'spec list too large' };
+        const accepted: FormatSpec[] = [];
+        const rejected: string[] = [];
+        const seen = new Set(builtinIds);
+        req.specTexts.forEach((text: unknown, i: number) => {
+          const label = `custom spec #${i + 1}`;
+          if (accepted.length >= MAX_CUSTOM_SPECS) return void rejected.push(`${label}: too many custom specs (max ${MAX_CUSTOM_SPECS})`);
+          if (typeof text !== 'string') return void rejected.push(`${label}: not a text`);
+          const v = realEngine.loadSpec(text);
+          if (!v.ok) return void rejected.push(`${label}: ${realEngine.formatIssues(v.errors.slice(0, 3))}`);
+          if (seen.has(v.spec.id)) return void rejected.push(`${label}: id "${v.spec.id}" is already used by another format`);
+          seen.add(v.spec.id);
+          accepted.push(v.spec);
+        });
+        custom = accepted;
+        specs = [...deps.specs, ...custom];
+        names = new Map(specs.map((s) => [s.id, s.name] as const));
+        if (rejected.length > MAX_REJECTED_MESSAGES) {
+          const more = rejected.length - MAX_REJECTED_MESSAGES;
+          rejected.length = MAX_REJECTED_MESSAGES;
+          rejected.push(`… and ${more} more`);
+        }
+        return { id, type: 'setSpecs', specs: infos(), rejected };
       }
       case 'cancel':
         parseCtl?.abort();
@@ -206,11 +266,15 @@ export function createEngineHandler(deps: HandlerDeps) {
     async handle(req: EngineRequest): Promise<void> {
       const gen = generation;
       try {
-        const res = await dispatch(req);
+        current = req;
+        const promise = dispatch(req);
+        current = null;
+        const res = await promise;
         if (res) deps.post(res);
       } catch (e) {
-        // A request that was overtaken by a newer open/parse stays silent even when it failed.
-        if (gen !== generation && req.type !== 'open' && req.type !== 'parse') return;
+        // A request that was overtaken by a newer open/parse/parseDraft stays silent even when it failed (the client
+        // already rejected it). open/parse/parseDraft bump the generation themselves, so they compare against theirs.
+        if ((ownGen.get(req) ?? gen) !== generation) return;
         deps.post({ id: req.id, type: 'error', message: e instanceof Error ? e.message : String(e) });
       }
     },

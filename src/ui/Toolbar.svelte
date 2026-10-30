@@ -15,6 +15,8 @@
     onGoTo,
     gotoError,
     loadError = null,
+    view = 'viewer',
+    onView = () => {},
   }: {
     fileName: string | null;
     size: number;
@@ -32,6 +34,9 @@
     onGoTo: (text: string, mode: OffsetMode) => void;
     loadError?: string | null;
     gotoError: string | null;
+    /** Top-level view: the hex viewer or the format library. */
+    view?: 'viewer' | 'formats';
+    onView?: (view: 'viewer' | 'formats') => void;
   } = $props();
 
   let text = $state('');
@@ -44,6 +49,10 @@
 </script>
 
 <header class="toolbar">
+  <div class="modes" role="group" aria-label="Mode">
+    <button type="button" class:active={view === 'viewer'} aria-pressed={view === 'viewer'} onclick={() => onView('viewer')}>Viewer</button>
+    <button type="button" class:active={view === 'formats'} aria-pressed={view === 'formats'} onclick={() => onView('formats')}>Formats</button>
+  </div>
   <button type="button" onclick={onNew} disabled={saving}>New</button>
   <button type="button" onclick={onOpen} disabled={saving}>Open…</button>
   <button type="button" onclick={onSave} disabled={fileName === null || saving || unreadable}>Save</button>
@@ -88,6 +97,24 @@
     padding: 8px 12px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+  }
+  .modes {
+    display: flex;
+  }
+  .modes button {
+    border-radius: 0;
+  }
+  .modes button:first-child {
+    border-radius: 4px 0 0 4px;
+  }
+  .modes button:last-child {
+    border-radius: 0 4px 4px 0;
+    margin-left: -1px;
+  }
+  .modes button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
   .file {
     font-weight: 600;
