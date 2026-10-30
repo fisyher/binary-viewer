@@ -64,7 +64,7 @@ describe('engine handler', () => {
     expect(r?.size).toBe(58);
     expect(r?.detections[0]).toMatchObject({ specId: 'bmp', name: 'Windows Bitmap', magicMatched: true });
     expect(r?.detections[0]?.reasons.join(' ')).toContain('extension .bmp');
-    expect(r?.specs.map((s) => s.id)).toEqual(['bmp', 'lazy']);
+    expect(r?.specs.map((s) => s.id)).toEqual(['bmp', 'zip', 'lazy']);
     expect(r?.specErrors).toEqual([]);
   });
 

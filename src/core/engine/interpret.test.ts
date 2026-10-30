@@ -114,7 +114,7 @@ describe('substreams, at, if', () => {
     expect(inner.size).toBe(6);
     expect(find(inner, 'b').value).toBe(2);
     expect(find(inner, 'c').error).toMatch(/truncated/); // c would cross the substream end
-    expect(r.root.children!.some((c) => c.name === 'after')).toBe(false); // the parent stops after a failed child
+    expect(find(r.root, 'after').offset).toBe(6); // a sized child is self-delimiting: the parent carries on after it
   });
 
   it('clamps a substream larger than its parent and records an error on the node', async () => {

@@ -1,0 +1,1436 @@
+{
+  "schemaVersion": 1,
+  "id": "zip",
+  "name": "ZIP Archive",
+  "endian": "le",
+  "extensions": [
+    "zip",
+    "zipx",
+    "jar",
+    "war",
+    "ear",
+    "apk",
+    "aab",
+    "aar",
+    "xapk",
+    "ipa",
+    "docx",
+    "xlsx",
+    "pptx",
+    "docm",
+    "xlsm",
+    "pptm",
+    "dotx",
+    "xltx",
+    "potx",
+    "odt",
+    "ods",
+    "odp",
+    "odg",
+    "epub",
+    "whl",
+    "egg",
+    "nupkg",
+    "vsix",
+    "xpi",
+    "kmz",
+    "cbz",
+    "3mf",
+    "appx",
+    "msix",
+    "xps"
+  ],
+  "detect": [
+    {
+      "at": 0,
+      "bytes": "50 4B 01 00",
+      "mask": "FF FF F1 01"
+    }
+  ],
+  "doc": "ZIP archive (PKWARE APPNOTE 6.3.x), also the container of JAR, APK, DOCX/XLSX/PPTX, ODF, EPUB and many more. This is an inspector: it shows the structure and never decompresses, decrypts or verifies anything. All integers are little-endian. Every record starts with a signature \"PK\" + two bytes: local file header 50 4B 03 04, central directory header 50 4B 01 02, end of central directory (EOCD) 50 4B 05 06, ZIP64 EOCD record 50 4B 06 06, ZIP64 EOCD locator 50 4B 06 07, data descriptor 50 4B 07 08 (optional), digital signature 50 4B 05 05. The archive is read from the end, as ZIP software does: the EOCD record is found by a backward search over the last 65557 bytes and points to the central directory, a list of entries; each entry records its name, method, sizes and the offset of its local file header, which is shown through a reference (\"open local_entry\") that parses the local header, the start of the data and the data descriptor on demand. The central directory is authoritative; the local headers are only cross-checked (name length, method, data inside the file). ZIP64: when the EOCD fields hold the sentinels 0xFFFF / 0xFFFFFFFF the values come from the ZIP64 EOCD record (found through the locator) and, per entry, from the ZIP64 extra block (0x0001). Data in front of the archive (a self-extractor stub) is detected from the gap between where the central directory ends and where the offsets say it ends, and all offsets are shifted accordingly. Names and comments are UTF-8 when general purpose flag bit 11 is set and IBM code page 437 otherwise. Extra fields are decoded for ZIP64, extended timestamp, Info-ZIP Unix, NTFS, Info-ZIP Unicode path/comment and WinZip AES; other blocks are kept as raw bytes. Known ambiguities and limits: a fake EOCD inside the archive comment that is self-consistent at the very end of the file wins over the real one; a stub is not assumed when the central directory is found at its stored offset AND ends exactly at the EOCD (or before a digital signature record), so a stub that is itself an archive is handled, but a stub that fakes both is taken as is; a descriptor CRC equal to the descriptor signature is mistaken for the signature; split (multi-disk) archives only show the central directory on the last disk; a count that wrapped at 65535 entries without ZIP64 shows only the declared number of entries.",
+  "root": "zip_file",
+  "types": {
+    "zip_file": {
+      "doc": "The whole file. A ZIP archive is found from the END: the end-of-central-directory record is located by a bounded backward signature search, it points to the central directory (a list of entries), and each central directory entry points to its local file header + data. The central directory is authoritative; local headers are cross-checked. Nothing is decompressed.",
+      "fields": [
+        {
+          "name": "eocd",
+          "type": "eocd_record",
+          "find": {
+            "bytes": "50 4B 05 06",
+            "from": "_io.end",
+            "window": 65557,
+            "direction": "backward",
+            "accept": [
+              "_start + 22 + comment_len == _io.end",
+              "_start + 22 + comment_len <= _io.end",
+              "true"
+            ]
+          },
+          "doc": "End of central directory record, found by searching backward from the end of the file for \"PK\\5\\6\" in the last 65557 bytes (22 + the longest possible comment). A candidate whose comment ends exactly at the end of the file is preferred (so a fake record inside the comment loses); then one whose comment fits in the file; then the nearest one. A record forged to be self-consistent at the very end of the file wins (known ambiguity)."
+        },
+        {
+          "name": "locator",
+          "type": "zip64_locator",
+          "at": "eocd._start - 20",
+          "if": "eocd != null and eocd._start >= 20",
+          "ifMagic": {
+            "at": "eocd._start - 20",
+            "bytes": "50 4B 06 07"
+          },
+          "doc": "ZIP64 end of central directory locator: exactly 20 bytes before the EOCD, only shown when its signature \"PK\\6\\7\" is there."
+        },
+        {
+          "name": "z64_adjacent",
+          "type": "zip64_eocd",
+          "at": "locator._start - 56",
+          "if": "locator != null and locator._start >= 56",
+          "ifMagic": {
+            "at": "locator._start - 56",
+            "bytes": "50 4B 06 06"
+          },
+          "doc": "ZIP64 end of central directory record found directly before the locator (the usual layout for a record without extensible data), only shown when its signature \"PK\\6\\6\" is there."
+        },
+        {
+          "name": "z64_by_offset",
+          "type": "zip64_eocd",
+          "at": "locator.z64_eocd_offset",
+          "if": "locator != null and z64_adjacent == null",
+          "ifMagic": {
+            "at": "locator.z64_eocd_offset",
+            "bytes": "50 4B 06 06"
+          },
+          "doc": "ZIP64 end of central directory record at the offset given by the locator, tried only when no record sits directly before the locator. The offset is used as is; if no record is there (data in front of the archive shifts it) z64_scan looks for it."
+        },
+        {
+          "name": "z64_scan",
+          "type": "zip64_eocd",
+          "find": {
+            "bytes": "50 4B 06 06",
+            "from": "locator._start",
+            "window": 65536,
+            "direction": "backward",
+            "accept": [
+              "_start + 12 + record_size == _parent.locator._start",
+              "true"
+            ]
+          },
+          "if": "locator != null and z64_adjacent == null and z64_by_offset == null",
+          "doc": "Fallback when neither of the two probes above found the record (for example a record with extensible data in an archive with data in front of it, where the stored offset is off by the stub size): search backward from the locator over 64 KiB for \"PK\\6\\6\", preferring a record that ends exactly at the locator. Not finding anything is an error, since the locator promises a record."
+        },
+        {
+          "name": "z64",
+          "type": "value",
+          "value": "z64_adjacent != null ? z64_adjacent : (z64_by_offset != null ? z64_by_offset : z64_scan)",
+          "doc": "The ZIP64 end of central directory record that is in effect, or null when there is none."
+        },
+        {
+          "name": "entries_eff",
+          "type": "value",
+          "value": "eocd.entries_total == 0xFFFF and z64 != null and z64.entries_total != null ? z64.entries_total : eocd.entries_total",
+          "doc": "Total number of central directory entries: the ZIP64 value when the 16-bit field holds the 0xFFFF sentinel and a ZIP64 record exists, otherwise the EOCD value."
+        },
+        {
+          "name": "cd_size_eff",
+          "type": "value",
+          "value": "eocd.cd_size == 0xFFFFFFFF and z64 != null and z64.cd_size != null ? z64.cd_size : eocd.cd_size",
+          "doc": "Size of the central directory in bytes (ZIP64 value when the 32-bit field is 0xFFFFFFFF and a ZIP64 record exists)."
+        },
+        {
+          "name": "cd_offset_eff",
+          "type": "value",
+          "value": "eocd.cd_offset == 0xFFFFFFFF and z64 != null and z64.cd_offset != null ? z64.cd_offset : eocd.cd_offset",
+          "doc": "Offset of the central directory as written in the archive (ZIP64 value when the 32-bit field is 0xFFFFFFFF and a ZIP64 record exists). Not yet corrected for prepended data; see delta."
+        },
+        {
+          "name": "zip64_ok",
+          "type": "value",
+          "value": "not (eocd != null and z64 == null and (eocd.entries_total == 0xFFFF or eocd.cd_size == 0xFFFFFFFF or eocd.cd_offset == 0xFFFFFFFF))",
+          "assert": [
+            {
+              "expr": "_",
+              "level": "warning",
+              "message": "ZIP64 values required but no ZIP64 record found"
+            }
+          ],
+          "doc": "Consistency check: false when an EOCD field holds a ZIP64 sentinel (0xFFFF / 0xFFFFFFFF) but no ZIP64 end of central directory record was found. (An archive with exactly 65535 entries also triggers this, since 0xFFFF is the sentinel.)"
+        },
+        {
+          "name": "ref_pos",
+          "type": "value",
+          "value": "z64 != null ? z64._start : (eocd != null ? eocd._start : null)",
+          "doc": "Where the central directory should end: the start of the ZIP64 EOCD record when there is one, otherwise the start of the EOCD record."
+        },
+        {
+          "name": "cd_at_stored",
+          "type": "value",
+          "value": "true",
+          "if": "cd_offset_eff != null",
+          "ifMagic": {
+            "at": "cd_offset_eff",
+            "bytes": "50 4B 01 02"
+          },
+          "doc": "Present (true) when a central directory header signature \"PK\\1\\2\" is found exactly where the stored offset says, in which case the stored offsets are already correct for this file and no data is assumed in front of the archive. This keeps a digital signature record or ZIP64 extensible data between the directory and the EOCD from being mistaken for a stub."
+        },
+        {
+          "name": "cd_end_sig",
+          "type": "value",
+          "value": "true",
+          "if": "cd_offset_eff != null and cd_size_eff != null",
+          "ifMagic": {
+            "at": "cd_offset_eff + cd_size_eff",
+            "bytes": "50 4B 05 05"
+          },
+          "doc": "Present (true) when a digital signature record (\"PK\\5\\5\") follows the central directory at its stored end."
+        },
+        {
+          "name": "stored_ok",
+          "type": "value",
+          "value": "cd_at_stored != null and cd_size_eff != null and ref_pos != null and cd_offset_eff + cd_size_eff <= ref_pos and (cd_offset_eff + cd_size_eff == ref_pos or cd_end_sig != null)",
+          "doc": "True when the stored offset is trusted as is: a central directory header is there AND the directory ends exactly at the EOCD / ZIP64 EOCD record or at a digital signature record that precedes it. A stub that is itself an archive therefore does not pass."
+        },
+        {
+          "name": "delta",
+          "type": "value",
+          "value": "not stored_ok and ref_pos != null and cd_size_eff != null and cd_offset_eff != null ? max(0, ref_pos - cd_size_eff - cd_offset_eff) : 0",
+          "doc": "Bytes of data in front of the archive (a self-extractor stub, for example): the gap between where the central directory should end and where its offset and size say it ends (0 when the stored offsets are trusted, see stored_ok). All offsets stored in the archive are relative to the start of the archive, so this is added to them."
+        },
+        {
+          "name": "prefix_check",
+          "type": "value",
+          "value": "delta == 0",
+          "assert": [
+            {
+              "expr": "_",
+              "level": "warning",
+              "message": "bytes precede the archive (self-extractor?); stored offsets are shifted by delta"
+            }
+          ],
+          "doc": "Warning when delta is greater than zero: data (a self-extractor stub, for instance) precedes the archive."
+        },
+        {
+          "name": "cd_start",
+          "type": "value",
+          "value": "cd_offset_eff != null ? cd_offset_eff + delta : null",
+          "doc": "Absolute file offset of the central directory (cd_offset_eff + delta)."
+        },
+        {
+          "name": "cd_fits",
+          "type": "value",
+          "value": "ref_pos == null or cd_start == null or cd_size_eff == null or cd_start + cd_size_eff <= ref_pos",
+          "assert": [
+            {
+              "expr": "_",
+              "level": "warning",
+              "message": "the central directory extends past the end-of-central-directory record"
+            }
+          ],
+          "doc": "Consistency check: the central directory must end at or before the EOCD (or ZIP64 EOCD) record."
+        },
+        {
+          "name": "disk_check",
+          "type": "value",
+          "value": "eocd == null or (eocd.disk == 0 and eocd.cd_disk == eocd.disk and eocd.entries_disk == eocd.entries_total)",
+          "assert": [
+            {
+              "expr": "_",
+              "level": "warning",
+              "message": "multi-disk (split) archive: only the central directory on this disk is shown"
+            }
+          ],
+          "doc": "Warning for split archives: the disk number is not 0, the central directory starts on another disk, or the entry counts differ. Entries stored on other disks are not available."
+        },
+        {
+          "name": "parse_cd",
+          "type": "value",
+          "value": "eocd != null and cd_start != null and cd_size_eff != null and eocd.cd_disk == eocd.disk",
+          "doc": "True when the central directory is read: an EOCD exists and the directory starts on the same disk as the EOCD."
+        },
+        {
+          "name": "central_directory",
+          "type": "central_directory",
+          "at": "cd_start",
+          "size": "cd_size_eff",
+          "if": "parse_cd",
+          "doc": "The central directory: one header per entry, placed by offset so that a directory with many entries is read lazily (only the first entries are parsed when the file is opened)."
+        },
+        {
+          "name": "signature",
+          "type": "digital_signature",
+          "at": "cd_start + cd_size_eff",
+          "if": "cd_start != null and cd_size_eff != null",
+          "ifMagic": {
+            "at": "cd_start + cd_size_eff",
+            "bytes": "50 4B 05 05"
+          },
+          "doc": "Archive digital signature record (\"PK\\5\\5\") directly after the central directory, only shown when present."
+        }
+      ]
+    },
+    "eocd_record": {
+      "doc": "End of central directory record (22 bytes + comment): where the central directory is. Fields that do not fit in 16/32 bits hold the sentinel 0xFFFF / 0xFFFFFFFF and the real value is in the ZIP64 record.",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 101010256,
+          "doc": "Signature \"PK\\5\\6\" (50 4B 05 06)."
+        },
+        {
+          "name": "disk",
+          "type": "u2",
+          "doc": "Number of this disk."
+        },
+        {
+          "name": "cd_disk",
+          "type": "u2",
+          "doc": "Disk where the central directory starts."
+        },
+        {
+          "name": "entries_disk",
+          "type": "u2",
+          "doc": "Number of central directory entries on this disk."
+        },
+        {
+          "name": "entries_total",
+          "type": "u2",
+          "doc": "Total number of central directory entries (0xFFFF: see the ZIP64 record)."
+        },
+        {
+          "name": "cd_size",
+          "type": "u4",
+          "doc": "Size of the central directory in bytes (0xFFFFFFFF: see the ZIP64 record)."
+        },
+        {
+          "name": "cd_offset",
+          "type": "u4",
+          "doc": "Offset of the central directory from the start of the archive (0xFFFFFFFF: see the ZIP64 record)."
+        },
+        {
+          "name": "comment_len",
+          "type": "u2",
+          "doc": "Length of the archive comment."
+        },
+        {
+          "name": "comment",
+          "type": "str",
+          "size": "comment_len",
+          "encoding": "cp437",
+          "if": "comment_len > 0",
+          "doc": "Archive comment. There is no encoding flag for it; it is shown as IBM code page 437 (ASCII text looks the same in UTF-8)."
+        }
+      ]
+    },
+    "zip64_locator": {
+      "doc": "ZIP64 end of central directory locator (20 bytes), directly before the EOCD record.",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 117853008,
+          "doc": "Signature \"PK\\6\\7\" (50 4B 06 07)."
+        },
+        {
+          "name": "disk_with_z64_eocd",
+          "type": "u4",
+          "doc": "Disk that holds the ZIP64 end of central directory record."
+        },
+        {
+          "name": "z64_eocd_offset",
+          "type": "u8",
+          "doc": "Offset of the ZIP64 end of central directory record."
+        },
+        {
+          "name": "total_disks",
+          "type": "u4",
+          "doc": "Total number of disks."
+        }
+      ]
+    },
+    "zip64_eocd": {
+      "doc": "ZIP64 end of central directory record (56 bytes + extensible data): 64-bit versions of the EOCD values.",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 101075792,
+          "doc": "Signature \"PK\\6\\6\" (50 4B 06 06)."
+        },
+        {
+          "name": "record_size",
+          "type": "u8",
+          "doc": "Size of the rest of the record (everything after this field); the whole record is 12 + record_size bytes."
+        },
+        {
+          "name": "version_made_by",
+          "type": "u2",
+          "doc": "Version made by."
+        },
+        {
+          "name": "version_needed",
+          "type": "u2",
+          "doc": "Version needed to extract."
+        },
+        {
+          "name": "disk",
+          "type": "u4",
+          "doc": "Number of this disk."
+        },
+        {
+          "name": "cd_disk",
+          "type": "u4",
+          "doc": "Disk where the central directory starts."
+        },
+        {
+          "name": "entries_disk",
+          "type": "u8",
+          "doc": "Number of central directory entries on this disk."
+        },
+        {
+          "name": "entries_total",
+          "type": "u8",
+          "doc": "Total number of central directory entries."
+        },
+        {
+          "name": "cd_size",
+          "type": "u8",
+          "doc": "Size of the central directory in bytes."
+        },
+        {
+          "name": "cd_offset",
+          "type": "u8",
+          "doc": "Offset of the central directory from the start of the archive."
+        },
+        {
+          "name": "extensible_data",
+          "type": "bytes",
+          "size": "max(0, record_size - 44)",
+          "doc": "ZIP64 extensible data sector (record_size - 44 bytes; zero when the size is smaller or the record lies about it, in which case an error is shown)."
+        }
+      ]
+    },
+    "digital_signature": {
+      "doc": "Archive digital signature record (after the central directory).",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 84233040,
+          "doc": "Signature \"PK\\5\\5\" (50 4B 05 05)."
+        },
+        {
+          "name": "data_size",
+          "type": "u2",
+          "doc": "Size of the signature data."
+        },
+        {
+          "name": "data",
+          "type": "bytes",
+          "size": "data_size",
+          "doc": "Signature data (not interpreted)."
+        }
+      ]
+    },
+    "central_directory": {
+      "doc": "The central directory: the entries, each with its own header, back to back.",
+      "fields": [
+        {
+          "name": "count_check",
+          "type": "value",
+          "value": "_root.entries_eff <= _io.size / 46",
+          "assert": [
+            {
+              "expr": "_",
+              "level": "warning",
+              "message": "the declared entry count cannot fit in the central directory size; the count is clamped (corrupt or wrapped count)"
+            }
+          ],
+          "doc": "Consistency check: an entry needs at least 46 bytes, so the declared number of entries must not exceed size / 46. The number of entries read is clamped to that bound."
+        },
+        {
+          "name": "entries",
+          "type": "cd_entry",
+          "at": "_start",
+          "repeat": {
+            "count": "min(_root.entries_eff, _io.size / 46)"
+          },
+          "doc": "Central directory file headers. The first entries are parsed when the file is opened and the rest on demand; reading stops at the first header that does not start with \"PK\\1\\2\"."
+        }
+      ]
+    },
+    "cd_entry": {
+      "doc": "Central directory file header (46 bytes + name + extra field + comment): everything about one entry. The reference below opens the entry itself (local header + data).",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 33639248,
+          "fatal": true,
+          "doc": "Signature \"PK\\1\\2\" (50 4B 01 02). A mismatch ends the list of entries."
+        },
+        {
+          "name": "made_by_version",
+          "type": "u1",
+          "doc": "ZIP specification version the writer implements, times ten (63 = 6.3)."
+        },
+        {
+          "name": "made_by_host",
+          "type": "u1",
+          "enum": "host",
+          "doc": "System (attribute convention) the entry was made on; 3 = Unix means external_attr holds a Unix mode."
+        },
+        {
+          "name": "version_needed",
+          "type": "u2",
+          "doc": "Version needed to extract, times ten (20 = 2.0, 45 = 4.5 for ZIP64)."
+        },
+        {
+          "name": "flags",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "encrypted",
+              "offset": 0,
+              "width": 1,
+              "doc": "Bit 0: the entry is encrypted."
+            },
+            {
+              "name": "compression_option",
+              "offset": 1,
+              "width": 2,
+              "doc": "Bits 1-2: method-specific option (for deflate: 0 normal, 1 maximum, 2 fast, 3 super fast)."
+            },
+            {
+              "name": "data_descriptor",
+              "offset": 3,
+              "width": 1,
+              "doc": "Bit 3: CRC-32 and sizes in the local header are zero; a data descriptor follows the data."
+            },
+            {
+              "name": "enhanced_deflate",
+              "offset": 4,
+              "width": 1,
+              "doc": "Bit 4: enhanced deflating (deflate64) / method-specific."
+            },
+            {
+              "name": "patched",
+              "offset": 5,
+              "width": 1,
+              "doc": "Bit 5: the entry is compressed patched data."
+            },
+            {
+              "name": "strong_encryption",
+              "offset": 6,
+              "width": 1,
+              "doc": "Bit 6: strong encryption."
+            },
+            {
+              "name": "utf8",
+              "offset": 11,
+              "width": 1,
+              "doc": "Bit 11: the name and comment are UTF-8 (otherwise IBM code page 437)."
+            },
+            {
+              "name": "masked_headers",
+              "offset": 13,
+              "width": 1,
+              "doc": "Bit 13: local header values are masked (central directory encryption)."
+            }
+          ],
+          "doc": "General purpose bit flags."
+        },
+        {
+          "name": "method",
+          "type": "u2",
+          "enum": "method",
+          "doc": "Compression method."
+        },
+        {
+          "name": "mod_time",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "sec2",
+              "offset": 0,
+              "width": 5,
+              "doc": "Seconds divided by two (0-29)."
+            },
+            {
+              "name": "minute",
+              "offset": 5,
+              "width": 6,
+              "doc": "Minute (0-59)."
+            },
+            {
+              "name": "hour",
+              "offset": 11,
+              "width": 5,
+              "doc": "Hour (0-23)."
+            }
+          ],
+          "doc": "Last modification time in MS-DOS format (2-second resolution, local time)."
+        },
+        {
+          "name": "mod_date",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "day",
+              "offset": 0,
+              "width": 5,
+              "doc": "Day of the month (1-31)."
+            },
+            {
+              "name": "month",
+              "offset": 5,
+              "width": 4,
+              "doc": "Month (1-12)."
+            },
+            {
+              "name": "year_since_1980",
+              "offset": 9,
+              "width": 7,
+              "doc": "Years since 1980."
+            }
+          ],
+          "doc": "Last modification date in MS-DOS format."
+        },
+        {
+          "name": "crc32",
+          "type": "u4",
+          "doc": "CRC-32 of the uncompressed data (not verified here)."
+        },
+        {
+          "name": "comp_size",
+          "type": "u4",
+          "doc": "Compressed size (0xFFFFFFFF: the real value is in the ZIP64 extra field)."
+        },
+        {
+          "name": "uncomp_size",
+          "type": "u4",
+          "doc": "Uncompressed size (0xFFFFFFFF: the real value is in the ZIP64 extra field)."
+        },
+        {
+          "name": "name_len",
+          "type": "u2",
+          "doc": "Length of the file name."
+        },
+        {
+          "name": "extra_len",
+          "type": "u2",
+          "doc": "Length of the extra field."
+        },
+        {
+          "name": "comment_len",
+          "type": "u2",
+          "doc": "Length of the file comment."
+        },
+        {
+          "name": "disk_start",
+          "type": "u2",
+          "doc": "Disk number where the entry starts (0xFFFF: see the ZIP64 extra field)."
+        },
+        {
+          "name": "internal_attr",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "text",
+              "offset": 0,
+              "width": 1,
+              "doc": "Bit 0: the data is apparently text."
+            }
+          ],
+          "doc": "Internal file attributes."
+        },
+        {
+          "name": "external_attr",
+          "type": "u4",
+          "bits": [
+            {
+              "name": "dos_attr",
+              "offset": 0,
+              "width": 8,
+              "doc": "MS-DOS attribute bits (1 read-only, 2 hidden, 4 system, 16 directory, 32 archive)."
+            },
+            {
+              "name": "unix_mode",
+              "offset": 16,
+              "width": 16,
+              "doc": "Unix st_mode (file type and permissions) when the entry was made on Unix."
+            }
+          ],
+          "doc": "External file attributes; their meaning depends on made_by_host."
+        },
+        {
+          "name": "local_header_offset",
+          "type": "u4",
+          "doc": "Offset of the local file header from the start of the archive (0xFFFFFFFF: see the ZIP64 extra field)."
+        },
+        {
+          "name": "name_utf8",
+          "type": "str",
+          "size": "name_len",
+          "encoding": "utf8",
+          "if": "(flags & 0x800) != 0",
+          "doc": "File name as UTF-8 (general purpose flag bit 11 set). Control characters are shown escaped."
+        },
+        {
+          "name": "name_cp437",
+          "type": "str",
+          "size": "name_len",
+          "encoding": "cp437",
+          "if": "(flags & 0x800) == 0",
+          "doc": "File name as IBM code page 437 (flag bit 11 clear). Shown verbatim; \"..\" and absolute paths are not sanitised."
+        },
+        {
+          "name": "name",
+          "type": "value",
+          "value": "name_utf8 != null ? name_utf8 : name_cp437",
+          "doc": "The decoded file name (UTF-8 or code page 437, chosen by flag bit 11)."
+        },
+        {
+          "name": "extra",
+          "type": "cd_extra",
+          "size": "extra_len",
+          "if": "extra_len > 0",
+          "doc": "Extra field: a sequence of TLV blocks."
+        },
+        {
+          "name": "comment_utf8",
+          "type": "str",
+          "size": "comment_len",
+          "encoding": "utf8",
+          "if": "comment_len > 0 and (flags & 0x800) != 0",
+          "doc": "File comment as UTF-8 (flag bit 11 set)."
+        },
+        {
+          "name": "comment_cp437",
+          "type": "str",
+          "size": "comment_len",
+          "encoding": "cp437",
+          "if": "comment_len > 0 and (flags & 0x800) == 0",
+          "doc": "File comment as IBM code page 437 (flag bit 11 clear)."
+        },
+        {
+          "name": "zip64",
+          "type": "value",
+          "value": "lookup(extra.blocks, \"id\", 1).body",
+          "doc": "Body of the ZIP64 extra block, or null when the extra field has none."
+        },
+        {
+          "name": "comp_size_eff",
+          "type": "value",
+          "value": "comp_size == 0xFFFFFFFF and zip64 != null and zip64.comp_size != null ? zip64.comp_size : comp_size",
+          "doc": "Compressed size in effect: the ZIP64 value when the 32-bit field is 0xFFFFFFFF and the ZIP64 block has it, otherwise the header value."
+        },
+        {
+          "name": "uncomp_size_eff",
+          "type": "value",
+          "value": "uncomp_size == 0xFFFFFFFF and zip64 != null and zip64.uncomp_size != null ? zip64.uncomp_size : uncomp_size",
+          "doc": "Uncompressed size in effect (ZIP64 value when the 32-bit field is 0xFFFFFFFF)."
+        },
+        {
+          "name": "lho_eff",
+          "type": "value",
+          "value": "local_header_offset == 0xFFFFFFFF and zip64 != null and zip64.local_header_offset != null ? zip64.local_header_offset : local_header_offset",
+          "doc": "Local header offset in effect (ZIP64 value when the 32-bit field is 0xFFFFFFFF), still relative to the start of the archive."
+        },
+        {
+          "name": "local_header",
+          "type": "value",
+          "value": "lho_eff + _root.delta",
+          "if": "disk_start == 0",
+          "ref": {
+            "type": "local_entry",
+            "at": "_",
+            "doc": "Local file header and data of this entry, at the offset in the central directory (plus any data prepended to the archive). Not shown for entries that start on another disk."
+          },
+          "doc": "Absolute file offset of the local file header (lho_eff + delta). Open it to see the header, the start of the data and the data descriptor."
+        }
+      ]
+    },
+    "cd_extra": {
+      "doc": "Extra field of a central directory entry: TLV blocks up to the end of the field.",
+      "fields": [
+        {
+          "name": "blocks",
+          "type": "cd_extra_block",
+          "repeat": "eos",
+          "doc": "The blocks, in order. A block cut off by the end of the field ends the list with an error."
+        }
+      ]
+    },
+    "cd_extra_block": {
+      "doc": "One TLV block of the extra field of a central directory entry: id, size, then `size` bytes of body. The body is parsed as a sub-structure for the ids this spec knows and kept as raw bytes otherwise.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u2",
+          "enum": "extra_id",
+          "doc": "Header id of the block (0x0001 ZIP64, 0x5455 extended timestamp, ...)."
+        },
+        {
+          "name": "size",
+          "type": "u2",
+          "doc": "Size of the body in bytes (not counting the 4-byte block header)."
+        },
+        {
+          "name": "body",
+          "type": {
+            "switch": "id",
+            "cases": {
+              "0x0001": "zip64_cd_body",
+              "0x5455": "extended_timestamp",
+              "0x7875": "info_zip_unix_new",
+              "0x000a": "ntfs_extra",
+              "0x7075": "unicode_text",
+              "0x6375": "unicode_text",
+              "0x9901": "winzip_aes"
+            },
+            "default": "bytes"
+          },
+          "size": "size",
+          "doc": "Block body, interpreted by the id; raw bytes for ids this spec does not decode (including ids of known but undecoded blocks)."
+        }
+      ]
+    },
+    "local_extra": {
+      "doc": "Extra field of a local file header: TLV blocks up to the end of the field.",
+      "fields": [
+        {
+          "name": "blocks",
+          "type": "local_extra_block",
+          "repeat": "eos",
+          "doc": "The blocks, in order. A block cut off by the end of the field ends the list with an error."
+        }
+      ]
+    },
+    "local_extra_block": {
+      "doc": "One TLV block of the extra field of a local file header: id, size, then `size` bytes of body. The body is parsed as a sub-structure for the ids this spec knows and kept as raw bytes otherwise.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u2",
+          "enum": "extra_id",
+          "doc": "Header id of the block (0x0001 ZIP64, 0x5455 extended timestamp, ...)."
+        },
+        {
+          "name": "size",
+          "type": "u2",
+          "doc": "Size of the body in bytes (not counting the 4-byte block header)."
+        },
+        {
+          "name": "body",
+          "type": {
+            "switch": "id",
+            "cases": {
+              "0x0001": "zip64_local_body",
+              "0x5455": "extended_timestamp",
+              "0x7875": "info_zip_unix_new",
+              "0x000a": "ntfs_extra",
+              "0x7075": "unicode_text",
+              "0x6375": "unicode_text",
+              "0x9901": "winzip_aes"
+            },
+            "default": "bytes"
+          },
+          "size": "size",
+          "doc": "Block body, interpreted by the id; raw bytes for ids this spec does not decode (including ids of known but undecoded blocks)."
+        }
+      ]
+    },
+    "zip64_cd_body": {
+      "doc": "ZIP64 extended information in a central directory entry. Only the values whose 32-bit field in the header holds the sentinel are present, in this fixed order.",
+      "fields": [
+        {
+          "name": "uncomp_size",
+          "type": "u8",
+          "if": "_parent._parent._parent.uncomp_size == 0xFFFFFFFF",
+          "doc": "Real uncompressed size (present when the header field is 0xFFFFFFFF)."
+        },
+        {
+          "name": "comp_size",
+          "type": "u8",
+          "if": "_parent._parent._parent.comp_size == 0xFFFFFFFF",
+          "doc": "Real compressed size (present when the header field is 0xFFFFFFFF)."
+        },
+        {
+          "name": "local_header_offset",
+          "type": "u8",
+          "if": "_parent._parent._parent.local_header_offset == 0xFFFFFFFF",
+          "doc": "Real local header offset (present when the header field is 0xFFFFFFFF)."
+        },
+        {
+          "name": "disk_start",
+          "type": "u4",
+          "if": "_parent._parent._parent.disk_start == 0xFFFF",
+          "doc": "Real disk number (present when the header field is 0xFFFF)."
+        }
+      ]
+    },
+    "zip64_local_body": {
+      "doc": "ZIP64 extended information in a local file header: the uncompressed and the compressed size, 8 bytes each. Both are read whenever the block holds them, even when the header sizes are not the sentinel (streaming writers emit a zeroed 16-byte block); a shorter block simply has fewer values.",
+      "fields": [
+        {
+          "name": "uncomp_size",
+          "type": "u8",
+          "if": "not _io.eof",
+          "doc": "Uncompressed size (zero in a streamed entry)."
+        },
+        {
+          "name": "comp_size",
+          "type": "u8",
+          "if": "not _io.eof",
+          "doc": "Compressed size (zero in a streamed entry)."
+        }
+      ]
+    },
+    "extended_timestamp": {
+      "doc": "Extended timestamp (0x5455, Info-ZIP \"UT\"): Unix times in seconds since 1970-01-01 UTC. A central directory block only carries the modification time even when more flag bits are set.",
+      "fields": [
+        {
+          "name": "flags",
+          "type": "u1",
+          "bits": [
+            {
+              "name": "has_mtime",
+              "offset": 0,
+              "width": 1
+            },
+            {
+              "name": "has_atime",
+              "offset": 1,
+              "width": 1
+            },
+            {
+              "name": "has_ctime",
+              "offset": 2,
+              "width": 1
+            }
+          ],
+          "doc": "Which timestamps the writer included."
+        },
+        {
+          "name": "mtime",
+          "type": "s4",
+          "if": "(flags & 1) != 0 and not _io.eof",
+          "doc": "Modification time (Unix seconds)."
+        },
+        {
+          "name": "atime",
+          "type": "s4",
+          "if": "(flags & 2) != 0 and not _io.eof",
+          "doc": "Access time (Unix seconds)."
+        },
+        {
+          "name": "ctime",
+          "type": "s4",
+          "if": "(flags & 4) != 0 and not _io.eof",
+          "doc": "Creation time (Unix seconds)."
+        }
+      ]
+    },
+    "info_zip_unix_new": {
+      "doc": "Info-ZIP new Unix extra field (0x7875, \"ux\"): owner ids with variable widths, little-endian.",
+      "fields": [
+        {
+          "name": "version",
+          "type": "u1",
+          "doc": "Version (1)."
+        },
+        {
+          "name": "uid_size",
+          "type": "u1",
+          "doc": "Size of the user id in bytes."
+        },
+        {
+          "name": "uid",
+          "type": "bytes",
+          "size": "uid_size",
+          "doc": "User id (little-endian integer)."
+        },
+        {
+          "name": "gid_size",
+          "type": "u1",
+          "doc": "Size of the group id in bytes."
+        },
+        {
+          "name": "gid",
+          "type": "bytes",
+          "size": "gid_size",
+          "doc": "Group id (little-endian integer)."
+        }
+      ]
+    },
+    "ntfs_extra": {
+      "doc": "NTFS extra field (0x000a): a reserved word followed by attribute records.",
+      "fields": [
+        {
+          "name": "reserved",
+          "type": "u4",
+          "doc": "Reserved."
+        },
+        {
+          "name": "attributes",
+          "type": "ntfs_attribute",
+          "repeat": "eos",
+          "doc": "Attribute records (tag, size, body)."
+        }
+      ]
+    },
+    "ntfs_attribute": {
+      "doc": "One NTFS attribute record. Tag 1 holds the file times; other tags are kept as raw bytes.",
+      "fields": [
+        {
+          "name": "tag",
+          "type": "u2",
+          "doc": "Attribute tag (1 = file times)."
+        },
+        {
+          "name": "size",
+          "type": "u2",
+          "doc": "Size of the body."
+        },
+        {
+          "name": "body",
+          "type": {
+            "switch": "tag",
+            "cases": {
+              "1": "ntfs_times"
+            },
+            "default": "bytes"
+          },
+          "size": "size",
+          "doc": "Attribute body."
+        }
+      ]
+    },
+    "ntfs_times": {
+      "doc": "NTFS file times: Windows FILETIME values (100 ns ticks since 1601-01-01 UTC).",
+      "fields": [
+        {
+          "name": "mtime",
+          "type": "u8",
+          "doc": "Last write time (FILETIME)."
+        },
+        {
+          "name": "atime",
+          "type": "u8",
+          "doc": "Last access time (FILETIME)."
+        },
+        {
+          "name": "ctime",
+          "type": "u8",
+          "doc": "Creation time (FILETIME)."
+        }
+      ]
+    },
+    "unicode_text": {
+      "doc": "Info-ZIP Unicode path (0x7075) or comment (0x6375): a UTF-8 replacement for the name or comment.",
+      "fields": [
+        {
+          "name": "version",
+          "type": "u1",
+          "doc": "Version (1)."
+        },
+        {
+          "name": "name_crc32",
+          "type": "u4",
+          "doc": "CRC-32 of the original (header) name or comment this text replaces; the text is only valid while it matches."
+        },
+        {
+          "name": "text",
+          "type": "str",
+          "size": "eos",
+          "encoding": "utf8",
+          "doc": "The UTF-8 text, to the end of the block."
+        }
+      ]
+    },
+    "winzip_aes": {
+      "doc": "WinZip AES encryption extra field (0x9901). The entry method is 99; the real compression method is stored here.",
+      "fields": [
+        {
+          "name": "vendor_version",
+          "type": "u2",
+          "doc": "AES format version (1 = AE-1, 2 = AE-2)."
+        },
+        {
+          "name": "vendor_id",
+          "type": "str",
+          "size": 2,
+          "encoding": "ascii",
+          "expect": "AE",
+          "doc": "Vendor id, \"AE\"."
+        },
+        {
+          "name": "strength",
+          "type": "u1",
+          "enum": "aes_strength",
+          "doc": "Key strength."
+        },
+        {
+          "name": "actual_method",
+          "type": "u2",
+          "enum": "method",
+          "doc": "The compression method actually used for the data."
+        }
+      ]
+    },
+    "local_entry": {
+      "doc": "An entry as stored in the archive body: local file header, the (compressed) data and, with flag bit 3, a data descriptor. Opened from the central directory entry: the entry that opened it is `_parent`, so the sizes come from the central directory (the local header may hold zeros).",
+      "fields": [
+        {
+          "name": "header",
+          "type": "local_file_header",
+          "assert": [
+            {
+              "expr": "_.name_len == _parent.name_len",
+              "level": "warning",
+              "message": "the local header name length differs from the central directory"
+            },
+            {
+              "expr": "_.method == _parent.method",
+              "level": "warning",
+              "message": "the local header compression method differs from the central directory"
+            }
+          ],
+          "doc": "Local file header."
+        },
+        {
+          "name": "data",
+          "type": "bytes",
+          "size": "_parent.comp_size_eff",
+          "assert": [
+            {
+              "expr": "_io.pos <= _root.cd_start",
+              "level": "warning",
+              "message": "the entry data runs into the central directory"
+            }
+          ],
+          "doc": "The stored (usually compressed) data. Its size is the compressed size from the central directory; only the first bytes are read."
+        },
+        {
+          "name": "descriptor",
+          "type": "data_descriptor",
+          "if": "(header.flags & 8) != 0",
+          "doc": "Data descriptor holding the real CRC-32 and sizes (general purpose flag bit 3)."
+        }
+      ]
+    },
+    "local_file_header": {
+      "doc": "Local file header (30 bytes + name + extra field).",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 67324752,
+          "fatal": true,
+          "doc": "Signature \"PK\\3\\4\" (50 4B 03 04)."
+        },
+        {
+          "name": "version_needed",
+          "type": "u2",
+          "doc": "Version needed to extract, times ten."
+        },
+        {
+          "name": "flags",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "encrypted",
+              "offset": 0,
+              "width": 1,
+              "doc": "Bit 0: the entry is encrypted."
+            },
+            {
+              "name": "compression_option",
+              "offset": 1,
+              "width": 2,
+              "doc": "Bits 1-2: method-specific option (for deflate: 0 normal, 1 maximum, 2 fast, 3 super fast)."
+            },
+            {
+              "name": "data_descriptor",
+              "offset": 3,
+              "width": 1,
+              "doc": "Bit 3: CRC-32 and sizes in the local header are zero; a data descriptor follows the data."
+            },
+            {
+              "name": "enhanced_deflate",
+              "offset": 4,
+              "width": 1,
+              "doc": "Bit 4: enhanced deflating (deflate64) / method-specific."
+            },
+            {
+              "name": "patched",
+              "offset": 5,
+              "width": 1,
+              "doc": "Bit 5: the entry is compressed patched data."
+            },
+            {
+              "name": "strong_encryption",
+              "offset": 6,
+              "width": 1,
+              "doc": "Bit 6: strong encryption."
+            },
+            {
+              "name": "utf8",
+              "offset": 11,
+              "width": 1,
+              "doc": "Bit 11: the name and comment are UTF-8 (otherwise IBM code page 437)."
+            },
+            {
+              "name": "masked_headers",
+              "offset": 13,
+              "width": 1,
+              "doc": "Bit 13: local header values are masked (central directory encryption)."
+            }
+          ],
+          "doc": "General purpose bit flags."
+        },
+        {
+          "name": "method",
+          "type": "u2",
+          "enum": "method",
+          "doc": "Compression method."
+        },
+        {
+          "name": "mod_time",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "sec2",
+              "offset": 0,
+              "width": 5,
+              "doc": "Seconds divided by two (0-29)."
+            },
+            {
+              "name": "minute",
+              "offset": 5,
+              "width": 6,
+              "doc": "Minute (0-59)."
+            },
+            {
+              "name": "hour",
+              "offset": 11,
+              "width": 5,
+              "doc": "Hour (0-23)."
+            }
+          ],
+          "doc": "Last modification time in MS-DOS format."
+        },
+        {
+          "name": "mod_date",
+          "type": "u2",
+          "bits": [
+            {
+              "name": "day",
+              "offset": 0,
+              "width": 5,
+              "doc": "Day of the month (1-31)."
+            },
+            {
+              "name": "month",
+              "offset": 5,
+              "width": 4,
+              "doc": "Month (1-12)."
+            },
+            {
+              "name": "year_since_1980",
+              "offset": 9,
+              "width": 7,
+              "doc": "Years since 1980."
+            }
+          ],
+          "doc": "Last modification date in MS-DOS format."
+        },
+        {
+          "name": "crc32",
+          "type": "u4",
+          "doc": "CRC-32 of the uncompressed data (0 when flag bit 3 is set)."
+        },
+        {
+          "name": "comp_size",
+          "type": "u4",
+          "doc": "Compressed size (0 when flag bit 3 is set; 0xFFFFFFFF: see the ZIP64 extra field)."
+        },
+        {
+          "name": "uncomp_size",
+          "type": "u4",
+          "doc": "Uncompressed size (0 when flag bit 3 is set; 0xFFFFFFFF: see the ZIP64 extra field)."
+        },
+        {
+          "name": "name_len",
+          "type": "u2",
+          "doc": "Length of the file name."
+        },
+        {
+          "name": "extra_len",
+          "type": "u2",
+          "doc": "Length of the extra field."
+        },
+        {
+          "name": "name_utf8",
+          "type": "str",
+          "size": "name_len",
+          "encoding": "utf8",
+          "if": "(flags & 0x800) != 0",
+          "doc": "File name as UTF-8 (general purpose flag bit 11 set). Control characters are shown escaped."
+        },
+        {
+          "name": "name_cp437",
+          "type": "str",
+          "size": "name_len",
+          "encoding": "cp437",
+          "if": "(flags & 0x800) == 0",
+          "doc": "File name as IBM code page 437 (flag bit 11 clear). Shown verbatim; \"..\" and absolute paths are not sanitised."
+        },
+        {
+          "name": "name",
+          "type": "value",
+          "value": "name_utf8 != null ? name_utf8 : name_cp437",
+          "doc": "The decoded file name (UTF-8 or code page 437, chosen by flag bit 11)."
+        },
+        {
+          "name": "extra",
+          "type": "local_extra",
+          "size": "extra_len",
+          "if": "extra_len > 0",
+          "doc": "Extra field: a sequence of TLV blocks."
+        }
+      ]
+    },
+    "data_descriptor": {
+      "doc": "Data descriptor after the data of an entry with flag bit 3: CRC-32 and sizes. The signature is optional; the sizes are 8 bytes each when the local header has a ZIP64 extra block, 4 bytes otherwise. (A descriptor without signature whose CRC-32 happens to equal 0x08074B50 is mistaken for one with signature.)",
+      "fields": [
+        {
+          "name": "sig",
+          "type": "u4",
+          "expect": 134695760,
+          "ifMagic": {
+            "at": "_start",
+            "bytes": "50 4B 07 08"
+          },
+          "doc": "Optional signature \"PK\\7\\8\" (50 4B 07 08); only shown when present."
+        },
+        {
+          "name": "is64",
+          "type": "value",
+          "value": "lookup(_parent.header.extra.blocks, \"id\", 1) != null or _parent._parent.comp_size_eff >= 0xFFFFFFFF or _parent._parent.uncomp_size_eff >= 0xFFFFFFFF or _parent._parent.comp_size == 0xFFFFFFFF or _parent._parent.uncomp_size == 0xFFFFFFFF",
+          "doc": "True when the sizes are 8 bytes wide: the local header has a ZIP64 extra block, or the entry is ZIP64 by size according to the central directory (a real size of 4 GiB or more, or the 0xFFFFFFFF sentinel) (streamed ZIP64 entries need not repeat the extra field)."
+        },
+        {
+          "name": "crc32",
+          "type": "u4",
+          "doc": "CRC-32 of the uncompressed data."
+        },
+        {
+          "name": "comp_size",
+          "type": "u4",
+          "if": "not is64",
+          "doc": "Compressed size (32-bit)."
+        },
+        {
+          "name": "uncomp_size",
+          "type": "u4",
+          "if": "not is64",
+          "doc": "Uncompressed size (32-bit)."
+        },
+        {
+          "name": "comp_size64",
+          "type": "u8",
+          "if": "is64",
+          "doc": "Compressed size (64-bit, ZIP64)."
+        },
+        {
+          "name": "uncomp_size64",
+          "type": "u8",
+          "if": "is64",
+          "doc": "Uncompressed size (64-bit, ZIP64)."
+        }
+      ]
+    }
+  },
+  "enums": {
+    "method": {
+      "0": "stored",
+      "1": "shrunk",
+      "2": "reduced_1",
+      "3": "reduced_2",
+      "4": "reduced_3",
+      "5": "reduced_4",
+      "6": "imploded",
+      "8": "deflate",
+      "9": "deflate64",
+      "10": "pkware_dcl_implode",
+      "12": "bzip2",
+      "14": "lzma",
+      "16": "ibm_cmpsc",
+      "18": "ibm_terse",
+      "19": "ibm_lz77",
+      "20": "zstd_deprecated",
+      "93": "zstd",
+      "94": "mp3",
+      "95": "xz",
+      "96": "jpeg",
+      "97": "wavpack",
+      "98": "ppmd",
+      "99": "aes"
+    },
+    "host": {
+      "0": "ms_dos",
+      "1": "amiga",
+      "2": "openvms",
+      "3": "unix",
+      "4": "vm_cms",
+      "5": "atari_st",
+      "6": "os2_hpfs",
+      "7": "macintosh",
+      "8": "z_system",
+      "9": "cpm",
+      "10": "windows_ntfs",
+      "11": "mvs",
+      "12": "vse",
+      "13": "acorn_risc",
+      "14": "vfat",
+      "15": "alt_mvs",
+      "16": "beos",
+      "17": "tandem",
+      "18": "os400",
+      "19": "osx"
+    },
+    "extra_id": {
+      "0x0001": "zip64",
+      "0x0007": "av_info",
+      "0x0008": "extended_language_encoding",
+      "0x0009": "os2",
+      "0x000a": "ntfs",
+      "0x000c": "openvms",
+      "0x000d": "pkware_unix",
+      "0x000e": "file_stream_and_fork_descriptors",
+      "0x000f": "patch_descriptor",
+      "0x0014": "pkcs7_store",
+      "0x0015": "x509_file_signature",
+      "0x0016": "x509_central_directory",
+      "0x0017": "strong_encryption_header",
+      "0x0018": "record_management_controls",
+      "0x0019": "pkcs7_recipient_list",
+      "0x4453": "windows_nt_security_descriptor",
+      "0x5455": "extended_timestamp",
+      "0x5855": "info_zip_unix_original",
+      "0x6375": "info_zip_unicode_comment",
+      "0x7075": "info_zip_unicode_path",
+      "0x7855": "info_zip_unix_16",
+      "0x7875": "info_zip_unix_new",
+      "0x9901": "winzip_aes",
+      "0xCAFE": "java_jar_marker",
+      "0xD935": "android_zipalign"
+    },
+    "aes_strength": {
+      "1": "AES-128",
+      "2": "AES-192",
+      "3": "AES-256"
+    }
+  }
+}

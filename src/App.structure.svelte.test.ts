@@ -50,7 +50,7 @@ describe('App: format engine + structure tree', () => {
     // detection summary
     const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe('bmp'));
-    expect([...select.options].map((o) => o.textContent)).toEqual(['None (raw)', 'Windows Bitmap (magic + extension)']);
+    expect([...select.options].map((o) => o.textContent)).toEqual(['None (raw)', 'Windows Bitmap (magic + extension)', 'ZIP Archive']);
 
     // parse status + tree
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/^Parsed: \d+ nodes, 0 errors, 0 warnings/));

@@ -221,7 +221,9 @@ class Scope implements ObjValue {
     this.root = parent ? parent.root : this;
   }
   get(name: string): Value | undefined {
-    return name === '_start' ? BigInt(this.start) : this.fields.get(name);
+    if (name === '_start') return BigInt(this.start);
+    if (name === '_parent') return this.parent ?? undefined; // so `_parent._parent.x` reaches further out
+    return this.fields.get(name);
   }
 }
 
@@ -260,6 +262,8 @@ interface Parsed {
   end: number;
   ok: boolean;
   val?: Value;
+  /** A sized struct reported ok to its parent although something inside it failed: its asserts are skipped. */
+  innerFailed?: boolean;
 }
 
 interface ArrayState {
@@ -724,7 +728,7 @@ async function parseField(run: Run, f: FieldDef, parent: Node, pl: Place, cursor
     const end = isPlaced(f) ? cursor : r.end;
     for (const m of notes) setError(run, r.node, path, 'find', m, 'warning');
     if (r.ok) attachRef(run, f, r.node, path, pl, r.val, { start: pl.stream.start, end: pl.stream.end, pos: end, unknownPos: lost });
-    if (f.assert && r.ok && r.val !== undefined) runAsserts(run, f, r.node, path, pl, end, r.val, lost);
+    if (f.assert && r.ok && !r.innerFailed && r.val !== undefined) runAsserts(run, f, r.node, path, pl, end, r.val, lost);
     return { end, ok: r.ok };
   } catch (e) {
     const { code, message } = classify(e);
@@ -1106,7 +1110,11 @@ async function parseValue(run: Run, f: FieldDef, name: string, attach: Node, pl:
     end = pos + size;
     node.size = size;
   } else node.size = Math.max(node.size, r.end - pos);
-  return finish(node, end, r.ok, scope);
+  // A struct with a declared `size` is a self-delimiting unit: whatever went wrong inside it is already recorded on its own
+  // nodes, and the parent's cursor is known (pos + size), so the parent carries on instead of losing its cursor.
+  const parsed = finish(node, end, size !== null ? true : r.ok, scope);
+  if (size !== null && !r.ok) parsed.innerFailed = true;
+  return parsed;
 }
 
 /** Records an `expect` mismatch. Returns true when it is FATAL (`fatal: true`): the caller must fail the field. */

@@ -1,5 +1,6 @@
 import { formatIssues, validateSpec, type FormatSpec } from '../core/engine';
 import bmpJson from './bmp.json';
+import zipJson from './zip.json';
 
 export interface BuiltinSpecs {
   specs: FormatSpec[];
@@ -11,7 +12,10 @@ export interface BuiltinSpecs {
 export function loadBuiltinSpecs(): BuiltinSpecs {
   const specs: FormatSpec[] = [];
   const errors: string[] = [];
-  for (const [name, json] of [['bmp.json', bmpJson]] as const) {
+  for (const [name, json] of [
+    ['bmp.json', bmpJson],
+    ['zip.json', zipJson],
+  ] as const) {
     try {
       const r = validateSpec(json);
       if (r.ok) specs.push(r.spec);

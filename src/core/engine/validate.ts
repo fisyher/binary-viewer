@@ -58,6 +58,7 @@ const FIND_KEYS = new Set(['bytes', 'mask', 'from', 'window', 'direction', 'acce
 const IFMAGIC_KEYS = new Set(['at', 'bytes', 'mask']);
 const REF_KEYS = new Set(['type', 'at', 'doc']);
 const MAX_ACCEPT_TIERS = 8;
+const MAX_EXTENSIONS = 64;
 const ASSERT_KEYS = new Set(['expr', 'level', 'message']);
 const RESERVED_WORDS = new Set(['and', 'or', 'not', 'null', 'true', 'false', 'min', 'max', 'lookup']);
 const SWITCH_KEYS = new Set(['switch', 'cases', 'default']);
@@ -247,7 +248,7 @@ export function validateSpec(input: unknown, limits: Partial<SpecLimits> = {}): 
   optDoc(c, input, '$');
 
   if ('extensions' in input) {
-    if (!Array.isArray(input.extensions) || input.extensions.length > 32) c.err('$.extensions', 'must be an array of at most 32 strings');
+    if (!Array.isArray(input.extensions) || input.extensions.length > MAX_EXTENSIONS) c.err('$.extensions', `must be an array of at most ${MAX_EXTENSIONS} strings`);
     else
       input.extensions.forEach((e, i) => {
         if (typeof e !== 'string' || !EXT_RE.test(e)) c.err(`$.extensions[${i}]`, 'must be a lowercase extension without a dot');

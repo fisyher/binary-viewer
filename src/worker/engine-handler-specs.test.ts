@@ -31,7 +31,7 @@ describe('handler: setSpecs', () => {
     const { send } = setup();
     const r = await send<'setSpecs'>({ type: 'setSpecs', specTexts: [magicSpec('mine', 'DE AD BE EF')] });
     expect(r!.rejected).toEqual([]);
-    expect(r!.specs).toEqual([{ id: 'bmp', name: 'Windows Bitmap' }, { id: 'mine', name: 'Fmt mine', custom: true }]);
+    expect(r!.specs).toEqual([{ id: 'bmp', name: 'Windows Bitmap' }, { id: 'zip', name: 'ZIP Archive' }, { id: 'mine', name: 'Fmt mine', custom: true }]);
   });
 
   it('re-validates every text itself and reports the ones it rejects', async () => {
@@ -49,7 +49,7 @@ describe('handler: setSpecs', () => {
         'x'.repeat(1_048_577),
       ],
     });
-    expect(r!.specs.map((s) => s.id)).toEqual(['bmp', 'dup', 'ok']);
+    expect(r!.specs.map((s) => s.id)).toEqual(['bmp', 'zip', 'dup', 'ok']);
     expect(r!.rejected).toHaveLength(6);
     expect(r!.rejected[0]).toMatch(/#1.*invalid JSON/);
     expect(r!.rejected[1]).toMatch(/#2.*\$/);
@@ -63,7 +63,7 @@ describe('handler: setSpecs', () => {
     const { send } = setup();
     const texts = Array.from({ length: MAX_CUSTOM_SPECS + 2 }, (_, i) => specText(`s${i}`));
     const r = await send<'setSpecs'>({ type: 'setSpecs', specTexts: texts });
-    expect(r!.specs).toHaveLength(1 + MAX_CUSTOM_SPECS);
+    expect(r!.specs).toHaveLength(2 + MAX_CUSTOM_SPECS);
     expect(r!.rejected).toHaveLength(2);
     const bad = await send({ type: 'setSpecs', specTexts: 'nope' as unknown as string[] });
     expect(bad).toMatchObject({ type: 'error' });
@@ -73,7 +73,7 @@ describe('handler: setSpecs', () => {
     const { send } = setup();
     await send({ type: 'setSpecs', specTexts: [specText('a')] });
     const r = await send<'setSpecs'>({ type: 'setSpecs', specTexts: [specText('b')] });
-    expect(r!.specs.map((s) => s.id)).toEqual(['bmp', 'b']);
+    expect(r!.specs.map((s) => s.id)).toEqual(['bmp', 'zip', 'b']);
     expect((await send({ type: 'parse', specId: 'a' }))).toMatchObject({ type: 'error', message: expect.stringMatching(/unknown format/) });
   });
 
@@ -81,7 +81,7 @@ describe('handler: setSpecs', () => {
     const { send, open } = setup();
     await send({ type: 'setSpecs', specTexts: [magicSpec('mine', 'DE AD BE EF', { extensions: ['abc'] })] });
     const o = await open('file.abc');
-    expect(o!.specs.map((s) => s.id)).toEqual(['bmp', 'mine']);
+    expect(o!.specs.map((s) => s.id)).toEqual(['bmp', 'zip', 'mine']);
     expect(o!.specs.find((s) => s.id === 'mine')!.custom).toBe(true);
     expect(o!.detections[0]).toMatchObject({ specId: 'mine', name: 'Fmt mine', magicMatched: true });
     const p = await send<'parse'>({ type: 'parse', specId: 'mine' });
@@ -136,7 +136,7 @@ describe('handler: parseDraft', () => {
     const { send, open } = setup();
     await send({ type: 'parseDraft', specText: specText('d') });
     const o = await open();
-    expect(o!.specs.map((s) => s.id)).toEqual(['bmp']);
+    expect(o!.specs.map((s) => s.id)).toEqual(['bmp', 'zip']);
   });
 
   it('supersedes like parse: a newer parse/parseDraft silences the older one', async () => {
@@ -211,7 +211,7 @@ describe('client: setSpecs / parseDraft', () => {
   it('round-trips through the real handler (inline client)', async () => {
     const c = createInlineClient();
     const r = await c.setSpecs([specText('inline-1'), 'garbage']);
-    expect(r.specs.map((s) => s.id)).toEqual(['bmp', 'inline-1']);
+    expect(r.specs.map((s) => s.id)).toEqual(['bmp', 'zip', 'inline-1']);
     expect(r.rejected).toHaveLength(1);
     await c.open(new Blob([Uint8Array.from([1, 2, 3, 4, 5])]), 'a.bin');
     const snap = await c.parseDraft(specText('draft'));
