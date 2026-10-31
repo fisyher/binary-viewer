@@ -18,13 +18,16 @@
   } from './core/save';
   import type { SpecLibrary } from './core/spec-library';
   import { throttleLatest } from './core/tree-model';
+  import AboutDialog from './ui/AboutDialog.svelte';
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import Diagnostics from './ui/Diagnostics.svelte';
   import FormatBar from './ui/FormatBar.svelte';
   import FormatLibrary from './ui/formats/FormatLibrary.svelte';
   import HexView from './ui/HexView.svelte';
   import Inspector from './ui/Inspector.svelte';
+  import { loadBuiltinSpecs } from './formats';
   import { loadLittleEndian, saveLittleEndian } from './ui/prefs';
+  import { START_SHORTCUTS } from './ui/shortcuts';
   import StatusBar from './ui/StatusBar.svelte';
   import StructureTree from './ui/StructureTree.svelte';
   import Toolbar from './ui/Toolbar.svelte';
@@ -41,6 +44,22 @@
   // and any unsaved spec draft survive switching.
   let mode = $state<'viewer' | 'formats'>('viewer');
   let formatsDirty = $state(false);
+  // About dialog; the opener button gets focus back when it closes.
+  let aboutOpen = $state(false);
+  let aboutOpener: HTMLElement | null = null;
+  const builtinNames = loadBuiltinSpecs().specs.map((s) => s.name);
+
+  function openAbout(opener: HTMLElement) {
+    aboutOpener = opener;
+    aboutOpen = true;
+  }
+
+  async function closeAbout() {
+    aboutOpen = false;
+    await tick(); // the background stays inert until the dialog is gone
+    aboutOpener?.focus();
+    aboutOpener = null;
+  }
   // The user's format library (IndexedDB + optional folder). Its valid specs are mirrored into the engine worker.
   const library: SpecLibrary = untrack(() => createLibrary());
   let rawChosen = false; // the user explicitly picked "None (raw)": library changes must not auto-select a format
@@ -822,7 +841,7 @@
 
   // enter/leave fire for every child element, so count them to avoid overlay flicker.
   function onDragEnter(e: DragEvent) {
-    if (hasFiles(e)) dragDepth++;
+    if (!aboutOpen && hasFiles(e)) dragDepth++; // the About dialog is modal: no drop overlay behind it
   }
 
   function onDragLeave(e: DragEvent) {
@@ -836,6 +855,7 @@
   function onDrop(e: DragEvent) {
     e.preventDefault();
     dragDepth = 0;
+    if (aboutOpen) return; // modal: swallow the drop (so the browser doesn't navigate) but load nothing
     const item = e.dataTransfer?.items[0];
     const entry = item?.webkitGetAsEntry?.();
     const file = e.dataTransfer?.files[0];
@@ -846,6 +866,10 @@
     }
   }
 </script>
+
+<svelte:head>
+  <title>{(dirty ? '• ' : '') + (fileName !== null ? `${fileName} — Binary Viewer` : 'Binary Viewer')}</title>
+</svelte:head>
 
 <svelte:window
   ondragenter={onDragEnter}
@@ -858,7 +882,7 @@
 
 <input type="file" hidden bind:this={fileInput} onchange={onInputChange} />
 
-<div class="app" class:drag-over={dragDepth > 0}>
+<div class="app" class:drag-over={dragDepth > 0} {...(aboutOpen ? { inert: true } : {})}>
   <Toolbar
     {fileName}
     {size}
@@ -875,6 +899,7 @@
     {loadError}
     view={mode}
     onView={setMode}
+    onAbout={openAbout}
   />
   <div class="stage">
   <div class="pane" class:hidden={mode !== 'viewer'} {...(mode !== 'viewer' ? { inert: true } : {})}>
@@ -930,8 +955,21 @@
       </div>
     {:else}
       <div class="empty">
-        <p>No file open</p>
+        <h1>Binary Viewer</h1>
+        <p class="tagline">Hex editor and binary format inspector</p>
         <p class="hint">Click <strong>Open…</strong> or drop a file anywhere on this window.</p>
+        <p class="hint">Your files never leave this browser.</p>
+        <div class="start-section">
+          <p class="hint">Built-in formats: {builtinNames.join(', ')}</p>
+          <button type="button" onclick={() => setMode('formats')}>Browse formats</button>
+        </div>
+        <p class="hint">When a file is open:</p>
+        <dl class="start-keys" aria-label="Keyboard shortcuts">
+          {#each START_SHORTCUTS as s (s.keys)}
+            <dt><kbd>{s.keys}</kbd></dt>
+            <dd>{s.action}</dd>
+          {/each}
+        </dl>
       </div>
     {/if}
     <Inspector source={source && size > 0 ? source : null} offset={inspectOffset} version={editVersion} bind:littleEndian />
@@ -972,6 +1010,9 @@
       run();
     }}
   />
+{/if}
+{#if aboutOpen}
+  <AboutDialog onClose={() => void closeAbout()} />
 {/if}
 
 <style>
@@ -1070,8 +1111,32 @@
   .empty p {
     margin: 4px;
   }
-  .empty :first-child {
-    font-size: 1.4rem;
+  .empty h1 {
+    margin: 0;
+    font-size: 1.6rem;
+    color: var(--fg);
+  }
+  .tagline {
+    font-size: 1.1rem;
+  }
+  .start-section {
+    margin-top: 16px;
+    text-align: center;
+    padding: 0 12px;
+  }
+  .start-keys {
+    display: grid;
+    grid-template-columns: max-content max-content;
+    gap: 2px 12px;
+    margin: 4px 0 0;
+    font-size: 0.9rem;
+  }
+  .start-keys dt,
+  .start-keys dd {
+    margin: 0;
+  }
+  .start-keys kbd {
+    font-family: var(--mono);
   }
   .hint {
     font-size: 0.9rem;

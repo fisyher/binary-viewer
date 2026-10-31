@@ -1,4 +1,4 @@
-# BinaryViewer — Design
+# Binary Viewer — Design
 
 Source requirement: [`requirements/2026-10-30_135401.md`](../requirements/2026-10-30_135401.md)
 

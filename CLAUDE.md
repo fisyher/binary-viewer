@@ -1,4 +1,4 @@
-# BinaryViewer
+# Binary Viewer
 
 A tool for opening and inspecting binary files: hex/ASCII view, offsets, and decoding of common structures.
 

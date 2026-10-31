@@ -17,6 +17,7 @@
     loadError = null,
     view = 'viewer',
     onView = () => {},
+    onAbout = () => {},
   }: {
     fileName: string | null;
     size: number;
@@ -37,6 +38,8 @@
     /** Top-level view: the hex viewer or the format library. */
     view?: 'viewer' | 'formats';
     onView?: (view: 'viewer' | 'formats') => void;
+    /** Opens the About dialog; gets the clicked button so focus can return to it. */
+    onAbout?: (opener: HTMLElement) => void;
   } = $props();
 
   let text = $state('');
@@ -49,6 +52,16 @@
 </script>
 
 <header class="toolbar">
+  <button type="button" class="brand" aria-label="About Binary Viewer" title="About Binary Viewer" onclick={(e) => onAbout(e.currentTarget)}>
+    <svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true" focusable="false">
+      <rect width="32" height="32" rx="6" fill="currentColor" opacity="0.85" />
+      <g class="mark" fill="none" stroke-width="3" stroke-linecap="round">
+        <ellipse cx="10.5" cy="16" rx="4.5" ry="6.5" />
+        <path d="M18.5 12l8 8M26.5 12l-8 8" />
+      </g>
+    </svg>
+    <span class="brand-text">Binary Viewer</span>
+  </button>
   <div class="modes" role="group" aria-label="Mode">
     <button type="button" class:active={view === 'viewer'} aria-pressed={view === 'viewer'} onclick={() => onView('viewer')}>Viewer</button>
     <button type="button" class:active={view === 'formats'} aria-pressed={view === 'formats'} onclick={() => onView('formats')}>Formats</button>
@@ -87,6 +100,7 @@
     <button type="submit" disabled={!hasFile}>Go</button>
     {#if gotoError}<span class="error" role="alert">{gotoError}</span>{/if}
   </form>
+  <button type="button" class="about" aria-label="About" title="About Binary Viewer" onclick={(e) => onAbout(e.currentTarget)}>?</button>
 </header>
 
 <style>
@@ -97,6 +111,30 @@
     padding: 8px 12px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .mark {
+    stroke: var(--panel);
+  }
+  .brand:hover {
+    color: var(--fg);
+  }
+  @media (max-width: 720px) {
+    .brand-text {
+      display: none;
+    }
+  }
+  .about {
+    min-width: 2.2ch;
+    font-weight: 600;
   }
   .modes {
     display: flex;
