@@ -11,6 +11,8 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-8-646cff?logo=vite&logoColor=white)
 
+**[Open the app](https://fisyher.github.io/binary-viewer/)**
+
 [Features](#features) • [Getting started](#getting-started) • [Usage](#usage) • [Format specs](#writing-a-format-spec) • [Development](#development)
 
 </div>
@@ -55,7 +57,11 @@ Then open the URL that Vite prints, usually <http://localhost:5173/>.
 npm run build
 ```
 
-The output in `dist/` is a fully static site. It uses relative asset paths, so it can be served from any subpath, including GitHub Pages.
+The output in `dist/` is a fully static site. It uses relative asset paths, so it can be served from any subpath.
+
+### Deployment
+
+Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): it type checks, runs the tests, builds, and publishes `dist/` to the `gh-pages` branch, which GitHub Pages serves at <https://fisyher.github.io/binary-viewer/>. The workflow can also be started by hand from the **Actions** tab.
 
 ## Usage
 
