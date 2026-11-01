@@ -11,6 +11,7 @@ This history was reconstructed from `git log`; the development phases are the on
 Work in progress, not yet in a release:
 
 - Real-browser end-to-end tests with Playwright (`npm run e2e`).
+- Pull-request workflow: CI (type checks, unit and end-to-end tests) runs on every pull request into `main`; deployment runs only on pushes to `main` and publishes the build CI tested.
 - Svelte 5 best-practice cleanup of the UI components.
 - JSDoc comments on the core APIs.
 - Documentation: architecture decision records in [`docs/decisions/`](docs/decisions/README.md), the spec language reference [`docs/SPEC-LANGUAGE.md`](docs/SPEC-LANGUAGE.md), this changelog, and a slimmer [`docs/DESIGN.md`](docs/DESIGN.md).

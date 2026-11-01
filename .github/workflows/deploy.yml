@@ -1,5 +1,5 @@
-# Builds the static site and publishes dist/ to the gh-pages branch.
-# GitHub Pages serves that branch (Settings > Pages > Deploy from a branch > gh-pages, / (root)).
+# On every push to main (normally a merged pull request): run CI, then publish the build CI tested to the
+# gh-pages branch. GitHub Pages serves that branch (Settings > Pages > Deploy from a branch > gh-pages, / (root)).
 name: Deploy to GitHub Pages
 
 on:
@@ -8,56 +8,26 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-      - run: npm run check
-      - run: npm run check:e2e
-      - run: npm test
-
-      # Browsers are cached by Playwright version; OS libraries are not, so they are installed on every run.
-      - name: Read Playwright version
-        id: pw
-        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        id: pw-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
-      - name: Install Playwright browsers
-        if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium firefox
-      - name: Install Playwright OS dependencies
-        if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium firefox
-
-      # The build happens once, here: Playwright's webServer (playwright.config.ts) runs `npm run build` and then
-      # serves it, so the dist/ that gets published below is exactly the build the E2E suite tested.
-      - run: npm run e2e
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-failure
-          path: |
-            playwright-report/
-            test-results/
-          retention-days: 5
+          name: site
+          path: dist
 
       - name: Publish dist/ to gh-pages
         working-directory: dist

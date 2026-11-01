@@ -10,6 +10,8 @@ A tool for opening and inspecting binary files: hex/ASCII view, offsets, and dec
 - Test: `npm test` (Vitest; component tests use `// @vitest-environment jsdom`)
 - E2E: `npm run e2e` (Playwright, Chromium + Firefox, against the production build; type check: `npm run check:e2e`)
 - Run: `npm run dev`
+- Git: work on a feature branch and open a pull request into `main`; never commit or push to `main` directly.
+  CI (`.github/workflows/ci.yml`) runs on the PR; merging to `main` deploys (`deploy.yml`).
 - Docs: architecture decisions are ADRs in `docs/decisions/` (add one for any decision that is expensive to reverse);
   the user-facing spec language is `docs/SPEC-LANGUAGE.md`; record user-visible changes in `CHANGELOG.md` under Unreleased
 

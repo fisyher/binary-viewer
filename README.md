@@ -61,7 +61,12 @@ The output in `dist/` is a fully static site. It uses relative asset paths, so i
 
 ### Deployment
 
-Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): it type checks, runs the tests, builds, and publishes `dist/` to the `gh-pages` branch, which GitHub Pages serves at <https://fisyher.github.io/binary-viewer/>. The workflow can also be started by hand from the **Actions** tab.
+Changes go through pull requests into `main`:
+
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request: type checks, unit tests, and the Playwright end-to-end tests against the production build.
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on every push to `main` (a merged pull request): it runs the same CI, then publishes the build CI tested to the `gh-pages` branch, which GitHub Pages serves at <https://fisyher.github.io/binary-viewer/>.
+
+Both workflows can also be started by hand from the **Actions** tab.
 
 ## Usage
 
