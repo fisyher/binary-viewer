@@ -122,3 +122,12 @@ export function saveSideView(v: SideView): void {
     // not persisted
   }
 }
+
+/** Whether the structure minimap beside the hex grid is shown (on unless switched off). */
+export function loadShowMinimap(): boolean {
+  return loadFlag('showMinimap', true);
+}
+
+export function saveShowMinimap(on: boolean): void {
+  saveFlag('showMinimap', on);
+}

@@ -10,6 +10,7 @@ import type {
   DetectionInfo,
   EngineRequest,
   EngineResponse,
+  OverviewRegion,
   ParseSnapshot,
   RangeSegment,
   RequestBody,
@@ -58,6 +59,14 @@ export interface Located {
   lazyIndex: number | null;
 }
 
+/** Answer to `overview`: the document size the buckets were computed for, and one entry per bucket (see protocol.ts). */
+export interface OverviewResult {
+  size: number;
+  buckets: Uint8Array;
+  regions: OverviewRegion[];
+  truncated: boolean;
+}
+
 /** The worker API as used by the app. Obtain one with `createWorkerClient()`. */
 export interface EngineClient {
   /**
@@ -83,6 +92,8 @@ export interface EngineClient {
   nodeById(nodeId: number): Promise<Located>;
   /** Leaf byte ranges within the window [start, end) for colouring the hex view; the worker limits the window width and the number of segments. */
   ranges(start: number, end: number): Promise<RangeSegment[]>;
+  /** Whole-file structure summary in about `buckets` slices (the worker clamps to 16..4096). Structure only, never reads bytes. Rejects when there is no parse result. */
+  overview(buckets: number): Promise<OverviewResult>;
   /**
    * Called once when the worker fails fatally (script failed to load, startup exception, unreadable message).
    * After that every request rejects with EngineFatalError. Fires immediately if it already happened.
@@ -198,6 +209,10 @@ export function createClient(t: Transport): EngineClient {
       return { path, lazyIndex };
     },
     ranges: async (start, end) => (await send<'ranges'>({ type: 'ranges', start, end })).segments,
+    overview: async (buckets) => {
+      const { size, buckets: b, regions, truncated } = await send<'overview'>({ type: 'overview', buckets });
+      return { size, buckets: b, regions, truncated };
+    },
     onFatal(cb) {
       fatalCb = cb;
       if (fatal) cb(fatal.message);

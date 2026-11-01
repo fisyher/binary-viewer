@@ -204,4 +204,32 @@ describe('HexView', () => {
     await waitFor(() => expect(offs()).toContain('00000000'));
     expect(offs()).toContain('00000630'); // last row (99 * 16) still rendered
   });
+
+  it('reports the on-screen bytes (no overscan) and scrollToOffset places the row in the middle or at the top', async () => {
+    const s = stubSource(16 * 1000);
+    const seen: Array<[number, number]> = [];
+    const { component, container } = render(HexHarness, { source: s.src, onViewport: (a: number, b: number) => seen.push([a, b]) });
+    await waitFor(() => expect(seen.at(-1)).toEqual([0, 16 * 20])); // 400px = 20 rows
+    expect(container.querySelector('[role="grid"]')?.id).toBe('hex-grid');
+    component.scrollToOffset(16 * 500 + 3); // centred: row 500 - 10
+    await waitFor(() => expect(seen.at(-1)).toEqual([16 * 490, 16 * 510]));
+    component.scrollToOffset(16 * 700, false); // at the top
+    await waitFor(() => expect(seen.at(-1)).toEqual([16 * 700, 16 * 720]));
+    component.scrollToOffset(1e12); // clamped to the end: the last full page
+    await waitFor(() => expect(seen.at(-1)).toEqual([16 * 980, 16 * 1000]));
+    component.scrollToOffset(-5, false);
+    await waitFor(() => expect(seen.at(-1)).toEqual([0, 16 * 20]));
+  });
+
+  it('scrollBy moves the grid like the wheel', async () => {
+    const s = stubSource(16 * 1000);
+    const { component, container } = render(HexHarness, { source: s.src });
+    const scroller = container.querySelector('[role="grid"]') as HTMLElement;
+    let st = 0;
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => st, set: (v: number) => (st = v) });
+    component.scrollBy(120);
+    expect(st).toBe(120);
+    component.scrollBy(NaN);
+    expect(st).toBe(120);
+  });
 });

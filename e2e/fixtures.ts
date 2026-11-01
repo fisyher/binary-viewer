@@ -113,3 +113,11 @@ export function makeBmp(pixelBytes = 40, offBits = 54): Uint8Array {
   for (let i = offBits; i < out.length; i++) out[i] = 0xa0 + (i % 16);
   return out;
 }
+
+/** The structure minimap beside the hex grid. */
+export const minimap = (page: Page): Locator => page.getByRole('scrollbar', { name: 'File overview' });
+
+/** Offset of the first byte of the hex view's top row, as the minimap reports it. */
+export async function viewTop(page: Page): Promise<number> {
+  return Number(await minimap(page).getAttribute('aria-valuenow'));
+}

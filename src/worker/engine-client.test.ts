@@ -54,6 +54,35 @@ describe('engine client', () => {
     await check;
   });
 
+  it('overview does not supersede anything; a new parse rejects a pending one', async () => {
+    const { t, sent, deliver } = manualTransport();
+    const c = createClient(t);
+    const parse = c.parse('bmp');
+    const ov = c.overview(300);
+    expect(sent.map((r) => r.type)).toEqual(['parse', 'overview']);
+    expect(sent[1]).toMatchObject({ type: 'overview', buckets: 300 });
+    deliver({ id: 2, type: 'overview', size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1 }], truncated: false });
+    expect(await ov).toEqual({ size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1 }], truncated: false });
+    deliver({ id: 1, type: 'parse', snapshot: null });
+    expect(await parse).toBeNull(); // the overview request did not supersede the parse
+    const late = c.overview(16);
+    const check = expect(late).rejects.toBeInstanceOf(SupersededError);
+    void c.parse('bmp');
+    await check;
+  });
+
+  it('overview round-trips through the inline client (structured clone both ways)', async () => {
+    const c = createInlineClient({ makeSource: () => new MemoryByteSource(new Uint8Array(64)) });
+    await c.open(null, 'a.bin');
+    await expect(c.overview(16)).rejects.toThrow('no parse result'); // nothing parsed yet
+    await c.parse('bmp');
+    const after = await c.overview(16);
+    expect(after.size).toBe(64);
+    expect(after.buckets).toBeInstanceOf(Uint8Array);
+    expect(after.regions).toEqual(expect.any(Array));
+    c.dispose();
+  });
+
   it('a parse supersedes a pending open: open rejects instead of hanging', async () => {
     const { t, deliver } = manualTransport();
     const c = createClient(t);

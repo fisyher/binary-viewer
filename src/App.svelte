@@ -27,11 +27,13 @@
   import { FormatsState } from './ui/formats/formats-state.svelte';
   import HexView from './ui/HexView.svelte';
   import Inspector from './ui/Inspector.svelte';
+  import Minimap from './ui/Minimap.svelte';
   import { loadBuiltinSpecs } from './formats';
   import {
     applyTheme,
     loadFlag,
     loadLittleEndian,
+    loadShowMinimap,
     loadSideView,
     loadSize,
     loadTheme,
@@ -57,6 +59,7 @@
   import { PreviewUnavailableError } from './ui/formats/preview';
   import { EngineFatalError, createWorkerClient, SupersededError, type EngineClient } from './worker/engine-client';
   import type { DetectionInfo, ParseSnapshot, RangeSegment, SpecInfo } from './worker/protocol';
+  import type { OverviewResult } from './worker/engine-client';
 
   let {
     createClient = createWorkerClient,
@@ -160,6 +163,12 @@
   let nodeRange = $state.raw<{ start: number; end: number } | null>(null);
   let tints = $state.raw<RangeSegment[]>([]);
   let viewWindow: { start: number; end: number } | null = null;
+  // The structure minimap: the worker's whole-file summary, the bytes on screen, and how many buckets the strip can show.
+  let overview = $state.raw<OverviewResult | null>(null);
+  let viewportBytes = $state.raw<{ start: number; end: number } | null>(null);
+  let overviewBuckets = 0;
+  let showMinimap = $state(loadShowMinimap());
+  const minimapSelection = $derived(selection ? selectionRange(selection) : nodeRange);
   let engineToken = 0; // bumped by every viewer open/parse; results from older ones are ignored
   let needsDetect = false; // startEngine was started but its detection result has not been applied yet
   let locateToken = 0;
@@ -283,6 +292,7 @@
     clearTimeout(reparseTimer);
     offEditor?.();
     requestTints.cancel();
+    requestOverview.cancel();
     locate.cancel();
     client?.dispose();
     previewClient?.dispose();
@@ -296,6 +306,7 @@
     nodeRange = null;
     nodeInspectOffset = null;
     tints = [];
+    overview = null;
     detections = [];
     specs = [];
     selectedSpec = null;
@@ -341,6 +352,7 @@
       diagnostics = [];
       nodeRange = null;
       tints = [];
+      overview = null;
     }
     const c = client;
     if (!c) return;
@@ -362,6 +374,7 @@
       diagnostics = snap.errors;
       status = summarize(snap);
       requestTints();
+      requestOverview();
     } catch (e) {
       if (e instanceof EngineFatalError) return markFatal(e.message);
       if (token !== engineToken || e instanceof SupersededError) return;
@@ -614,6 +627,7 @@
     if (!client) throw new Error('format engine unavailable');
     const r = await client.expand(nodeId, start, count);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
+    requestOverview(); // a variable-size expansion changes which bytes the tree covers (the worker answers from its cache otherwise)
     return { nodes: r.nodes, lazy: r.lazy };
   }
 
@@ -621,6 +635,7 @@
     if (!client) throw new Error('format engine unavailable');
     const r = await client.expandRef(nodeId);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
+    requestOverview();
     return r.nodes;
   }
 
@@ -699,6 +714,24 @@
       /* superseded */
     }
   }, 60);
+
+  // Whole-file structure for the minimap; viewer worker only. Latest wins, and a new parse/open drops the answer.
+  const requestOverview = throttleLatest(async () => {
+    const c = client;
+    const token = engineToken;
+    if (!c || !root || overviewBuckets <= 0) return;
+    try {
+      const o = await c.overview(overviewBuckets);
+      if (token === engineToken) overview = o;
+    } catch {
+      /* superseded, or the engine is gone */
+    }
+  }, 100);
+
+  function onWantBuckets(n: number) {
+    overviewBuckets = n;
+    requestOverview();
+  }
 
   function onViewChange(start: number, end: number) {
     viewWindow = { start, end };
@@ -1137,10 +1170,22 @@
                   {nodeRange}
                   {tints}
                   {onViewChange}
+                  onViewport={(start, end) => (viewportBytes = { start, end })}
                   onByteClick={locate}
+                  id="hex-grid"
                 />
-                <!-- Reserved for the structure minimap (phase 2): a narrow column right of the hex grid. -->
-                <div class="minimap-slot" data-slot="minimap"></div>
+                {#if showMinimap}
+                  <Minimap
+                    {size}
+                    {overview}
+                    viewport={viewportBytes}
+                    selection={minimapSelection}
+                    controls="hex-grid"
+                    onSeek={(offset, center) => hexView?.scrollToOffset(offset, center)}
+                    onWheelBy={(px) => hexView?.scrollBy(px)}
+                    {onWantBuckets}
+                  />
+                {/if}
               </div>
             </div>
             {#if problemsOpen}
@@ -1393,10 +1438,6 @@
     flex: 1;
     min-height: 0;
     display: flex;
-  }
-  .minimap-slot {
-    flex: none;
-    width: 0;
   }
   .empty-note {
     padding: 6px 12px;

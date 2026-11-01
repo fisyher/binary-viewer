@@ -40,7 +40,9 @@
     locked = false,
     onNotice,
     onViewChange,
+    onViewport,
     onByteClick,
+    id = undefined,
   }: {
     source: ByteSource;
     selection: Selection | null;
@@ -61,8 +63,12 @@
     onNotice?: (message: string | null) => void;
     /** Visible byte window [start, end) changed (rows rendered, not just fully visible). */
     onViewChange?: (start: number, end: number) => void;
+    /** The bytes in the viewport changed: [start, end) of the rows that are (at least partly) on screen, no overscan. */
+    onViewport?: (start: number, end: number) => void;
     /** A plain click (no drag, no shift) landed on a byte. */
     onByteClick?: (offset: number) => void;
+    /** DOM id of the scrolling grid (for aria-controls). */
+    id?: string;
   } = $props();
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -153,6 +159,13 @@
     const a = winStart;
     const b = winEnd;
     untrack(() => onViewChange?.(a, b));
+  });
+
+  $effect(() => {
+    void source;
+    const a = Math.min(size, topRow * BYTES_PER_ROW);
+    const b = Math.min(size, (topRow + Math.ceil(viewportHeight / ROW_HEIGHT)) * BYTES_PER_ROW);
+    untrack(() => onViewport?.(a, b));
   });
 
   /** Give the grid keyboard focus. */
@@ -259,6 +272,18 @@
     if (!Number.isSafeInteger(offset) || offset < 0 || source.size <= 0) return;
     const row = Math.floor(Math.min(offset, source.size - 1) / BYTES_PER_ROW);
     if (row < topRow || row >= topRow + fullRows) setTop(row - Math.floor(fullRows / 2));
+  }
+
+  /** Scroll so the row holding `offset` is in the middle of the view (`center`) or at its top; the selection is untouched. */
+  export function scrollToOffset(offset: number, center = true) {
+    if (!Number.isFinite(offset) || source.size <= 0) return;
+    const row = Math.floor(Math.min(Math.max(0, offset), source.size - 1) / BYTES_PER_ROW);
+    setTop(center ? row - Math.floor(fullRows / 2) : row);
+  }
+
+  /** Scroll by `px` pixels, like the wheel does. */
+  export function scrollBy(px: number) {
+    if (scroller && Number.isFinite(px)) scroller.scrollTop += px;
   }
 
   /** Select a single byte and scroll it into the middle of the view. */
@@ -568,6 +593,7 @@
 
 <div
   class="scroller"
+  {id}
   bind:this={scroller}
   bind:clientHeight={viewportHeight}
   onscroll={onScroll}

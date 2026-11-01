@@ -24,6 +24,7 @@ Open any file, read and edit its bytes, and see its structure decoded field by f
 - **Hex/ASCII view for huge files.** A virtualized grid reads 64 KiB pages on demand, so multi-gigabyte files open instantly without being loaded into memory.
 - **Editing and saving.** Overwrite or insert bytes in the hex or ASCII column, undo/redo, create new files, and save in place or with *Save As*.
 - **Data Inspector.** Decodes the bytes at the caret as 8–64-bit integers (LE/BE), float16/32/64, binary, DOS date/time, FILETIME, Unix time, GUID, LEB128 and UTF-8/16 characters.
+- **Structure minimap.** A strip beside the hex grid shows the whole file with its parsed regions in colour and the visible part framed; click or drag to jump anywhere, even in a multi-gigabyte file.
 - **Structure decoding.** Files are detected by magic bytes and extension and parsed in a Web Worker into a navigable tree. Selecting a node highlights its bytes.
 - **Jump to data.** Offset fields carry *go to* buttons, and ZIP entries have *local header / data / descriptor* shortcuts that select an entry's compressed data in one click.
 - **Built-in formats.** Windows Bitmap (BMP, all header versions) and ZIP (ZIP64, self-extracting stubs, data descriptors, large central directories loaded on demand).

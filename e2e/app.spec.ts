@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Page } from '@playwright/test';
 import { buildZip } from '../src/test/zip-builder';
-import { expect, expectParsed, expectSelection, gotoApp, hex, hexByte, hexView, makeBmp, openBytes, openLargeFile, revealRow, statusBar, test, treeRow } from './fixtures';
+import { expect, expectParsed, expectSelection, gotoApp, hex, hexByte, hexView, makeBmp, minimap, openBytes, openLargeFile, revealRow, statusBar, test, treeRow, viewTop } from './fixtures';
 
 test.describe('viewer', () => {
   test.beforeEach(async ({ page }) => {
@@ -220,6 +220,103 @@ test.describe('viewer', () => {
     await expect(offsets.filter({ hasText: (size - 16).toString(16).toUpperCase().padStart(8, '0') })).toBeVisible();
     await expect(hexByte(page, 0)).toHaveCount(0); // scrolled away from the top
     await expect(statusBar(page)).toContainText(`Start: ${hex(size)} (${size})`);
+  });
+});
+
+test.describe('structure minimap', () => {
+  test.beforeEach(async ({ page }) => {
+    await gotoApp(page);
+  });
+
+  const bandCount = async (page: Page) => Number(await minimap(page).getAttribute('data-structured-bands'));
+
+  test('BMP: the strip shows the header and pixel regions; a click near the bottom scrolls the hex view there', async ({ page }) => {
+    const pixels = 20_000;
+    await openBytes(page, 'pic.bmp', makeBmp(pixels));
+    await expectParsed(page);
+    const strip = minimap(page);
+    await expect(strip).toBeVisible();
+    await expect(strip).toHaveAttribute('aria-controls', 'hex-grid');
+    await expect(strip).toHaveAttribute('aria-orientation', 'vertical');
+    await expect.poll(() => bandCount(page)).toBeGreaterThanOrEqual(2);
+    await expect(strip).toHaveAttribute('data-groups', /^(1,)?2,4$/); // the 14-byte file header may be a sliver of the first bucket
+    // The 14-byte file header and the 40-byte DIB header are far under a pixel tall here, yet drawn as 2px marks.
+    await expect(strip).toHaveAttribute('data-region-marks', /^[2-9]$/);
+    expect(await viewTop(page)).toBe(0);
+
+    const box = (await strip.boundingBox())!;
+    // The very bottom edge, with the Problems panel (and its resizer's wider hit area) open right below the strip.
+    await strip.click({ position: { x: box.width / 2, y: box.height - 1 } });
+    const size = 54 + pixels;
+    await expect.poll(() => viewTop(page)).toBeGreaterThan(size * 0.5);
+    await expect(hexByte(page, size - 1)).toBeVisible(); // the very bottom of the strip is the last byte
+    await strip.click({ position: { x: box.width / 2, y: box.height / 2 } });
+    await expect(hexByte(page, Math.floor(size / 2))).toBeVisible();
+    await expect(hexByte(page, 0)).toHaveCount(0);
+  });
+
+  test('a pointer click focuses the strip without a keyboard focus ring, and the keys then work', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(20_000));
+    await expectParsed(page);
+    const strip = minimap(page);
+    const box = (await strip.boundingBox())!;
+    await strip.click({ position: { x: box.width / 2, y: box.height / 2 } });
+    await expect(strip).toBeFocused();
+    expect(await strip.evaluate((el) => el.matches(':focus-visible'))).toBe(false);
+    await page.keyboard.press('Home');
+    await expect.poll(() => viewTop(page)).toBe(0);
+    await page.keyboard.press('Tab'); // leave, then come back with the keyboard: the ring shows
+    await page.keyboard.press('Shift+Tab');
+    await expect(strip).toBeFocused();
+    expect(await strip.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+  });
+
+  test('ZIP with many entries: structure bands for the entries and the central directory; keyboard scrolls', async ({ page }) => {
+    const { bytes } = buildZip(Array.from({ length: 60 }, (_, i) => ({ name: `f${i}.txt`, data: `data ${i}` })));
+    await openBytes(page, 'many.zip', bytes);
+    await expectParsed(page);
+    const strip = minimap(page);
+    await expect.poll(() => bandCount(page)).toBeGreaterThanOrEqual(2);
+    await strip.focus();
+    await page.keyboard.press('End');
+    await expect(hexByte(page, bytes.length - 1)).toBeVisible();
+    expect(await viewTop(page)).toBeGreaterThan(0);
+    await page.keyboard.press('Home');
+    await expect.poll(() => viewTop(page)).toBe(0);
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => viewTop(page)).toBeGreaterThan(0);
+    await expect(hexByte(page, 0)).toHaveCount(0);
+  });
+
+  test('a file with no parsed format still shows the strip, without structure bands', async ({ page }) => {
+    await openBytes(page, 'blob.bin', Uint8Array.from({ length: 4000 }, (_, i) => i & 0xff));
+    await expect(minimap(page)).toBeVisible();
+    await expect.poll(() => bandCount(page)).toBe(0);
+    const box = (await minimap(page).boundingBox())!;
+    await minimap(page).click({ position: { x: box.width / 2, y: box.height - 1 } });
+    await expect(hexByte(page, 3999)).toBeVisible();
+  });
+
+  test('the strip is hidden on a narrow viewport', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expect(minimap(page)).toBeVisible();
+    await page.setViewportSize({ width: 560, height: 800 });
+    await expect(minimap(page)).toBeHidden();
+  });
+
+  test('large file: a 64 MiB file gets a strip and a click near the bottom shows the end of the file', async ({ page }) => {
+    test.setTimeout(90_000);
+    const size = 64 * 1024 * 1024;
+    await openLargeFile(page, 'big.bin', new Uint8Array(size));
+    const strip = minimap(page);
+    await expect(strip).toBeVisible();
+    const box = (await strip.boundingBox())!;
+    await strip.click({ position: { x: box.width / 2, y: box.height - 1 } });
+    await expect.poll(() => viewTop(page)).toBeGreaterThan(size * 0.9);
+    const top = await viewTop(page);
+    expect(top).toBeGreaterThan(size * 0.97);
+    await expect(hexByte(page, top + 16 * 5)).toBeVisible(); // the rows the strip reports are the rows the grid shows
+    await expect(hexByte(page, 0)).toHaveCount(0);
   });
 });
 

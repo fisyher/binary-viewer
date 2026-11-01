@@ -8,7 +8,7 @@
  * - `parseDraft` (parse with an unsaved spec text, validated in the worker) supersedes exactly like `parse` and answers with a `parse` response.
  * - `setSpecs` replaces the custom spec set. It does not supersede anything (a running parse keeps the spec it started with).
  * - `cancel` aborts the running parse only; that parse still answers with a partial snapshot (stats.aborted).
- * - Everything else (`expand`, `expandRef`, `nodeAt`, `nodeById`, `ranges`) works on the current parse result.
+ * - Everything else (`expand`, `expandRef`, `nodeAt`, `nodeById`, `ranges`, `overview`) works on the current parse result.
  * - `expandRef` opens a `ref` node: the worker parses the target type, attaches it under the node in its own tree and
  *   returns the new node(s); the client attaches the same nodes to its copy. Opening twice returns the same nodes.
  * All payloads are structured-cloneable (Node values may be BigInt / Uint8Array).
@@ -17,9 +17,13 @@
  * counts and offsets from the main thread are re-validated by the worker (invalid ones answer with an `error` response).
  * Any request except `cancel` may be answered with `{type: 'error'}` (client: the promise rejects with Error(message)).
  * Without a parse result, `expand` and `expandRef` answer with an error; `nodeAt`, `nodeById` and `ranges` answer
- * with an empty/null result.
+ * with an empty/null result, except `overview`, which answers with an error (the minimap keeps what it has while a re-parse runs).
+ * `overview` is structure-only (it never reads file bytes); its `buckets` array is transferred, not copied.
  */
 import type { Diagnostic, LazyArray, Node, ParseStats } from '../core/engine';
+import type { OverviewRegion } from './overview';
+
+export type { OverviewRegion };
 
 /** A selectable format as shown in the UI. */
 export interface SpecInfo {
@@ -79,7 +83,9 @@ export type EngineRequest =
   | { id: number; type: 'cancel' }
   | { id: number; type: 'nodeAt'; offset: number }
   | { id: number; type: 'nodeById'; nodeId: number }
-  | { id: number; type: 'ranges'; start: number; end: number };
+  | { id: number; type: 'ranges'; start: number; end: number }
+  /** Whole-file structure summary in `buckets` slices (clamped to MIN_OVERVIEW_BUCKETS..MAX_OVERVIEW_BUCKETS in engine-handler.ts). */
+  | { id: number; type: 'overview'; buckets: number };
 
 /**
  * Messages worker -> main thread, one per request (matched by `id`), except superseded open/parse requests, which
@@ -99,6 +105,16 @@ export type EngineResponse =
   /** `path` = node ids from the root to the node (inclusive); null when nothing matched. */
   | { id: number; type: 'located'; path: number[] | null; lazyIndex: number | null }
   | { id: number; type: 'ranges'; segments: RangeSegment[] }
+  /**
+   * Bucket b covers bytes [floor(b*size/N), floor((b+1)*size/N)) of the document (N = buckets.length, the clamped request).
+   * Each entry is 0 (no parsed node touches it) or the dominant colour group + 1 (1..4): the group is the index of the
+   * root child, modulo 4, exactly as the hex view tints it; dominance is by covered bytes, a tie goes to the lower group.
+   * N is the request clamped to 16..4096 and, for a non-empty file, to at most `size` (so there are no empty buckets).
+   * `regions` lists the root's children (or, for a root with a single child, that child's children) with their byte
+   * ranges, in file order, so small regions can be shown even when no bucket is dominated by them; at most 1024, and
+   * `truncated` says that more existed.
+   */
+  | { id: number; type: 'overview'; size: number; buckets: Uint8Array; regions: OverviewRegion[]; truncated: boolean }
   | { id: number; type: 'error'; message: string };
 
 /** Narrow EngineResponse to the member with the given `type`. */

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyTheme, loadFlag, loadSideView, loadSize, loadTheme, saveFlag, saveSideView, saveSize, saveTheme } from './prefs';
+import { applyTheme, loadFlag, loadShowMinimap, loadSideView, loadSize, loadTheme, saveFlag, saveShowMinimap, saveSideView, saveSize, saveTheme } from './prefs';
 
 afterEach(() => {
   localStorage.clear();
@@ -50,6 +50,16 @@ describe('theme preference', () => {
     expect(() => saveSize('x', 1)).not.toThrow();
     expect(() => saveFlag('x', true)).not.toThrow();
     expect(() => saveSideView('formats')).not.toThrow();
+  });
+});
+
+describe('minimap preference', () => {
+  it('is on by default and round-trips', () => {
+    expect(loadShowMinimap()).toBe(true);
+    saveShowMinimap(false);
+    expect(loadShowMinimap()).toBe(false);
+    saveShowMinimap(true);
+    expect(loadShowMinimap()).toBe(true);
   });
 });
 
