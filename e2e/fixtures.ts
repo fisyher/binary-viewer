@@ -78,11 +78,11 @@ export async function revealRow(page: Page, name: string): Promise<Locator> {
   const selected = page.locator('[role="treeitem"].active');
   if ((await selected.count()) === 0) await page.getByRole('treeitem').first().click();
   const currentKey = async (): Promise<string | null> => ((await selected.count()) === 1 ? selected.getAttribute('data-key', { timeout: 1000 }).catch(() => null) : null);
+  await tree.focus(); // a row may already be .active while the focus is elsewhere
   for (let i = 0; i < 500; i++) {
     await expect(selected).toHaveCount(1); // the active row is re-rendered after each scroll
     if ((await selected.locator('.nm').first().textContent().catch(() => null)) === name && (await row.count()) === 1) return row;
     const before = await currentKey();
-    await tree.focus(); // selecting a node can hand focus to the hex view
     await page.keyboard.press('ArrowDown');
     await expect.poll(async () => (await currentKey()) ?? before).not.toBe(before);
   }

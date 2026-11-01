@@ -67,6 +67,98 @@ test.describe('viewer', () => {
     await expect(page.getByRole('alert').filter({ hasText: '"descriptor" is not available' })).toBeVisible();
   });
 
+  for (const clip of ['top', 'bottom'] as const) {
+    test(`structure tree: double-clicking a row that is half clipped at the ${clip} toggles that row only`, async ({ page }) => {
+      const { bytes } = buildZip(Array.from({ length: 60 }, (_, i) => ({ name: `f${i}.txt`, data: `data ${i}` })));
+      await openBytes(page, 'many.zip', bytes);
+      await expectParsed(page);
+      await revealRow(page, 'entries');
+      await page.keyboard.press('ArrowRight'); // expand entries: many expandable entries[i] rows
+      const tree = page.getByRole('tree', { name: 'Structure' });
+      await tree.evaluate((el) => (el.scrollTop += 330)); // bring the entries[i] rows into the window
+      await expect(treeRow(page, 'entries[3]')).toBeVisible();
+
+      // Scroll so that the entry is cut by 11 px (half a row) at the ${clip} edge of the tree; row positions come from the layout.
+      const key = await tree.evaluate((el, edge) => {
+        const rows = [...el.querySelectorAll<HTMLElement>('[role="treeitem"][aria-expanded="false"]')];
+        const box = el.getBoundingClientRect();
+        const pick = rows.filter((r) => (r.querySelector('.nm')?.textContent ?? '').startsWith('entries[')).find((r) => {
+          const b = r.getBoundingClientRect();
+          return edge === 'top' ? b.top > box.top + 66 && b.bottom < box.bottom - 66 : b.top > box.top + 66 && b.bottom < box.bottom - 22;
+        });
+        if (!pick) throw new Error('no suitable entries[i] row in the window');
+        const b = pick.getBoundingClientRect();
+        // content offset of the row's top edge, then shift so that 11 px of it are outside the viewport
+        const contentTop = b.top - box.top + el.scrollTop;
+        el.scrollTop = edge === 'top' ? contentTop + 11 : contentTop + 11 - el.clientHeight;
+        return pick.getAttribute('data-key')!;
+      }, clip);
+      const target = page.locator(`[role="treeitem"][data-key="${key}"]`);
+      await expect(target).toHaveAttribute('aria-expanded', 'false');
+      const scrolled = await tree.evaluate((el) => el.scrollTop);
+      const before = await tree.evaluate((el) => [...el.querySelectorAll('[role="treeitem"]')].map((r) => [r.getAttribute('data-key'), r.getAttribute('aria-expanded')]));
+
+      const pt = await tree.evaluate((el, [k, edge]) => {
+        const b = el.querySelector(`[data-key="${k}"]`)!.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        const clipped = edge === 'top' ? box.top - b.top : b.bottom - box.bottom;
+        return { x: b.left + 60, y: edge === 'top' ? b.bottom - 4 : b.top + 4, clipped };
+      }, [key, clip] as const);
+      expect(Math.round(pt.clipped)).toBe(11);
+      await page.mouse.dblclick(pt.x, pt.y);
+
+      await expect(target).toHaveAttribute('aria-expanded', 'true');
+      await expect(target).toHaveAttribute('aria-selected', 'true');
+      expect(await tree.evaluate((el) => el.scrollTop), 'a pointer click must not scroll the tree').toBe(scrolled);
+      const after = await tree.evaluate((el) => Object.fromEntries([...el.querySelectorAll('[role="treeitem"]')].map((r) => [r.getAttribute('data-key'), r.getAttribute('aria-expanded')])));
+      for (const [k, v] of before) if (k && k !== key && k in after) expect(after[k], `row ${k}`).toBe(v);
+    });
+  }
+
+  test('structure tree: a double-click on an "open" row acts on that row, not on the row that moves under the pointer', async ({ page }) => {
+    const { bytes } = buildZip([{ name: 'first.txt', data: 'hello' }, { name: 'second.txt', data: 'world' }]);
+    await openBytes(page, 'a.zip', bytes);
+    await expectParsed(page);
+    await revealRow(page, 'entries');
+    await page.keyboard.press('ArrowRight');
+    await revealRow(page, 'entries[0]');
+    await page.keyboard.press('ArrowRight');
+    const header = await revealRow(page, 'local_header');
+    await page.keyboard.press('ArrowRight'); // expand the reference: its child is the "open ..." row
+    const open = page.locator('[role="treeitem"][data-ref]');
+    await expect(open).toHaveCount(1);
+    await open.scrollIntoViewIfNeeded();
+    const box = (await open.boundingBox())!;
+    const x = box.x + 60;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down({ clickCount: 1 });
+    await page.mouse.up({ clickCount: 1 });
+    await expect(open).toHaveCount(0); // opened: the target now sits where the row was, expanded
+    const underPointer = () => page.evaluate(([px, py]) => document.elementFromPoint(px!, py!)?.closest('[role="treeitem"]')?.getAttribute('aria-expanded'), [x, y]);
+    await expect.poll(underPointer).toBe('true');
+    // The second click of the double-click lands on the row that replaced the "open" row; it must not collapse it.
+    await page.mouse.down({ clickCount: 2 });
+    await page.mouse.up({ clickCount: 2 });
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(await underPointer()).toBe('true');
+  });
+
+  test('structure tree: keyboard focus stays in the tree while the active row scrolls out of the window', async ({ page }) => {
+    const { bytes } = buildZip(Array.from({ length: 60 }, (_, i) => ({ name: `f${i}.txt`, data: `data ${i}` })));
+    await openBytes(page, 'many.zip', bytes);
+    await expectParsed(page);
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    await revealRow(page, 'entries');
+    await treeRow(page, 'entries').click(); // a clicked row must not keep the focus: it unmounts when it scrolls out of the window
+    await expect(tree).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    for (let i = 0; i < 80; i++) {
+      await page.keyboard.press(i % 3 === 0 ? 'ArrowRight' : 'ArrowDown');
+      await expect(tree).toBeFocused();
+    }
+  });
+
   test('Go to offset (hex) and Ctrl+Home / Ctrl+End', async ({ page }) => {
     await openBytes(page, 'blob.bin', Uint8Array.from({ length: 1000 }, (_, i) => i & 0xff));
     const goto = page.getByRole('textbox', { name: 'Go to offset' });

@@ -216,3 +216,126 @@ describe('StructureTree view preservation across a re-parse', () => {
     expect(row(container, 'file_header').getAttribute('aria-selected')).not.toBe('true');
   });
 });
+
+describe('StructureTree pointer interaction', () => {
+  const flat = () => {
+    const kids = Array.from({ length: 60 }, (_, i) => n(`k${i}`, i, 1, i % 2 === 0 ? { children: [n(`c${i}`, i, 1)] } : {}));
+    return n('r', 0, 60, { children: kids });
+  };
+  const renderFlat = async () => {
+    const onSelect = vi.fn();
+    const r = render(StructureTree, { root: flat(), loadPage: noLoad, onSelect });
+    await waitFor(() => row(r.container, 'k0'));
+    return { ...r, onSelect, scroller: r.container.querySelector('.scroller') as HTMLElement };
+  };
+
+  it('clicking a partly clipped row selects it without scrolling', async () => {
+    const { container, scroller, onSelect } = await renderFlat();
+    scroller.scrollTop = 22 * 5 + 11;
+    await fireEvent.scroll(scroller);
+    await waitFor(() => row(container, 'c2')); // rows: r, k0, c0, k1, k2, c2 (index 5, half clipped at the top), ...
+    await fireEvent.click(row(container, 'c2'), { detail: 1 });
+    expect(scroller.scrollTop).toBe(22 * 5 + 11);
+    expect(row(container, 'c2').getAttribute('aria-selected')).toBe('true');
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'c2' }), expect.anything());
+  });
+
+  it('keyboard navigation past the bottom still scrolls the active row into view', async () => {
+    const { container, scroller } = await renderFlat();
+    const tree = container.querySelector('[role="tree"]')!;
+    await fireEvent.click(row(container, 'k0'), { detail: 1 });
+    for (let i = 0; i < 30; i++) await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
+    const selected = container.querySelector('.row.selected');
+    expect(selected).not.toBeNull(); // the selected row is rendered, i.e. inside the scrolled window
+    expect(selected!.querySelector('.nm')!.textContent).not.toBe('k0');
+  });
+
+  it('a double-click acts on the row of the first click, even when the second click lands on another row', async () => {
+    const { container, onSelect } = await renderFlat();
+    await fireEvent.click(row(container, 'k0'), { detail: 1 });
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('true'); // top-level fields start expanded
+    await fireEvent.click(row(container, 'k2'), { detail: 2 }); // the rows moved under the pointer
+    await fireEvent.dblClick(row(container, 'k2'), { detail: 2 });
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('false'); // toggled
+    expect(row(container, 'k2').getAttribute('aria-expanded')).toBe('true'); // untouched
+    expect(row(container, 'k0').getAttribute('aria-selected')).toBe('true');
+    expect(row(container, 'k2').getAttribute('aria-selected')).toBe('false');
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('a double-click on a twisty toggles once', async () => {
+    const { container } = await renderFlat();
+    const twisty = row(container, 'k0').querySelector('[data-twisty]')!;
+    await fireEvent.click(twisty, { detail: 1 });
+    await fireEvent.click(twisty, { detail: 2 });
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('false'); // the second click of a double-click is ignored
+    await fireEvent.dblClick(twisty, { detail: 2 }); // must not reach the row (which would toggle it again)
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(twisty, { detail: 1 }); // and a later single click still toggles
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('a double-click on a link button runs the jump once', async () => {
+    const root = n('r', 0, 10, { children: [n('ptr', 0, 4, { value: 8, link: { offset: 8, size: 2 } })] });
+    const onJump = vi.fn();
+    const { container } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {}, onJump });
+    await waitFor(() => row(container, 'ptr'));
+    const btn = row(container, 'ptr').querySelector('[data-link]')!;
+    await fireEvent.click(btn, { detail: 1 });
+    await fireEvent.click(btn, { detail: 2 });
+    await fireEvent.dblClick(btn, { detail: 2 });
+    expect(onJump).toHaveBeenCalledTimes(1);
+    expect(onJump).toHaveBeenCalledWith(8, 2);
+  });
+
+  it('a double-click on a reference jump button selects the target once', async () => {
+    const inner = n('data', 20, 4);
+    const target = n('hdr', 20, 4, { children: [inner], fromRef: true });
+    const ref = n('lh', 0, 0, { ref: { typeName: 'hdr', offset: 20, loaded: true, jumps: [{ label: 'data', path: 'data' }] }, children: [target] });
+    const root = n('r', 0, 30, { children: [ref] });
+    const onSelect = vi.fn();
+    const { container } = render(StructureTree, { root, loadPage: noLoad, onSelect });
+    await waitFor(() => row(container, 'lh'));
+    const btn = row(container, 'lh').querySelector('[data-jump]')!;
+    await fireEvent.click(btn, { detail: 1 });
+    await fireEvent.click(btn, { detail: 2 });
+    await fireEvent.dblClick(btn, { detail: 2 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(inner, expect.anything());
+  });
+
+  it('a double-click after a twisty click never acts on an earlier clicked row', async () => {
+    const { container } = await renderFlat();
+    await fireEvent.click(row(container, 'k0'), { detail: 1 });
+    await fireEvent.click(row(container, 'k2').querySelector('[data-twisty]')!, { detail: 1 }); // collapses k2, forgets k0
+    await fireEvent.click(row(container, 'k2'), { detail: 2 });
+    await fireEvent.dblClick(row(container, 'k2'), { detail: 2 });
+    expect(row(container, 'k0').getAttribute('aria-expanded')).toBe('true'); // untouched
+    expect(row(container, 'k2').getAttribute('aria-expanded')).toBe('true'); // twisty collapsed it, the dblclick expanded it again
+  });
+
+  it('aria-activedescendant names the active row after a click and after ArrowDown, and is omitted when it is not rendered', async () => {
+    const { container, scroller } = await renderFlat();
+    const tree = container.querySelector('[role="tree"]')!;
+    await fireEvent.click(row(container, 'k1'), { detail: 1 });
+    expect(tree.getAttribute('aria-activedescendant')).toBe(row(container, 'k1').id);
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    expect(tree.getAttribute('aria-activedescendant')).toBe(row(container, 'k2').id);
+    const ids = rowsOf(container).map((r) => r.id);
+    expect(ids.every((i) => i !== '')).toBe(true);
+    expect(new Set(ids).size).toBe(ids.length);
+    scroller.scrollTop = 22 * 40; // the active row leaves the rendered window
+    await fireEvent.scroll(scroller);
+    await waitFor(() => expect(row(container, 'k2')).toBeUndefined());
+    expect(tree.hasAttribute('aria-activedescendant')).toBe(false);
+  });
+
+  it('two trees never share row ids', async () => {
+    const a = render(StructureTree, { root: sample().root, loadPage: noLoad, onSelect: () => {} });
+    const b = render(StructureTree, { root: sample().root, loadPage: noLoad, onSelect: () => {} });
+    await waitFor(() => row(a.container, 'magic'));
+    const ids = [...rowsOf(a.container), ...rowsOf(b.container)].map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});

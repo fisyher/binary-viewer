@@ -19,6 +19,8 @@ Work in progress, not yet in a release:
 ### Fixed
 
 - Format engine client: requests made after the client is disposed now reject at once instead of never settling (they could leave a structure-tree row stuck on "Loading…"); disposing twice is harmless.
+- Generated format documentation (Markdown, HTML and the in-app view) no longer misdescribes field positions: computed `value` fields show "computed (no bytes)" instead of a bogus offset, `at` fields are labelled as absolute file offsets, data-dependent positions say "variable (depends on earlier data)", and the header sentence and the reference and link wording say what offsets are relative to. The wording is shared by all three renderers.
+- Structure tree: a double-click acts on the row that was clicked first. Clicking a row no longer scrolls the tree (a partly clipped row stays put), the second click of a double-click is ignored, and double-clicking a jump or link button runs it once. Keyboard focus now stays in the tree when the active row scrolls out of the rendered window, so the arrow keys keep working after a click.
 
 ## [0.1.0] - 2026-10-31
 
