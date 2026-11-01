@@ -42,11 +42,18 @@ import type { SpecStore } from './spec-store';
 import { rewriteTopLevelStrings } from './spec-text';
 
 export { USER_ID_RE };
+/** Most files `importFiles` looks at in one call; the rest are reported as skipped. */
 export const MAX_IMPORT_FILES = MAX_FOLDER_FILES;
+/** Largest spec text (UTF-8 bytes) accepted from storage, folders, imports and `save`. */
 export const MAX_SPEC_BYTES = MAX_SPEC_FILE_BYTES;
 
+/** `builtin`: shipped, read-only, always valid. `user`: created, imported or synced; editable. */
 export type SpecSource = 'builtin' | 'user';
 
+/**
+ * One row of the library as handed to the UI. A shallow copy made on demand: `issues` and `spec` are shared with the
+ * library's internal state, so treat them as read-only. Folder flags only apply to user specs.
+ */
 export interface SpecEntry {
   id: string;
   source: SpecSource;
@@ -71,12 +78,17 @@ export interface SpecEntry {
   folderBlocked: string | null;
 }
 
+/** Snapshot of the synced folder connection; `supported` is false when the browser has no folder picker. */
 export interface FolderStatus {
   supported: boolean;
   state: FolderState;
   name: string | null;
 }
 
+/**
+ * Everything the UI renders from. `snapshot()` returns the same object until the next change, so it is safe to use as a
+ * store value / change key (compare by identity).
+ */
 export interface LibrarySnapshot {
   entries: SpecEntry[];
   folder: FolderStatus;
@@ -86,9 +98,16 @@ export interface LibrarySnapshot {
   message: string | null;
 }
 
+/**
+ * Result of a mutation. `ok: true` means the in-memory library changed; trouble persisting it (browser storage, folder)
+ * does NOT turn into `ok: false` but is reported in `snapshot().message`. `ok: false` means nothing changed, and
+ * `error` is user-facing text.
+ */
 export type OpResult = { ok: true; id: string } | { ok: false; error: string };
+/** As OpResult. `valid`/`issues` describe the saved text (invalid drafts are saved too); `renamedFrom` is set when the text declared another id. */
 export type SaveResult = { ok: true; id: string; valid: boolean; issues: SpecIssue[]; renamedFrom?: string } | { ok: false; error: string };
 
+/** What one folder sync did, by spec id. Counts of lists, not bytes. */
 export interface SyncReport {
   added: string[];
   updated: string[];
@@ -104,6 +123,7 @@ export interface SyncReport {
   /** This was the verify sync after a timed-out write: number of differing files kept as conflict copies. */
   verified?: { differing: number };
 }
+/** Outcome of `importFiles`: spec ids imported (new) and replaced (id already existed), plus skipped files with reasons. */
 export interface ImportReport {
   imported: string[];
   replaced: string[];
@@ -118,9 +138,13 @@ export interface ImportFile {
 }
 
 export interface LibraryOptions {
+  /** Where user specs are persisted; if it exposes `notice` (a ResilientStore) the library surfaces it in the snapshot. */
   store: SpecStore & { readonly notice?: string | null };
+  /** Already-validated built-in specs. Their ids are reserved. */
   builtins: readonly FormatSpec[];
+  /** Optional folder sync; without it the library is storage-only. */
   folder?: FolderSync;
+  /** Clock for `updatedAt` and sync times (tests inject a fake). Default Date.now. */
   now?: () => number;
 }
 
@@ -189,12 +213,13 @@ function parseObject(text: string): Record<string, unknown> | null {
   }
 }
 
+/** The `id` string a spec text declares, or null if it is oversized, not a JSON object, or has no string `id`. Unvalidated: check with isUserId. */
 export function declaredId(text: string): string | null {
   const o = !exceedsBytes(text) ? parseObject(text) : null;
   return o && typeof o.id === 'string' ? o.id : null;
 }
 
-/** Turn arbitrary text into a safe, unused-looking id candidate. */
+/** Turn arbitrary text into a safe id candidate (lower-case, `[a-z0-9_-]`, at most 56 chars, `format` if nothing is left). Does not check for collisions. */
 export function sanitizeId(base: string): string {
   const s = base.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 56);
   return s.length > 0 ? s : 'format';
@@ -202,6 +227,13 @@ export function sanitizeId(base: string): string {
 
 const ID_RULES = 'Id must be 1-64 characters: lower-case letters, digits, "_" or "-", starting with a letter or digit, and not a reserved device name (con, prn, aux, nul, com1-9, lpt1-9).';
 
+/**
+ * The single source of truth for specs, on the main thread. Reading (`list`, `get`, `snapshot`, ...) is synchronous;
+ * everything that mutates returns a promise and runs on one serial queue, so calls take effect in call order.
+ * Methods do not reject for ordinary failures: they resolve with `{ok:false, error}` (or a null/report result).
+ * Call `init()` once after construction. Subscribe to be told about changes (callbacks get no payload; read
+ * `snapshot()`). Not usable from the worker: the engine receives `validUserTexts()` and validates them again.
+ */
 export class SpecLibrary {
   private readonly store: LibraryOptions['store'];
   private readonly builtins: Map<string, Internal>;
@@ -252,6 +284,7 @@ export class SpecLibrary {
 
   // ---- reading ----
 
+  /** `cb` is called (synchronously, without arguments) after every change. Exceptions thrown by `cb` are swallowed. Returns an unsubscribe function. */
   subscribe(cb: () => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -279,6 +312,7 @@ export class SpecLibrary {
     };
   }
 
+  /** All specs: built-ins in their given order, then user specs sorted by id. A fresh array on every call. */
   list(): SpecEntry[] {
     return [
       ...this.builtinOrder.map((id) => this.toEntry(id, this.builtins.get(id)!)),
@@ -286,11 +320,13 @@ export class SpecLibrary {
     ];
   }
 
+  /** One entry (built-in or user), or undefined. */
   get(id: string): SpecEntry | undefined {
     const e = this.builtins.get(id) ?? this.users.get(id);
     return e ? this.toEntry(id, e) : undefined;
   }
 
+  /** Cached view of the whole library for rendering; a new object only after a change. */
   snapshot(): LibrarySnapshot {
     return (this.snap ??= {
       entries: this.list(),
@@ -320,7 +356,7 @@ export class SpecLibrary {
       .join(',');
   }
 
-  /** Resolves when all queued work (mutations, writes, syncs) is done. */
+  /** Resolves when all queued work (mutations, writes, syncs) is done. Never rejects. */
   async settled(): Promise<void> {
     await this.chain;
   }
@@ -452,6 +488,7 @@ export class SpecLibrary {
     return id;
   }
 
+  /** Add a minimal valid user spec (a single `u4` field). Without `id` a unique one (`new-format`, `new-format-2`, ...) is chosen; a given `id` must pass the id rules and be unused. */
   create(id?: string, name = 'New format'): Promise<OpResult> {
     return this.enqueue(async () => {
       if (id !== undefined) {
@@ -467,6 +504,7 @@ export class SpecLibrary {
     });
   }
 
+  /** Copy any spec (built-in or user) to a new user spec `<id>-copy[-n]`, with `(copy)` appended to the name. */
   duplicate(id: string): Promise<OpResult> {
     return this.enqueue(async () => {
       const src = this.builtins.get(id) ?? this.users.get(id);
@@ -489,7 +527,8 @@ export class SpecLibrary {
 
   /**
    * Save the text of user spec `id`. Invalid specs are saved as drafts (flagged, not used for detection, never
-   * written to the folder). If the text declares a different valid id, the spec is renamed to it.
+   * written to the folder). If the text declares a different valid id, the spec is renamed to it (and fails with
+   * `ok:false` if that id is taken). Rejects oversized text and unpaired surrogates (`ok:false`). Built-ins cannot be saved.
    */
   save(id: string, text: string): Promise<SaveResult> {
     return this.enqueue(async (): Promise<SaveResult> => {
@@ -539,6 +578,7 @@ export class SpecLibrary {
     });
   }
 
+  /** Delete a user spec from storage and, when safe under the folder rules, its folder file; otherwise the file is left (or removal is deferred) and `snapshot().message` says so. */
   delete(id: string): Promise<OpResult> {
     return this.enqueue(async (): Promise<OpResult> => {
       if (!this.users.has(id)) return { ok: false, error: this.builtins.has(id) ? 'Built-in formats cannot be deleted.' : `Unknown format "${id}".` };
@@ -717,7 +757,7 @@ export class SpecLibrary {
 
   // ---- import / export ----
 
-  /** Import one spec from file text. Must be a valid spec with a user-style id. The save time is "now". */
+  /** Import one spec from file text. Must be a valid spec with a user-style id that is not a built-in's; an existing user spec with the same id is replaced (`replaced: true`). The save time is "now". Rejections are returned as `ok:false` with a `reason`. */
   importText(text: string): Promise<{ ok: true; id: string; replaced: boolean } | { ok: false; reason: string }> {
     return this.enqueue(async () => {
       const r = this.checkImport(text);
@@ -744,7 +784,7 @@ export class SpecLibrary {
     return { ok: true, spec: r.spec };
   }
 
-  /** Import several files (e.g. from an `<input type=file multiple>`), applying the size and count caps. */
+  /** Import several files (e.g. from an `<input type=file multiple>`), applying the size and count caps. One at a time, in order; a bad file is skipped, never fatal. Also sets the snapshot message. */
   async importFiles(files: readonly ImportFile[]): Promise<ImportReport> {
     const report: ImportReport = { imported: [], replaced: [], skipped: [] };
     const list = files.slice(0, MAX_IMPORT_FILES);
@@ -770,13 +810,13 @@ export class SpecLibrary {
     return report;
   }
 
-  /** The spec's JSON as a Blob (built-ins included). */
+  /** The spec's raw JSON text as an `application/json` Blob (built-ins included, invalid drafts too), or null if the id is unknown. */
   export(id: string): Blob | null {
     const e = this.builtins.get(id) ?? this.users.get(id);
     return e ? new Blob([e.text], { type: 'application/json' }) : null;
   }
 
-  /** Generated documentation. Null when the spec is unknown or invalid. */
+  /** Generated documentation (`<id>.md` / `<id>.html`). Null when the spec is unknown or invalid. */
   exportDoc(id: string, kind: 'md' | 'html'): { fileName: string; blob: Blob } | null {
     const e = this.get(id);
     if (!e?.spec) return null;
@@ -787,7 +827,7 @@ export class SpecLibrary {
 
   // ---- folder ----
 
-  /** Read the folder and merge it into the library by id. See the file comment for the safety rules. */
+  /** Read the folder and merge it into the library by id. See the file comment for the safety rules. Resolves null (does nothing) when no folder is connected; a failed read is reported in the snapshot message, not thrown. */
   syncFromFolder(): Promise<SyncReport | null> {
     const f = this.folderSync;
     if (!f || f.state !== 'connected') return Promise.resolve(null);
@@ -1084,7 +1124,11 @@ export class SpecLibrary {
     }
   }
 
-  /** Show the folder picker, remember the folder and merge its specs. A different folder forgets the old one's state. */
+  /**
+   * Show the folder picker (call directly from a click; it is deliberately not queued), remember the folder and merge its
+   * specs. Connecting always forgets what was known about the previous folder (including verify mode). Resolves null if
+   * the user cancelled or connecting failed (message set).
+   */
   async connectFolder(): Promise<SyncReport | null> {
     const f = this.folderSync;
     if (!f) return null;
@@ -1117,6 +1161,7 @@ export class SpecLibrary {
     return ok ? this.syncFromFolder() : null;
   }
 
+  /** Forget the folder and everything remembered about it. Folder files and local specs are left as they are. */
   async disconnectFolder(): Promise<void> {
     await this.enqueue(async () => {
       await this.folderSync?.disconnect();
@@ -1192,6 +1237,7 @@ function retarget(text: string, id: string, nameSuffix: string): string {
   return JSON.stringify(obj, null, 2) + String.fromCharCode(10);
 }
 
+/** One-line, user-facing summary of an import. */
 export function describeImport(r: ImportReport): string {
   const parts = [`Imported ${r.imported.length}`];
   if (r.replaced.length > 0) parts.push(`replaced ${r.replaced.length}`);
@@ -1199,6 +1245,7 @@ export function describeImport(r: ImportReport): string {
   return parts.join(', ') + '.';
 }
 
+/** One-line, user-facing summary of a folder sync (`folderName` only used for display). */
 export function describeSync(folderName: string | null, r: SyncReport): string {
   if (r.verified) {
     const v = 'Folder verified after a timed-out write; ' + r.verified.differing + ' differing file(s) were kept as conflict copies.';

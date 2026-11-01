@@ -23,8 +23,10 @@
  * cursor; they are mutually exclusive. Every struct scope exposes `_start`, the absolute offset where it begins.
  */
 
+/** Byte order. Always explicit; see the conventions above. */
 export type Endian = 'le' | 'be';
 export type Encoding = 'ascii' | 'latin1' | 'cp437' | 'utf8' | 'utf16le' | 'utf16be';
+/** All values accepted by `FieldDef.encoding`. */
 export const ENCODINGS: readonly Encoding[] = ['ascii', 'latin1', 'cp437', 'utf8', 'utf16le', 'utf16be'];
 
 /** Largest `find.window` the validator accepts and the interpreter's default `maxFindWindow` (1 MiB). */
@@ -35,6 +37,7 @@ export const MAX_SIGNATURE_BYTES = 64;
 /** A number literal or an expression string. */
 export type ExprSource = number | string;
 
+/** A content-sniffing rule: a spec is a candidate for a file when its rules match (see detect.ts). */
 export interface DetectRule {
   /** Offset of the magic; negative means relative to the end of the file. */
   at: number;
@@ -97,7 +100,9 @@ export interface LinkDef {
   label?: string;
 }
 
+/** Choose the field's type from data already parsed in the same struct. */
 export interface SwitchType {
+  /** Expression evaluated in the struct scope; its value is compared with each case key. */
   switch: string;
   /** Case key (an expression, normally a literal) -> type name (builtin or user type). */
   cases: Record<string, string>;
@@ -106,10 +111,13 @@ export interface SwitchType {
 
 export type TypeRef = string | SwitchType;
 
+/** `eos`: until the end of the enclosing substream; `count`: n elements; `until`: stop after the element for which the expression is true. Runtime step limits bound all three. */
 export type RepeatDef = 'eos' | { count: ExprSource } | { until: string };
 
+/** A named slice of an integer field; see the `bits` convention above (bit 0 = least significant). */
 export interface BitField {
   name: string;
+  /** First bit of the slice, counted up from bit 0. */
   offset: number;
   width: number;
   doc?: string;
@@ -124,9 +132,10 @@ export interface AssertDef {
 }
 
 export interface FieldDef {
+  /** Unique within its type; also the identifier expressions use to read this field's value. */
   name: string;
   type: TypeRef;
-  /** Substream size (number | expression | "eos"). For `bytes`/`str` it is the length. */
+  /** Substream size in bytes (number | expression | "eos"). For `bytes`/`str` it is the length. */
   size?: ExprSource | 'eos';
   /** `str` only: terminator code unit (0 for NUL). */
   terminator?: number;
@@ -135,6 +144,7 @@ export interface FieldDef {
   at?: ExprSource;
   /** Alternative to `at`: search for a signature. */
   find?: FindDef;
+  /** Expression; when it is false the field is skipped (and reads as `null` in later expressions). */
   if?: string;
   ifMagic?: IfMagicDef;
   /** Only with type `value`: a computed (zero-byte) field. */
@@ -144,6 +154,7 @@ export interface FieldDef {
   /** With `expect`: a mismatch fails the field (stops the struct / ends the array) instead of only recording a message. */
   fatal?: boolean;
   repeat?: RepeatDef;
+  /** Name of an entry in `FormatSpec.enums`; only on plain integer types. */
   enum?: string;
   bits?: BitField[];
   /** Expected value; a mismatch is a validation error on the node, parsing continues. */
@@ -152,22 +163,31 @@ export interface FieldDef {
   assert?: AssertDef[];
 }
 
+/** A named struct: fields are parsed in order, each advancing the cursor unless it has `at`/`find`. */
 export interface TypeDef {
   doc?: string;
   fields: FieldDef[];
 }
 
+/**
+ * A format description. Instances reaching the engine have passed `validateSpec`; constructing one by hand skips
+ * those guarantees. Specs are plain JSON data and are never executed.
+ */
 export interface FormatSpec {
   schemaVersion: 1;
+  /** Stable identifier (`[A-Za-z0-9_-]`, up to 64 chars) used to refer to the spec. */
   id: string;
   name: string;
   /** Default byte order for multi-byte types without a le/be suffix. */
   endian?: Endian;
+  /** Lowercase file extensions without the dot. */
   extensions?: string[];
   detect?: DetectRule[];
   doc?: string;
+  /** Name of the type parsed at offset 0. */
   root: string;
   types: Record<string, TypeDef>;
+  /** enum name -> (integer key as decimal or 0x hex text -> label). Keys are text so 64-bit values survive JSON. */
   enums?: Record<string, Record<string, string>>;
 }
 
@@ -190,6 +210,7 @@ export function primitiveInfo(name: string): PrimitiveInfo | null {
   return { kind: 'int', size, signed: m[1] === 's', endian };
 }
 
+/** True for `str`, `bytes`, `value` and the primitives; user types may not use these names. */
 export function isBuiltinType(name: string): boolean {
   return name === 'str' || name === 'bytes' || name === 'value' || primitiveInfo(name) !== null;
 }
@@ -199,11 +220,12 @@ export function needsSpecEndian(info: PrimitiveInfo): boolean {
   return info.size > 1 && info.endian === null;
 }
 
+/** Own-property lookup (never reaches the prototype chain): safe for keys taken from untrusted specs/files. */
 export function ownGet<T>(obj: Record<string, T> | undefined, key: string): T | undefined {
   return obj !== undefined && Object.hasOwn(obj, key) ? obj[key] : undefined;
 }
 
-/** Parse "42 4D" style hex; null when malformed. */
+/** Parse "42 4D" style hex (whitespace ignored); null when empty, odd-length, non-hex, or longer than `maxBytes` (default 65536). */
 export function parseHexBytes(text: string, maxBytes = 1 << 16): Uint8Array | null {
   const clean = text.replace(/\s+/g, '');
   if (clean.length === 0 || clean.length % 2 !== 0 || clean.length / 2 > maxBytes) return null;
@@ -213,7 +235,7 @@ export function parseHexBytes(text: string, maxBytes = 1 << 16): Uint8Array | nu
   return out;
 }
 
-/** Parse an enum key: decimal or 0x hex, optional leading minus. Null when malformed. */
+/** Parse an enum key: decimal or 0x hex, optional leading minus; BigInt so 64-bit values are exact. Null when malformed or over 80 chars. */
 export function parseEnumKey(key: string): bigint | null {
   if (!/^-?(0x[0-9a-fA-F]+|[0-9]+)$/.test(key) || key.length > 80) return null;
   const neg = key.startsWith('-');

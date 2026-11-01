@@ -49,6 +49,7 @@ function hexOff(n: number): string {
 // Doc model: plain, renderer-neutral data (raw, UNESCAPED strings). Every renderer must escape for its own target.
 // ---------------------------------------------------------------------------------------------------------------
 
+// Doc model types: strings are raw (unescaped) spec text or short derived labels. See `buildDocModel`.
 export type DocTypeRef = { kind: 'simple'; name: string } | { kind: 'switch'; on: string; cases: { key: string; type: string }[]; default?: string };
 export type DocPosition =
   | { kind: 'at'; expr: string }
@@ -110,6 +111,7 @@ export interface DocEnum {
   name: string;
   entries: { key: string; label: string }[];
 }
+/** Renderer-neutral documentation of a spec; `generateMarkdown` and `generateHtml` are two renderers of it. */
 export interface DocModel {
   title: string;
   doc?: string;
@@ -157,7 +159,12 @@ function modelSize(spec: FormatSpec, f: FieldDef): DocField['size'] {
   return { base, repeat: { kind: 'until', expr: f.repeat.until } };
 }
 
-/** Build the renderer-neutral documentation model of a (validated) spec. Values are raw; renderers must escape. */
+/**
+ * Build the renderer-neutral documentation model of a spec. Static analysis only: nothing is parsed against a file, and
+ * positions/sizes that depend on data come out as expressions or `variable`. Pure and synchronous. The spec should have
+ * passed `validateSpec` (an unvalidated one may throw or produce odd output). Values are raw and UNESCAPED, so any
+ * renderer must escape for its target (text may come from an untrusted spec).
+ */
 export function buildDocModel(spec: FormatSpec): DocModel {
   const exts = spec.extensions ?? [];
   const types: DocType[] = [];
@@ -276,6 +283,11 @@ function mdDesc(f: DocField): string {
   return parts.join(' ');
 }
 
+/**
+ * Markdown reference for a spec. Safe for untrusted specs: all spec text is escaped (see the file header), so no raw
+ * HTML, links or table breaks can be injected. Field offsets in the tables are relative to the containing structure
+ * unless shown as an `at` expression (which is an absolute file offset). Same input gives the same output.
+ */
 export function generateMarkdown(spec: FormatSpec): string {
   const m = buildDocModel(spec);
   const out: string[] = [];
@@ -315,7 +327,7 @@ export function generateMarkdown(spec: FormatSpec): string {
 
 // ---- HTML ----
 
-/** Escape a text value for HTML element content or a quoted attribute. */
+/** Escape `& < > " '` for HTML element content or a quoted attribute. */
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'));
 }

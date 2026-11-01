@@ -4,7 +4,9 @@
  * instead of breaking the app. Nothing here trusts what it reads back: callers re-validate spec text.
  */
 
+/** One persisted custom spec. The text is untrusted on the way back in: re-validate it (loadSpec) before use. */
 export interface StoredSpec {
+  /** Primary key. Normally the spec's own `id`, but nothing here checks that it matches the text. */
   id: string;
   /** Raw JSON text, exactly as the user wrote it. */
   text: string;
@@ -12,7 +14,11 @@ export interface StoredSpec {
   updatedAt: number;
 }
 
-/** What the library needs from storage. `meta` holds small values such as the folder handle. */
+/**
+ * What the library needs from storage. `meta` holds small structured-cloneable values such as the folder handle,
+ * keyed by string; `getMeta` of a missing key resolves undefined. `put` replaces any record with the same id.
+ * Implementations may reject on failure (the raw IndexedDB one does); wrap with createResilientStore to avoid that.
+ */
 export interface SpecStore {
   loadAll(): Promise<StoredSpec[]>;
   put(spec: StoredSpec): Promise<void>;
@@ -22,6 +28,7 @@ export interface SpecStore {
   removeMeta(key: string): Promise<void>;
 }
 
+/** Non-persistent store (gone on reload). Copies records in and out, so callers cannot mutate stored data. Never rejects. */
 export function createMemoryStore(): SpecStore {
   const specs = new Map<string, StoredSpec>();
   const meta = new Map<string, unknown>();
@@ -35,6 +42,7 @@ export function createMemoryStore(): SpecStore {
   };
 }
 
+/** IndexedDB database name (version 1; object stores `specs` and `meta`). */
 export const DB_NAME = 'binary-viewer';
 const SPEC_STORE = 'specs';
 const META_STORE = 'meta';
@@ -61,7 +69,9 @@ function asStoredSpec(v: unknown): StoredSpec | null {
 }
 
 /**
- * Raw IndexedDB store. Methods throw on failure; wrap with `createResilientStore`.
+ * Raw IndexedDB store (opened lazily on first use, reopened after a failure or a version change by another tab).
+ * Methods reject on failure (unavailable, blocked, quota, aborted transaction); wrap with `createResilientStore`.
+ * `loadAll` silently drops records that do not have the StoredSpec shape.
  *
  * Schema migration: the database is version 1 (stores `specs` and `meta`). A future version must be handled in
  * `onupgradeneeded` by creating or reshaping stores based on `event.oldVersion` (never by deleting user data), and
@@ -125,6 +135,7 @@ export function createIdbStore(factory: IDBFactory | null = typeof indexedDB ===
   };
 }
 
+/** A SpecStore that never rejects: see createResilientStore. */
 export interface ResilientStore extends SpecStore {
   /** Non-null once the primary store failed and data lives in memory only. */
   readonly notice: string | null;
@@ -135,6 +146,9 @@ export interface ResilientStore extends SpecStore {
  * `onNotice`. The failing call is retried against memory so callers never see storage errors.
  * A failing first `loadAll` is retried once (the open is attempted again) before giving up; in that case the notice
  * says that previously saved formats could not be loaded and that this session's changes will not be saved.
+ * The fallback memory store starts empty: it does not mirror what IndexedDB held, so after a fallback `loadAll` returns
+ * only what was saved since. The switch is one-way for the lifetime of the store object.
+ * (LOAD_FAILED_NOTICE below is the notice text for the failing first `loadAll`.)
  */
 export const LOAD_FAILED_NOTICE = "Saved formats could not be loaded from browser storage; changes this session won't be saved.";
 export function createResilientStore(primary: SpecStore, onNotice: (notice: string) => void = () => {}): ResilientStore {
@@ -181,7 +195,7 @@ export function createResilientStore(primary: SpecStore, onNotice: (notice: stri
   };
 }
 
-/** The store the app uses: IndexedDB with the memory fallback. */
+/** The store the app uses: IndexedDB with the memory fallback. Never throws, even where IndexedDB cannot even be constructed. */
 export function createDefaultStore(onNotice?: (notice: string) => void): ResilientStore {
   let primary: SpecStore;
   try {
