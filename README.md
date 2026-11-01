@@ -122,7 +122,7 @@ Formats are declarative JSON documents interpreted by the app's own engine; spec
 }
 ```
 
-The engine supports conditional fields, `switch` types, enums and bit fields, absolute placement (`at`), bounded signature search (`find`), computed `value` fields, deferred pointers (`ref`) and navigation links. The **Formats** tab documents every field of a spec, and [`docs/DESIGN.md`](docs/DESIGN.md) describes the engine in detail. [`src/formats/`](src/formats/) holds the built-in BMP and ZIP specs as complete examples.
+The engine supports conditional fields, `switch` types, enums and bit fields, absolute placement (`at`), bounded signature search (`find`), computed `value` fields, deferred pointers (`ref`) and navigation links. The full language is documented in the [spec language reference](docs/SPEC-LANGUAGE.md). The **Formats** tab documents every field of a spec, and [`docs/DESIGN.md`](docs/DESIGN.md) describes the engine in detail. [`src/formats/`](src/formats/) holds the built-in BMP and ZIP specs as complete examples.
 
 > [!TIP]
 > Open a sample file in the viewer before editing a spec in the Formats tab: the live preview parses that file as you type.
@@ -135,6 +135,7 @@ The engine supports conditional fields, `switch` types, enums and bit fields, ab
 | `npm test` | Run the Vitest suite (unit and jsdom component tests) |
 | `npm run check` | Type check with `svelte-check` |
 | `npm run build` | Build the static site into `dist/` |
+| `npm run e2e` | Run the Playwright end-to-end tests in real browsers |
 
 ### Project layout
 
@@ -145,10 +146,10 @@ src/
   worker/    Web Worker that hosts detection and parsing
   ui/        Svelte components (hex view, inspector, structure tree, builder)
   formats/   built-in format specs (bmp.json, zip.json)
-docs/        design notes
+docs/        design notes, spec language reference, decisions/ (ADRs)
 ```
 
-Design decisions, engine semantics and known limitations are recorded in [`docs/DESIGN.md`](docs/DESIGN.md).
+Design decisions, engine semantics and known limitations are recorded in [`docs/DESIGN.md`](docs/DESIGN.md). Individual decisions have their own [architecture decision records](docs/decisions/README.md), the spec language is described in [`docs/SPEC-LANGUAGE.md`](docs/SPEC-LANGUAGE.md), and releases are listed in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > The privacy promise is a design rule: the app makes no network requests at runtime. Keep it that way. New features must work offline and must not send file contents or metadata anywhere.
