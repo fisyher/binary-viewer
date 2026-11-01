@@ -88,7 +88,10 @@ export interface EngineClient {
    * After that every request rejects with EngineFatalError. Fires immediately if it already happened.
    */
   onFatal(cb: (message: string) => void): void;
-  /** Reject everything pending with SupersededError and terminate the worker. The client is unusable afterwards. */
+  /**
+   * Reject everything pending with SupersededError and terminate the worker. Afterwards every request rejects at
+   * once with SupersededError (nothing is posted), so callers' existing "superseded" handling covers it. Idempotent.
+   */
   dispose(): void;
 }
 
@@ -121,6 +124,7 @@ export function createClient(t: Transport): EngineClient {
   const pending = new Map<number, Pending>();
   let fatal: EngineFatalError | null = null;
   let fatalCb: ((message: string) => void) | null = null;
+  let disposed = false;
 
   function rejectWhere(pred: (k: Kind) => boolean, err: () => unknown): void {
     for (const [id, p] of [...pending]) {
@@ -147,6 +151,8 @@ export function createClient(t: Transport): EngineClient {
 
   function send<T extends EngineResponse['type']>(req: RequestBody): Promise<ResponseOf<T>> {
     if (fatal) return Promise.reject(fatal);
+    // A terminated worker drops messages silently: without this the promise would never settle.
+    if (disposed) return Promise.reject(new SupersededError());
     const id = nextId++;
     return new Promise<ResponseOf<T>>((resolve, reject) => {
       pending.set(id, { kind: req.type, resolve: resolve as (r: EngineResponse) => void, reject });
@@ -197,6 +203,8 @@ export function createClient(t: Transport): EngineClient {
       if (fatal) cb(fatal.message);
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       rejectWhere(() => true, () => new SupersededError());
       t.close();
     },

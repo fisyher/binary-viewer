@@ -10,13 +10,14 @@ function manualTransport() {
   const sent: EngineRequest[] = [];
   let deliver!: (r: EngineResponse) => void;
   let fail!: (m: string) => void;
+  const closed = { count: 0 };
   const t: Transport = {
     post: (r) => sent.push(r),
     onMessage: (cb) => (deliver = cb),
     onError: (cb) => (fail = cb),
-    close: () => {},
+    close: () => void closed.count++,
   };
-  return { t, sent, deliver: (r: EngineResponse) => deliver(r), fail: (m: string) => fail(m) };
+  return { t, sent, closed, deliver: (r: EngineResponse) => deliver(r), fail: (m: string) => fail(m) };
 }
 
 describe('engine client', () => {
@@ -91,6 +92,41 @@ describe('engine client', () => {
     const p = c.expand(1, 0, 10);
     deliver({ id: 1, type: 'error', message: 'boom' });
     await expect(p).rejects.toThrow('boom');
+  });
+
+  it('dispose rejects everything pending with SupersededError and closes the transport once', async () => {
+    const { t, closed } = manualTransport();
+    const c = createClient(t);
+    const checks = [c.open(null, 'x'), c.setSpecs([]), c.nodeAt(1), c.expandRef(3)].map((p) => expect(p).rejects.toBeInstanceOf(SupersededError));
+    c.dispose();
+    await Promise.all(checks);
+    c.dispose(); // idempotent
+    expect(closed.count).toBe(1);
+  });
+
+  it('requests after dispose reject at once with SupersededError and post nothing', async () => {
+    const { t, sent, deliver } = manualTransport();
+    const c = createClient(t);
+    c.dispose();
+    await expect(c.open(null, 'x')).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.parse('bmp')).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.parseDraft('{}')).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.setSpecs([])).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.expand(1, 0, 10)).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.nodeAt(1)).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.nodeById(1)).rejects.toBeInstanceOf(SupersededError);
+    await expect(c.ranges(0, 10)).rejects.toBeInstanceOf(SupersededError);
+    expect(() => c.cancel()).not.toThrow();
+    expect(sent).toEqual([]);
+    deliver({ id: 1, type: 'located', path: [1], lazyIndex: null }); // a late response is ignored
+  });
+
+  it('a fatal error still wins over dispose for later requests', async () => {
+    const { t, fail } = manualTransport();
+    const c = createClient(t);
+    fail('boom');
+    c.dispose();
+    await expect(c.nodeAt(1)).rejects.toBeInstanceOf(EngineFatalError);
   });
 
   it('inline client runs the real handler end to end with cloned messages', async () => {

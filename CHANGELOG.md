@@ -16,6 +16,10 @@ Work in progress, not yet in a release:
 - JSDoc comments on the core APIs.
 - Documentation: architecture decision records in [`docs/decisions/`](docs/decisions/README.md), the spec language reference [`docs/SPEC-LANGUAGE.md`](docs/SPEC-LANGUAGE.md), this changelog, and a slimmer [`docs/DESIGN.md`](docs/DESIGN.md).
 
+### Fixed
+
+- Format engine client: requests made after the client is disposed now reject at once instead of never settling (they could leave a structure-tree row stuck on "Loading…"); disposing twice is harmless.
+
 ## [0.1.0] - 2026-10-31
 
 First version, built in six phases between 2026-10-30 and 2026-10-31.
