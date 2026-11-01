@@ -7,6 +7,7 @@
  */
 import type { EditBuffer } from './edit-buffer';
 
+/** Default upper bound (bytes) on one streamed chunk. */
 export const SAVE_CHUNK = 4 * 1024 * 1024;
 
 /** Where saved bytes go. Chunks arrive in document order; implementations must not buffer more than they need. */
@@ -17,6 +18,10 @@ export interface SaveTarget {
 /**
  * The document as an ordered stream of pieces no larger than `chunkSize`: lazy `Blob` slices of the base for
  * unmodified ranges, `Uint8Array`s for edited bytes. Never reads base data itself.
+ *
+ * `baseBlob` must be the file the buffer was built on; an orig piece outside it throws RangeError when reached,
+ * i.e. mid-iteration. The piece list is snapshotted when iteration starts, so later edits are not included.
+ * Throws RangeError (on first `next()`) for an invalid `chunkSize`.
  */
 export async function* streamPieces(
   editBuffer: EditBuffer,
@@ -40,6 +45,7 @@ export async function* streamPieces(
 
 // ---- Download fallback ----
 
+/** Delay (ms) before the download object URL is revoked. */
 export const REVOKE_DELAY_MS = 10_000;
 
 /**
@@ -71,12 +77,14 @@ export function downloadTarget(fileName: string, revokeDelayMs = REVOKE_DELAY_MS
 
 // ---- File System Access (in place) ----
 
+/** The subset of FileSystemWritableFileStream that saving uses. `abort` is optional. */
 export interface WritableLike {
   write(data: Blob | Uint8Array): Promise<void>;
   close(): Promise<void>;
   abort?(): Promise<void>;
 }
 
+/** The subset of FileSystemFileHandle that saving uses; the permission methods are absent in some browsers. */
 export interface SaveHandle {
   name: string;
   getFile(): Promise<File>;
@@ -85,6 +93,7 @@ export interface SaveHandle {
   requestPermission?(desc: { mode: 'readwrite' }): Promise<string>;
 }
 
+/** Thrown by `ensureWritePermission` when readwrite access is not granted. */
 export class SavePermissionError extends Error {
   constructor() {
     super('Permission to write the file was denied.');
@@ -136,7 +145,7 @@ export async function writeToHandle(handle: SaveHandle, editBuffer: EditBuffer, 
   }
 }
 
-/** Write the document to any SaveTarget. */
+/** Write the document to any SaveTarget. Rejections from the target (or from `streamPieces`) propagate unchanged. */
 export function saveTo(target: SaveTarget, editBuffer: EditBuffer, baseBlob: Blob): Promise<void> {
   return target.write(streamPieces(editBuffer, baseBlob));
 }

@@ -39,10 +39,36 @@ describe('generateMarkdown (BMP)', () => {
   it('shows variable positions, "at" expressions and expression sizes', () => {
     const file = md.slice(md.indexOf('### file\n'), md.indexOf('### file_header\n'));
     expect(file).toMatch(/\| `dib` \|[^\n]*\| 0x0E \(14\) \| variable \|/);
-    expect(file).toMatch(/\| `palette` \|[^\n]*\| variable \|/);
-    expect(file).toMatch(/\| `pixels` \|[^\n]*\| at `file_header.off_bits` \| `\(dib.size == 40/);
+    expect(file).toMatch(/\| `palette` \|[^\n]*\| variable \(depends on earlier data\) \|/);
+    expect(file).toMatch(/\| `pixels` \|[^\n]*\| at `file_header.off_bits` \(absolute file offset\) \| `\(dib.size == 40/);
     const dib = md.slice(md.indexOf('### dib_header\n'), md.indexOf('### bitmap_core_body\n'));
     expect(dib).toMatch(/\| `body` \| switch on `size`: `12` → `bitmap_core_body`[^\n]*\| 0x04 \(4\) \| `size - 4` \|/);
+  });
+
+  it('labels computed and find positions', () => {
+    const s = mkSpec(
+      {
+        root: {
+          fields: [
+            { name: 'a', type: 'u2' },
+            { name: 'v', type: 'value', value: 'a' },
+            { name: 'sig', type: 'u4', find: { bytes: '50 4B 05 06', from: '_io.end', window: 100, direction: 'backward' } },
+          ],
+        },
+      },
+      { endian: 'le' },
+    );
+    const out = generateMarkdown(s);
+    expect(out).toMatch(/\| `v` \| `value` \| — \| computed \(no bytes\) \|/);
+    expect(out).toMatch(/\| `sig` \|[^\n]*\| found by searching backward from `_io.end` \(window 100 bytes\) for `50 4B 05 06` \|/);
+  });
+
+  it('explains the position column', () => {
+    expect(md).toContain(
+      'Offsets of sequential fields are relative to the start of the containing structure. `at` gives an absolute file offset; `find` places the field where a signature search finds it; ' +
+        'computed (`value`) fields take no bytes; variable means the position depends on data read earlier.',
+    );
+    expect(md).not.toContain('Offsets are relative to the start');
   });
 
   it('lists enums and field notes', () => {

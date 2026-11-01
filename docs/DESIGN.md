@@ -6,14 +6,23 @@ A fully client-side hex editor + binary format builder, hostable as static files
 
 ## Decisions
 
-| Area | Choice | Why |
-|---|---|---|
-| UI | Svelte 5 + TypeScript, Vite | Small runtime, fine-grained reactivity for a fast-updating grid/inspector |
-| Tests | Vitest (unit), Playwright (E2E: Chromium + Firefox/WebKit fallback path) | Every behaviour change ships with a test |
-| Browsers | Chromium-first, graceful fallback | File System Access API is Chromium-only |
-| Parsing core | Plain TS in a Web Worker; no WASM in v1 | Interpreter over small slices; JS is fast enough |
-| Format language | Own JSON schema using Kaitai Struct (KSY) semantics/naming, own interpreter | Kaitai JS runtime needs the whole file in memory, has no byte-range tracking; compiler is GPL-3 |
-| Hex grid | Custom fixed-row-height DOM windowing | Rows are uniform; no library needed |
+Each decision has an [architecture decision record](decisions/README.md) with context, alternatives and consequences.
+
+- [ADR-0001](decisions/0001-client-side-static-app.md): fully client-side static app, hosted on GitHub Pages (workflow publishing to `gh-pages`).
+- [ADR-0002](decisions/0002-svelte-typescript-vite.md): UI in Svelte 5 + TypeScript, Vite; small runtime and fine-grained reactivity for a fast-updating grid/inspector.
+- [ADR-0003](decisions/0003-own-declarative-format-language.md): own JSON format language with Kaitai Struct (KSY) semantics/naming and our own interpreter (the Kaitai JS runtime needs the whole file in memory and has no byte-range tracking; the compiler is GPL-3).
+- [ADR-0004](decisions/0004-parsing-in-a-web-worker.md): parsing core is plain TS in a Web Worker, no WASM in v1 (interpreter over small slices; JS is fast enough).
+- [ADR-0005](decisions/0005-lazy-byte-access-and-custom-hex-grid.md): byte access through `ByteSource` (Blob.slice paging + LRU), never the whole file; custom fixed-row-height DOM windowing for the hex grid (rows are uniform; no library needed).
+- [ADR-0006](decisions/0006-editing-piece-table-and-save.md): editing as a piece table over the base source; save in place (File System Access) or by download.
+- [ADR-0007](decisions/0007-untrusted-input-limits.md): files and specs are untrusted; limits and budgets in the engine.
+- [ADR-0008](decisions/0008-spec-storage-indexeddb-and-folder-sync.md): specs in IndexedDB, optional local-folder sync, verify mode after timed-out writes.
+- [ADR-0009](decisions/0009-no-network-requests.md): the app makes no network requests at runtime.
+- [ADR-0010](decisions/0010-deferred-refs-and-navigation-links.md): deferred refs (`ref`/`expandRef`) and navigation links (`link`, `jumps`).
+
+Two choices without an ADR:
+
+- **Tests:** Vitest (unit), Playwright (E2E in `e2e/`: Chromium, plus Firefox for the path without the File System Access API). Every behaviour change ships with a test.
+- **Browsers:** Chromium-first, graceful fallback, because the File System Access API is Chromium-only.
 
 ## Architecture
 
@@ -21,7 +30,7 @@ A fully client-side hex editor + binary format builder, hostable as static files
 src/
   core/        framework-free, fully unit-tested
     byte-source.ts   ByteSource interface; BlobByteSource (Blob.slice + LRU page cache)
-    edit-overlay.ts  patch layer over a ByteSource (Phase 4)
+    edit-buffer.ts   piece table over a ByteSource (Phase 4); save.ts streams it to disk
     hex-format.ts    offset/byte/ASCII formatting helpers
     inspector/       Data Inspector decoders (Phase 2)
     engine/          format schema, expression parser, interpreter (Phase 3)
@@ -35,7 +44,7 @@ src/
 - `ByteSource { size: number; read(offset, length): Promise<Uint8Array> }`.
 - Reads are bounds-checked: negative, non-integer, or past-EOF requests are clamped or rejected — never trusted.
 - `BlobByteSource` reads via `Blob.slice(...).arrayBuffer()` in fixed pages (default 64 KiB) with an LRU cache. The whole file is never loaded.
-- Edits (Phase 4) are an overlay: sorted map of changed ranges over the original source. Save streams original chunks + patches to `createWritable()` (Chromium) or a download (fallback).
+- Edits (Phase 4) are a piece table over the original source (see Editing below). Save streams original chunks + added pieces to `createWritable()` (Chromium) or a download (fallback).
 
 ### Hex view
 
@@ -46,19 +55,19 @@ src/
 
 ### Format engine (Phase 3, extended in Phase 6a)
 
-What the declarative engine (`src/core/engine/`) implements. Everything here is generic; nothing is format-specific.
+What the declarative engine (`src/core/engine/`) implements. Everything here is generic; nothing is format-specific. The user-facing language (field types and modifiers, expression grammar, validation limits, examples) is documented in [`SPEC-LANGUAGE.md`](SPEC-LANGUAGE.md); this section keeps the engine behaviour and internals.
 
-- **Types and fields.** `types` map names to ordered `fields`. Field types: primitives `u1..u8`/`s1..s8` with explicit `le`/`be` (the spec-level `endian` is the default for suffix-less multi-byte types; the host byte order is never used), `f4`/`f8`, `str`, `bytes`, user types (structs), `{ switch, cases, default }` and the computed `value` type. Modifiers: `size` (a substream for user types, the length for `str`/`bytes`), `terminator`/`encoding` (`ascii`, `latin1`, `cp437`, `utf8`, `utf16le`, `utf16be`), `repeat` (`count`, `until`, `eos`), `enum`, `bits`, `expect`, `assert`, `doc`. `size` together with `repeat` is rejected (the size would be ignored): wrap the sized element in its own type and repeat that. Compatibility note: specs that combined `size` with `repeat`, or named a field `lookup` (now a reserved word like `min`/`max`), no longer validate.
+- **Types and fields.** Field types, modifiers and the rules around them are in [`SPEC-LANGUAGE.md`](SPEC-LANGUAGE.md). Compatibility note: specs that combined `size` with `repeat` (the size would be ignored: wrap the sized element in its own type and repeat that), or named a field `lookup` (now a reserved word like `min`/`max`), no longer validate. The host byte order is never used.
 - **Positioning.** Fields are sequential by default. `at` (absolute offset, inside the enclosing substream) and `find` (below) place a field without moving the parent cursor and are mutually exclusive; a failing sequential field stops the struct, placed fields still parse. Not implemented, and not planned: relative/pointer sugar (`rel`, `ptr`), `align`, TLV `chunks` and `scanBackFrom`. They are expressed with `at`, `find`, `switch` and `repeat`.
 - **Guards.** `if` (boolean expression) and `ifMagic` (`{ at, bytes, mask? }`, at most 64 bytes): the field is skipped (reads as `null`) when the condition fails; both must pass and `if` is evaluated first. `ifMagic` is a quiet guard: a position that is negative, unsafe, `null`, outside the enclosing stream, or a short read (the bytes are not there) all mean "no". A real source I/O failure and an expression that cannot be evaluated are reported on the field like a bad `if`; a budget stop still ends the parse.
 - **Signature search (`find`).** `{ bytes, mask?, from, window, direction, accept? }`. The window is `[from - window, from)` (`backward`) or `[from, from + window)` (`forward`), clipped to the enclosing stream; a signature must lie wholly inside it. The window is read in chunks of at most 64 KiB (overlapping by `bytes - 1`) through the normal read budget, so a hit near the end of a multi-GiB file costs about one window. Candidates are ordered nearest-to-`from` first. Without `accept` the nearest candidate wins. With `accept` (tiers of expressions, tried in order) each candidate is probe-parsed as the field's own type in a throw-away run (no nodes, no diagnostics, private node ids, at most `maxProbeSteps` steps and min(1 MiB, remaining budget) of reads / 1000 reads; its reads, bytes and steps are charged to the real run, and it spends the real run's `lookup` budget) and a tier is evaluated in that probe's scope (the probed type's fields, `_start`, `_io`, `_parent`); the first candidate a tier accepts wins, a failing or non-boolean expression rejects the candidate. No (accepted) candidate is a field error like a failed `at`. More than one hit adds a warning "N other matches in search window"; hitting `maxFindCandidates` is reported too. `find` cannot be combined with `at` or `repeat`.
-- **Struct scope.** Every struct scope exposes `_start` (the absolute offset where the struct begins), also through member access (`eocd._start`). Other context names: `_io.size/start/end/pos/eof`, `_parent` (also as a member, so `_parent._parent.x` reaches further out; past the root it reads as `null`), `_root`, `_index`, `_` (the field's own value in `assert`/`until`/`ref.at`).
+- **Struct scope.** Every struct scope exposes `_start` (the absolute offset where the struct begins), also through member access (`eocd._start`). The other context names (`_io`, `_parent`, `_root`, `_index`, `_`) are listed in [`SPEC-LANGUAGE.md`](SPEC-LANGUAGE.md#names); `_parent` past the root reads as `null`.
 - **Sized structs are self-delimiting.** A user-type field with a declared `size` always leaves the parent's cursor at `pos + size`: a failure inside it (truncated field, fatal `expect`, bad array element) is recorded on its own nodes and diagnostics but does not stop the parent struct or end the parent array (the field's own `assert`s are skipped, since the struct is only partly parsed). This is what keeps one malformed record of a length-prefixed list (TLV blocks) from hiding its siblings. Unsized structs still stop their parent when they fail. (Before Phase 6b a failure inside a sized struct also stopped the parent.)
 - **Computed fields.** `{ "type": "value", "value": "<expr>" }` consumes no bytes, defines its name (integer, string, boolean, struct, `null`) and produces a size-0 node at the current cursor. An expression error is reported on that node and the value is `null`; it never fails the struct. `if`, `ifMagic`, `assert` and `ref` work on it; `size`, `repeat`, `at`, `find` and friends do not apply.
 - **Expressions.** Hand-written parser (never `eval`), BigInt-safe, checked arithmetic, C-style conditional `c ? a : b` (short-circuit, lowest precedence), `&&`/`||`/`and`/`or`/`not`, `==` on `null`, `min`, `max` and `lookup(list, "member", value)`: the first element (a struct) of an array whose member equals the value, or `null`; the member must be a string literal. `lookup` only searches elements the interpreter kept (parsed eagerly, at most `eagerElements` per array); lazy and skimmed elements are not searched. All lookups of one parse (including `find` probes) or of one `expandLazy` / `expandRef` call together may examine `maxLookupScan` elements (the budget is per call, like the other per-call budgets, not cumulative across calls); the scan checks for abort every 1024 elements.
 - **Deferred pointers (`ref`).** `{ type, at, doc? }` on any field: during parse `at` is evaluated (a safe offset no larger than the file size, else a warning and no ref) and the node records `ref: { typeName, offset }`; nothing is parsed. `expandRef(result, nodeId)` (worker request `expandRef`) parses the target type at that offset over the whole file, so it may leave the substream the ref was found in, with the owning struct's scope as `_parent` (so target expressions can read `_parent.some_field`), then attaches the subtree under the node (`ref.loaded`, target flagged `fromRef`) and returns it; opening twice (even concurrently) returns the same nodes. Per-call budgets (nodes, steps, I/O, lookup scan) are fresh per expansion, but all expansions of one parse result together may create at most `maxRefNodesTotal` nodes (1,000,000; a clear error when exhausted), refs inside an expanded target are only opened on demand, nothing is ever followed automatically. The structure tree shows "open <type> @ 0x..." under such a node. Retained refs are keyed by tree path, so reloading a lazy page replaces them instead of accumulating (`maxRefs` caps distinct refs; the nodes of a replaced page are no longer openable, which is fine because the UI replaces them on reload). `findNodeAt` prefers the primary tree where it really owns the byte: a hit that is the ref node or one of its ancestors (a container that merely encloses the target) loses to the expanded target, an unrelated sibling or leaf wins; the byte ranges include expanded targets.
 - **Navigation links (`link`) and ref shortcuts (`jumps`).** Specs describe offsets and sizes (`off_bits`, `cd_offset`, `local_header_offset`, ...) whose targets the user wants to reach in one click, including data blocks that are never parsed into fields. `"link": { "at": "<expr>", "size"?: "<expr>", "label"?: "<string>" }` on a field parses nothing and reads nothing: while the field is parsed, `at` and `size` are evaluated in the field's scope (`_` is its value, earlier fields and `_root`/`_parent` are available, later fields are not yet) and the node gets `link: { offset, size, label? }`. A link is valid only if `at` is a safe non-negative integer inside the file (an offset at or past the end has nothing to select, so it gives no button); `size` is clamped to the end of the file, and an absent or `null` size means one byte (an explicit size of 0 is kept and only shows the position). A `null`, negative, over-2^53 or at-or-past-the-end result is a quiet "no link" (data in hostile files is routinely out of range); only an evaluation error (a non-integer, a failing expression) adds a warning on the node. Not allowed together with `repeat`. Because evaluation happens when the field is parsed, a link cannot use values computed later in the file: that is why the ZIP spec links the effective `cd_start`/`lho_eff` value fields (which include the stub correction `_root.delta`) and the raw EOCD `cd_offset` goes to the stored offset only (likewise the locator's `z64_eocd_offset`: the ZIP64 record position is computed later, so with a stub in front that raw link is off by the stub length). `"ref": { ..., "jumps": [{ "label", "path" }] }` (1-8 entries) adds shortcut buttons to a ref node: `path` is a dotted chain of field names inside the target type (`data`, `header.extra`), checked statically by the validator through user types (every segment must be a field of the current type; segments before the last must be single, non-repeated user-type fields, so switch-typed and array fields are rejected, only the last may be anything). The node records `ref.jumps` (a plain copy). Neither feature is followed automatically.
-- **Strict expectations.** `expect` records a validation message and parsing continues; with `"fatal": true` a mismatch fails the field like a read error (the struct stops, a repeat ends at that element) with an "expected X, found Y" message.
+- **Strict expectations.** `expect` records a validation message and parsing continues; with `"fatal": true` a mismatch fails the field like a read error (see [`SPEC-LANGUAGE.md`](SPEC-LANGUAGE.md#expect-and-fatal)).
 - Output: tree of `{ name, type, offset, size, value, children | lazy, ref }` that drives highlighting, jump-to and the structure tree. Large arrays are lazy: elements beyond `eagerElements` are parsed on demand (`expandLazy`).
 - Untrusted-input limits (`DEFAULT_LIMITS`): recursion depth, node/skim/step budgets, total I/O bytes and read count, array counts bounded by the bytes that remain, (type, offset) cycle detection, forward-progress checks, `maxFindWindow` (1 MiB; the validator also rejects larger literal windows), `maxFindCandidates` (256 probes), `maxProbeSteps`, `maxLookupScan`, `maxRefs`; cancellable via `AbortSignal`. Specs themselves are untrusted too (size/depth caps, validator with JSON paths).
 - Detection: magic bytes (incl. end-relative) outrank extension; ranked list, user override.
@@ -84,6 +93,8 @@ Known ambiguities and limits:
 - Format `extensions` may now list up to 64 entries (was 32).
 
 ### Storage of format specs
+
+See [ADR-0008](decisions/0008-spec-storage-indexeddb-and-folder-sync.md).
 
 - Chromium: `showDirectoryPicker()`, handle persisted in IndexedDB, permission re-requested on a user gesture.
 - Fallback: JSON import/export.

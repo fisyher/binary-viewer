@@ -78,8 +78,13 @@ describe('ZIP: documentation and builder', () => {
     expect(md).toMatch(/found by searching backward/);
     expect(md).toMatch(/Reference: can be opened as `local_entry`/);
     expect(md).toMatch(/Computed value/);
+    expect(md).toMatch(/\| `cd_start` \|[^\n]*\| computed \(no bytes\) \|/);
+    expect(md).not.toMatch(/\| `cd_start` \|[^\n]*\| 0x00 \(0\)/);
+    expect(md).toMatch(/Reference: can be opened as `local_entry` at file offset /);
     const html = generateHtml(zip);
     expect(html.length).toBeGreaterThan(1000);
+    expect(html).toMatch(/<td><code>cd_start<\/code><\/td>[^\n]*<td>computed \(no bytes\)<\/td>/);
+    expect(html).toContain('computed (<code>value</code>) fields take no bytes');
     expect(buildDocModel(zip).types.length).toBeGreaterThan(20);
   });
 

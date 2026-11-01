@@ -173,13 +173,13 @@ describe('docs and builder', () => {
     expect(fields[0]!.link).toEqual({ at: '_', size: '2', label: '<img src=x onerror=alert(1)> | `x`' });
     expect(fields[1]!.ref?.jumps).toEqual([{ label: '<b>d</b>|x', path: 'data' }]);
     const md = generateMarkdown(lenient);
-    expect(md).toContain('Link: jumps to offset `_` (`2` bytes)');
+    expect(md).toContain('Link: jumps to file offset `_` (`2` bytes)');
     expect(md).toContain('Jump shortcuts:');
     expect(md).not.toContain('<img'); // escaped
     expect(md).not.toContain('<b>');
     expect(md.split('\n').filter((l) => l.startsWith('| `p`'))).toHaveLength(1); // the `|` in the label did not break the table row
     const html = generateHtml(lenient);
-    expect(html).toContain('Link: jumps to offset');
+    expect(html).toContain('Link: jumps to file offset');
     expect(html).not.toMatch(/<img/i);
     expect(html).not.toMatch(/<b>d/i);
     expect(html).toContain('&lt;img');

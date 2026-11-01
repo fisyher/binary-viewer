@@ -1,5 +1,5 @@
-# Builds the static site and publishes dist/ to the gh-pages branch.
-# GitHub Pages serves that branch (Settings > Pages > Deploy from a branch > gh-pages, / (root)).
+# On every push to main (normally a merged pull request): run CI, then publish the build CI tested to the
+# gh-pages branch. GitHub Pages serves that branch (Settings > Pages > Deploy from a branch > gh-pages, / (root)).
 name: Deploy to GitHub Pages
 
 on:
@@ -8,27 +8,26 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run build
+          name: site
+          path: dist
 
       - name: Publish dist/ to gh-pages
         working-directory: dist

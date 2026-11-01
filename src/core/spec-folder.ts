@@ -13,13 +13,17 @@ export const USER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Exact reserved Windows device names (they cannot be file names there, with or without an extension). */
 const RESERVED_IDS = new Set(['con', 'prn', 'aux', 'nul', ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`), ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`)]);
 
+/** True for ids that are safe to use for a user spec and its `<id>.json` file: matches USER_ID_RE and is not a reserved Windows device name. Accepts `unknown` (it is used on data from files). */
 export function isUserId(id: unknown): id is string {
   return typeof id === 'string' && USER_ID_RE.test(id) && !RESERVED_IDS.has(id);
 }
 
 /** File names the app is willing to pass to getFileHandle/removeEntry. No path separators possible. */
+// Lower-case ".json" only: a ".JSON" file in the folder is listed in `names` but skipped as an unsupported name.
 export const SAFE_FILE_RE = /^[A-Za-z0-9._-]{1,128}\.json$/;
+/** Largest spec file read or written (UTF-8 bytes), same as the validator's default `maxSpecBytes`. */
 export const MAX_SPEC_FILE_BYTES = 1_048_576;
+/** Most `.json` files `readAll` examines before it stops and reports `truncated`. */
 export const MAX_FOLDER_FILES = 500;
 
 /** True when `text` certainly needs more than `cap` UTF-8 bytes, without encoding unless the answer is unclear. */
@@ -29,7 +33,7 @@ export function exceedsBytes(text: string, cap = MAX_SPEC_FILE_BYTES): boolean {
   return new TextEncoder().encode(text).length > cap;
 }
 
-/** The only way a NEW file name is derived from data: from a validated id. */
+/** The only way a NEW file name is derived from data: from a validated id. Throws (Error) for an id that fails `isUserId`. */
 export function specFileName(id: string): string {
   if (!isUserId(id)) throw new Error(`unsafe spec id for a file name: ${JSON.stringify(String(id).slice(0, 40))}`);
   return `${id}.json`;
@@ -48,6 +52,7 @@ export class FolderTimeoutError extends Error {
   }
 }
 
+/** Default per-call timeout (ms) for file system calls. */
 export const FS_TIMEOUT_MS = 30_000;
 
 /**
@@ -73,6 +78,7 @@ export function hasLoneSurrogate(text: string): boolean {
 }
 
 // Minimal structural types of the parts of the File System Access API we use (so tests can mock them).
+/** Writes a whole text file; `close()` commits it. `abort()` (optional) discards the pending write. */
 export interface FsWritable {
   write(data: string): Promise<void>;
   close(): Promise<void>;
@@ -94,18 +100,27 @@ export interface FsDirHandle {
   requestPermission(desc: { mode: 'readwrite' }): Promise<PermissionState>;
 }
 
+/**
+ * `unsupported`: no directory picker in this browser. `none`: supported, nothing connected. `connected`: usable.
+ * `needs-permission`: a handle is remembered but readwrite permission must be re-granted from a click (`reconnect`).
+ */
 export type FolderState = 'unsupported' | 'none' | 'connected' | 'needs-permission';
 
+/** A spec file that was read in full. */
 export interface FolderFile {
   /** File name in the folder (always matches SAFE_FILE_RE). */
   fileName: string;
+  /** Raw file text, untrusted: validate before use. */
   text: string;
+  /** Epoch milliseconds (0 if the browser gave no usable value). */
   lastModified: number;
 }
+/** A `.json` file that was seen but not read, with a human-readable reason. */
 export interface SkippedFile {
   fileName: string;
   reason: string;
 }
+/** Outcome of `readAll`. */
 export interface FolderReadResult {
   files: FolderFile[];
   skipped: SkippedFile[];
@@ -126,6 +141,7 @@ export interface FolderSyncOptions {
   timeoutMs?: number;
 }
 
+/** The browser's `showDirectoryPicker` (readwrite) wrapped as a callable, or undefined where it is missing (non-Chromium, or no window). */
 export function defaultPicker(): (() => Promise<FsDirHandle>) | undefined {
   const w = typeof window === 'undefined' ? undefined : (window as unknown as { showDirectoryPicker?: (o: object) => Promise<FsDirHandle> });
   const fn = w?.showDirectoryPicker;
@@ -137,6 +153,12 @@ function isDirHandle(v: unknown): v is FsDirHandle {
   return typeof o === 'object' && o !== null && o.kind === 'directory' && typeof o.values === 'function' && typeof o.getFileHandle === 'function' && typeof o.queryPermission === 'function';
 }
 
+/**
+ * One synced folder of spec files. Main thread only (needs user gestures and the File System Access API). Every file
+ * system call is bounded by a timeout and every file name is validated. Methods other than restore/connect/reconnect/
+ * disconnect throw if the state is not `connected`. `state` is a plain field read by the UI; it changes only through the
+ * methods here (and `markPermissionLost`).
+ */
 export class FolderSync {
   private handle: FsDirHandle | null = null;
   private readonly store: SpecStore;
@@ -151,10 +173,12 @@ export class FolderSync {
     this.state = this.picker ? 'none' : 'unsupported';
   }
 
+  /** The connected folder's display name (not a path), or null. */
   get name(): string | null {
     return this.handle?.name ?? null;
   }
 
+  /** Whether this browser can pick a folder at all. */
   get supported(): boolean {
     return this.picker !== undefined;
   }
@@ -176,7 +200,7 @@ export class FolderSync {
     return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
   }
 
-  /** Load the persisted handle and query (never request) its permission. */
+  /** Load the persisted handle and query (never request) its permission. Never throws; any failure leaves state `none`. Needs no user gesture. */
   async restore(): Promise<void> {
     if (!this.picker) return;
     try {
@@ -190,7 +214,7 @@ export class FolderSync {
     }
   }
 
-  /** Show the picker. Resolves false if the user cancelled. Throws on any other failure. */
+  /** Show the picker (needs a user gesture). Resolves false if the user cancelled. Throws on any other failure. The new handle is remembered in the store on a best-effort basis. */
   async connect(): Promise<boolean> {
     if (!this.picker) throw new Error('Folder sync is not supported in this browser');
     let h: FsDirHandle;
@@ -226,6 +250,7 @@ export class FolderSync {
     return false;
   }
 
+  /** Forget the folder. Files in it are untouched. Never throws. */
   async disconnect(): Promise<void> {
     this.handle = null;
     this.state = this.picker ? 'none' : 'unsupported';
@@ -236,15 +261,16 @@ export class FolderSync {
     }
   }
 
-  /** The handle's permission was revoked while connected. */
+  /** Call when an operation hit a permission error: connected -> needs-permission. No-op otherwise. */
   markPermissionLost(): void {
     if (this.handle && this.state === 'connected') this.state = 'needs-permission';
   }
 
   /**
    * Read every `*.json` file of the folder (not recursive), at most `MAX_FOLDER_FILES`, none larger than
-   * `MAX_SPEC_FILE_BYTES`. Per-file failures are reported, never thrown, EXCEPT permission errors: those abort the
-   * whole read (the caller must not act on a half-read folder).
+   * `MAX_SPEC_FILE_BYTES`. Per-file failures are reported, never thrown, EXCEPT permission errors (incl. timeouts):
+   * those abort the whole read (the caller must not act on a half-read folder). File names that fail SAFE_FILE_RE are
+   * listed in `names` and `skipped` but never opened.
    */
   async readAll(): Promise<FolderReadResult> {
     const h = this.requireConnected();
@@ -285,7 +311,7 @@ export class FolderSync {
     return { files, skipped, names, truncated };
   }
 
-  /** Read one file. Null when it does not exist; throws when it is too large or unreadable. */
+  /** Read one file by name (checked against SAFE_FILE_RE, else throws). Null when it does not exist; throws when it is too large or unreadable. */
   async readOne(fileName: string): Promise<{ text: string; lastModified: number } | null> {
     const name = checkFileName(fileName);
     const h = this.requireConnected();
@@ -301,7 +327,7 @@ export class FolderSync {
   }
 
   /**
-   * Write `fileName` (default `<id>.json`). Throws for an unsafe id or name, or when the write fails. If this call
+   * Write `fileName` (default `<id>.json`) with the whole `text`, replacing the file. Throws for an unsafe id or name, or when the write fails. If this call
    * had to create the file and the write then fails, the empty file it created is removed again, so a failed first
    * write never leaves a permanent empty `<id>.json` behind.
    */
@@ -337,7 +363,7 @@ export class FolderSync {
     }
   }
 
-  /** Remove a file by its (validated) name; a file that does not exist is fine. */
+  /** Remove a file by name (checked against SAFE_FILE_RE, else throws); a file that does not exist is fine. */
   async remove(fileName: string): Promise<void> {
     const name = checkFileName(fileName);
     const h = this.requireConnected();

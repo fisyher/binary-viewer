@@ -76,7 +76,7 @@
   let ignoreScroll: number | null = null; // scrollTop produced by our own programmatic scroll
 
   // Loaded byte window; rows outside it render as blanks (never stale data).
-  let chunk = $state<{ startRow: number; ver: number; bytes: Uint8Array } | null>(null);
+  let chunk = $state.raw<{ startRow: number; ver: number; bytes: Uint8Array } | null>(null);
   let reqId = 0;
   let retryTick = $state(0); // bump to re-run the fetch effect after a failure
   let autoRetried = false;
@@ -587,7 +587,7 @@
           <div class="row" style:height="{ROW_HEIGHT}px" role="row">
             <span class="off">{formatOffset(base, width)}</span>
             <span class="hex">
-              {#each { length: BYTES_PER_ROW } as _, i}
+              {#each { length: BYTES_PER_ROW } as _, i (i)}
                 {@const o = base + i}
                 {@const b = o < size ? byteAt(o) : undefined}
                 <span
@@ -604,7 +604,7 @@
               {/each}
             </span>
             <span class="ascii">
-              {#each { length: BYTES_PER_ROW } as _, i}
+              {#each { length: BYTES_PER_ROW } as _, i (i)}
                 {@const o = base + i}
                 {@const b = o < size ? byteAt(o) : undefined}
                 <span

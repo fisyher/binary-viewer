@@ -18,13 +18,22 @@
  */
 import { MAX_READ, type ByteSource } from './byte-source';
 
+/** A run of the document: bytes `[start, start+length)` of the base source (`orig`) or of the added store (`added`). */
 export type Piece = Readonly<{ kind: 'orig' | 'added'; start: number; length: number }>;
 
+/** Bytes per chunk of the added store (the store grows chunk by chunk, never reallocating). */
 export const ADDED_CHUNK = 64 * 1024;
+/** Default cap (bytes) on the append-only added store; undo does not reclaim it. */
 export const DEFAULT_MAX_ADDED = 256 * 1024 * 1024;
+/** Default cap on undo steps; the oldest step is dropped past it. */
 export const DEFAULT_MAX_HISTORY = 10_000;
+/** Max gap (ms, measured from the previous edit) for a typed edit to join the open undo step. */
 export const COALESCE_MS = 1000;
 
+/**
+ * Thrown by insert/overwrite when the added store would exceed `maxAddedBytes`. Thrown before any state changes,
+ * so the document and history are intact. Only saving (rebase) frees the store.
+ */
 export class EditStoreFullError extends Error {
   constructor(limit: number) {
     super(`Edit buffer is full: more than ${limit} bytes of new data. Save the file to continue editing.`);
@@ -33,7 +42,9 @@ export class EditStoreFullError extends Error {
 }
 
 export interface EditBufferOptions {
+  /** Cap on total bytes ever typed/pasted since construction or the last rebase. Default DEFAULT_MAX_ADDED. */
   maxAddedBytes?: number;
+  /** Max undo steps kept. Default DEFAULT_MAX_HISTORY. */
   maxHistory?: number;
   /** Time source for coalescing; tests inject a fake. */
   now?: () => number;
@@ -42,7 +53,11 @@ export interface EditBufferOptions {
 }
 
 export interface EditOptions {
-  /** Typed input: merge into the previous undo step when adjacent and within COALESCE_MS. */
+  /**
+   * Typed input: merge into the open undo step when the edit starts inside that step's touched range
+   * `[groupStart, groupEnd]`, within COALESCE_MS of the previous edit, and nothing is in the redo stack.
+   * Ignored for deletes (they always start a new step). Call `breakGroup()` to force a new step.
+   */
   coalesce?: boolean;
 }
 
@@ -77,6 +92,13 @@ function mergeable(a: Piece, b: Piece): boolean {
   return a.kind === b.kind && a.start + a.length === b.start;
 }
 
+/**
+ * A mutable document layered on a read-only base ByteSource; implements ByteSource itself, so readers need not
+ * know whether they see edits. All offsets are absolute logical document offsets in bytes. Edits are synchronous;
+ * only `read` is async (and only awaits base reads). The base is never modified, and the buffer does not copy it.
+ * Arguments must be non-negative safe integers or RangeError is thrown; no state changes on a throw.
+ * Single-threaded: use from one context (the main thread), not shared with the worker.
+ */
 export class EditBuffer implements ByteSource {
   private pieceList: Piece[];
   private offs: number[] = [];
@@ -114,6 +136,7 @@ export class EditBuffer implements ByteSource {
     this.refreshOffsets(0);
   }
 
+  /** Current document length in bytes (changes with inserts and deletes). */
   get size(): number {
     return this.total;
   }
@@ -121,6 +144,7 @@ export class EditBuffer implements ByteSource {
   get version(): number {
     return this.ver;
   }
+  /** True when the content differs from the last `markSaved()` state (or if that state fell off the history cap). */
   get isDirty(): boolean {
     return this.savedDepth === null || this.undoStack.length !== this.savedDepth;
   }
@@ -139,7 +163,7 @@ export class EditBuffer implements ByteSource {
     return this.addedLen;
   }
 
-  /** Subscribe to content changes. Returns an unsubscribe function. */
+  /** Subscribe to content changes. Callbacks run synchronously after the change, in subscription order. Returns an unsubscribe function. */
   onChange(cb: () => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -170,6 +194,12 @@ export class EditBuffer implements ByteSource {
 
   // ---- reading ----
 
+  /**
+   * Same contract as ByteSource.read, against the edited document: RangeError for invalid arguments,
+   * `length` > MAX_READ or `offset` > size; clamps at the end. The piece list is resolved synchronously, so the
+   * result is a consistent snapshot even if edits happen while base reads are pending.
+   * Rejects with a plain Error if the base returns fewer bytes than asked.
+   */
   async read(offset: number, length: number): Promise<Uint8Array> {
     checkInt('offset', offset);
     checkInt('length', length);
@@ -263,7 +293,11 @@ export class EditBuffer implements ByteSource {
 
   // ---- editing ----
 
-  /** Replace bytes [offset, offset+bytes.length) with `bytes`; extends the document past its end. */
+  /**
+   * Replace bytes [offset, offset+bytes.length) with `bytes`; extends the document past its end.
+   * `offset` may equal `size` (append) but not exceed it (RangeError). Empty `bytes` is a no-op. Throws
+   * EditStoreFullError if the added-store cap would be exceeded. One call is one undo step (unless coalesced).
+   */
   overwrite(offset: number, bytes: Uint8Array, opts: EditOptions = {}): void {
     checkInt('offset', offset);
     if (offset > this.total) throw new RangeError(`Offset ${offset} is past end (size ${this.total})`);
@@ -271,6 +305,7 @@ export class EditBuffer implements ByteSource {
     this.edit(offset, Math.min(this.total, offset + bytes.length), bytes, opts);
   }
 
+  /** Insert `bytes` before `offset` (`offset <= size`, else RangeError). Empty `bytes` is a no-op. Throws EditStoreFullError at the cap. */
   insert(offset: number, bytes: Uint8Array, opts: EditOptions = {}): void {
     checkInt('offset', offset);
     if (offset > this.total) throw new RangeError(`Offset ${offset} is past end (size ${this.total})`);
@@ -278,6 +313,7 @@ export class EditBuffer implements ByteSource {
     this.edit(offset, offset, bytes, opts);
   }
 
+  /** Remove `length` bytes at `offset`. Unlike read, a range extending past the end throws RangeError instead of clamping. Never coalesces. */
   delete(offset: number, length: number): void {
     checkInt('offset', offset);
     checkInt('length', length);
@@ -309,6 +345,7 @@ export class EditBuffer implements ByteSource {
     return Math.min(at, this.total);
   }
 
+  /** Redo one step; same return as `undo()`. Any new edit clears the redo stack. */
   redo(): number | null {
     const step = this.redoStack.pop();
     if (!step) return null;
@@ -323,7 +360,7 @@ export class EditBuffer implements ByteSource {
     return Math.min(at, this.total);
   }
 
-  /** The current state is the saved state (isDirty becomes false until the next change). */
+  /** The current state is the saved state (isDirty becomes false until the next change). Also ends the typing group. */
   markSaved(): void {
     this.savedDepth = this.undoStack.length;
     this.groupOpen = false;

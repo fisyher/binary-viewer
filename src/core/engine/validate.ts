@@ -7,15 +7,23 @@ import { DEFAULT_EXPR_LIMITS, freeNames, parseExpr } from './expr';
 import type { BitField, Encoding, FormatSpec, RepeatDef } from './schema';
 import { ENCODINGS, MAX_FIND_WINDOW, MAX_SIGNATURE_BYTES, isBuiltinType, needsSpecEndian, parseEnumKey, parseHexBytes, primitiveInfo } from './schema';
 
+/**
+ * Caps applied while validating an (untrusted) spec. Pass a `Partial<SpecLimits>` to override individual values;
+ * unspecified ones keep DEFAULT_SPEC_LIMITS. These bound the spec itself, not the work done parsing a file
+ * (that is the interpreter's `ParseLimits`).
+ */
 export interface SpecLimits {
+  /** Max size of the spec JSON text in bytes (UTF-8); enforced by `loadSpec` before `JSON.parse`. */
   maxSpecBytes: number;
   maxTypes: number;
   maxFieldsPerType: number;
   maxTotalFields: number;
   /** Longest chain of unconditionally nested types (cycles through `at`/`size` fields are exempt). */
   maxTypeNesting: number;
+  /** Max characters / nesting depth of any single expression string (see expr.ts). */
   maxExprLength: number;
   maxExprDepth: number;
+  /** Max cases in one `switch` type. */
   maxCases: number;
   maxEnumEntries: number;
   maxDocLength: number;
@@ -24,6 +32,7 @@ export interface SpecLimits {
   maxFindWindow: number;
 }
 
+/** Conservative defaults for specs that come from users or the network. */
 export const DEFAULT_SPEC_LIMITS: SpecLimits = {
   maxSpecBytes: 1_048_576,
   maxTypes: 512,
@@ -39,12 +48,18 @@ export const DEFAULT_SPEC_LIMITS: SpecLimits = {
   maxFindWindow: MAX_FIND_WINDOW,
 };
 
+/** One validation problem. Never thrown; collected into `ValidationResult.errors`. */
 export interface SpecIssue {
   /** JSON path, e.g. `$.types.file.fields[2].size`. */
   path: string;
   message: string;
 }
 
+/**
+ * Result of validating a spec. On success `spec` is the SAME object that was passed in (cast, not copied or
+ * sanitised), so the caller must not mutate it afterwards if it is shared. On failure `errors` is non-empty and
+ * holds at most 200 issues.
+ */
 export type ValidationResult = { ok: true; spec: FormatSpec } | { ok: false; errors: SpecIssue[] };
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
@@ -238,6 +253,18 @@ function checkTypeName(c: Ctx, name: unknown, path: string, specEndian: boolean,
   if (!typeNames.has(name)) c.err(path, `unknown type "${name}"`);
 }
 
+/**
+ * Validate an untrusted, already-parsed spec. Total: it never throws on any input value (malformed shapes become
+ * issues) and reports every problem it finds up to 200, each with a JSON path. Unknown keys are errors.
+ *
+ * Checks beyond shape: expressions parse within the limits and only mention fields of their own type (plus the
+ * reserved `_`, `_parent`, `_root`, `_index`, `_io`, `_start`); static `a.b.c` member chains against the declared
+ * types; type, enum and ref names exist; multi-byte primitives have an endianness; the combination rules between
+ * field keys (e.g. `size` with `repeat`, `find` with `at`). The type-graph pass (cycles of unconditional nesting
+ * and nesting depth > `maxTypeNesting`) only runs when everything else is clean.
+ *
+ * Passing validation does NOT bound parse-time cost; the interpreter enforces runtime limits separately.
+ */
 export function validateSpec(input: unknown, limits: Partial<SpecLimits> = {}): ValidationResult {
   const lim = { ...DEFAULT_SPEC_LIMITS, ...limits };
   const c = new Ctx(lim);
@@ -687,7 +714,10 @@ function checkTypeGraph(c: Ctx, edges: Map<string, Array<{ to: string; guarded: 
   }
 }
 
-/** Parse + validate JSON text, enforcing the size cap before JSON.parse. */
+/**
+ * Parse + validate JSON text, enforcing `maxSpecBytes` (UTF-8 bytes) before `JSON.parse`. Never throws: bad JSON
+ * or an oversized text comes back as a single issue at path `$`. See `validateSpec` for the success value.
+ */
 export function loadSpec(text: string, limits: Partial<SpecLimits> = {}): ValidationResult {
   const lim = { ...DEFAULT_SPEC_LIMITS, ...limits };
   const bytes = text.length * 3 > lim.maxSpecBytes ? new TextEncoder().encode(text).length : text.length;
@@ -701,6 +731,7 @@ export function loadSpec(text: string, limits: Partial<SpecLimits> = {}): Valida
   return validateSpec(json, limits);
 }
 
+/** One `path: message` line per issue, for logs and error displays. */
 export function formatIssues(issues: SpecIssue[]): string {
   return issues.map((i) => `${i.path}: ${i.message}`).join('\n');
 }

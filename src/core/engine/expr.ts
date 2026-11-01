@@ -23,6 +23,7 @@
  * count are capped. All failures are reported as ExprError (or `{ok:false}` from the safe wrappers).
  */
 
+/** Raised for any parse or evaluation failure of an expression (also carries limit violations). Message is user-facing. */
 export class ExprError extends Error {
   constructor(message: string) {
     super(message);
@@ -30,18 +31,26 @@ export class ExprError extends Error {
   }
 }
 
+/**
+ * Host-provided struct/array view that expressions can navigate with `.`. Implemented by the interpreter over parsed
+ * nodes; expressions only read it.
+ */
 export interface ObjValue {
   readonly isObj: true;
+  /** Member lookup. `undefined` (no such member) is turned into `null` by the evaluator, not an error. */
   get(name: string): Value | undefined;
   /** Arrays only: first kept element whose `member` equals `value`, or null. Spends `budget.left` per element looked at. */
   lookup?(member: string, value: Value, budget: { left: number; signal?: AbortSignal }): Value;
 }
+/** What an expression evaluates to. Integers are always bigint (never number); number is only for floats. */
 export type Value = bigint | number | string | boolean | null | ObjValue;
 
+/** Type guard for ObjValue. */
 export function isObj(v: Value): v is ObjValue {
   return typeof v === 'object' && v !== null && (v as ObjValue).isObj === true;
 }
 
+/** Parsed expression tree (plain data; safe to cache and share, never mutated by evaluation). */
 export type Expr =
   | { k: 'int'; v: bigint }
   | { k: 'str'; v: string }
@@ -54,8 +63,11 @@ export type Expr =
   | { k: 'cond'; c: Expr; a: Expr; b: Expr }
   | { k: 'call'; fn: 'min' | 'max' | 'lookup'; args: Expr[] };
 
+/** Caps on one expression's source. The parse-time defaults below apply to anything not overridden. */
 export interface ExprLimits {
+  /** Source length in UTF-16 code units. */
   maxLength: number;
+  /** Nesting depth of parens, unary chains, ternaries and call arguments. */
   maxDepth: number;
   maxTokens: number;
 }
@@ -326,9 +338,13 @@ class Parser {
   }
 }
 
+/** Syntax errors are returned, not thrown; `error` is a user-facing message that may include a source position. */
 export type ParseExprResult = { ok: true; ast: Expr } | { ok: false; error: string };
 
-/** Parse an expression. Never throws. */
+/**
+ * Parse an expression string (untrusted) into an AST. Never throws for bad input: length, token count, depth and
+ * syntax problems all come back as `{ok:false}`. Unspecified `limits` fall back to DEFAULT_EXPR_LIMITS.
+ */
 export function parseExpr(src: string, limits: Partial<ExprLimits> = {}): ParseExprResult {
   const lim = { ...DEFAULT_EXPR_LIMITS, ...limits };
   try {
@@ -343,7 +359,7 @@ export function parseExpr(src: string, limits: Partial<ExprLimits> = {}): ParseE
   }
 }
 
-/** Names that are looked up in the environment (roots of dotted paths). */
+/** Names that are looked up in the environment (roots of dotted paths). Pass `out` to accumulate across expressions. Function names and member names are not included. */
 export function freeNames(e: Expr, out: Set<string> = new Set()): Set<string> {
   switch (e.k) {
     case 'name':
@@ -375,12 +391,14 @@ export function freeNames(e: Expr, out: Set<string> = new Set()): Set<string> {
 
 // ---------------------------------------------------------------- evaluation
 
+/** How names are resolved while evaluating. The evaluator is pure apart from mutating `scan`. */
 export interface EvalEnv {
   /** Resolve a bare name; undefined means unknown. */
   resolve(name: string): Value | undefined;
   /** Elements `lookup` may still examine (shared across expressions by the interpreter; default per evaluation). */
   scan?: { left: number; signal?: AbortSignal };
 }
+// Note: evalExpr assigns a default `scan` onto the env object the first time `lookup` runs without one.
 
 /** Elements one `lookup` evaluation may examine when the environment carries no shared budget. */
 const DEFAULT_LOOKUP_SCAN = 100_000;
@@ -394,6 +412,7 @@ function typeOf(v: Value): string {
   return 'struct';
 }
 
+/** Short human-readable rendering of a value for error messages (strings are JSON-quoted, structs print as `struct`). */
 export function describeValue(v: Value): string {
   if (v === null) return 'null';
   if (isObj(v)) return 'struct';
@@ -460,7 +479,7 @@ function compare(op: string, a: Value, b: Value): boolean {
   }
 }
 
-/** Equality used by `switch` case matching. */
+/** Equality used by `switch` case matching and `lookup`: the same as `==`, except that a comparison that would be an error (e.g. mismatched types) is simply false. */
 export function valuesEqual(a: Value, b: Value): boolean {
   try {
     return compare('==', a, b);
@@ -561,7 +580,11 @@ function evalNode(e: Expr, env: EvalEnv, depth: number): Value {
   }
 }
 
-/** Evaluate; throws ExprError. */
+/**
+ * Evaluate a parsed expression. Throws ExprError for runtime errors (unknown name, type mismatch, division by zero,
+ * integer overflow past 256 bits, bad shift count, null in arithmetic, exceeding the internal evaluation depth).
+ * An abort observed inside `lookup` surfaces as ExprError('aborted'). Anything `env.resolve` throws propagates.
+ */
 export function evalExpr(e: Expr, env: EvalEnv): Value {
   return evalNode(e, env, 0);
 }
@@ -570,7 +593,10 @@ export type EvalResult = { ok: true; value: Value } | { ok: false; error: string
 
 const EMPTY_ENV: EvalEnv = { resolve: () => undefined };
 
-/** Parse and evaluate in one go. Never throws for bad input. */
+/**
+ * Parse and evaluate in one go. Parse and evaluation errors are returned as `{ok:false}`; only unexpected host
+ * errors from `env` propagate. `limits` apply to parsing only.
+ */
 export function evaluate(src: string, env: EvalEnv = EMPTY_ENV, limits: Partial<ExprLimits> = {}): EvalResult {
   const p = parseExpr(src, limits);
   if (!p.ok) return p;
@@ -583,7 +609,7 @@ export function evaluate(src: string, env: EvalEnv = EMPTY_ENV, limits: Partial<
   }
 }
 
-/** Non-negative integer that fits a safe Number (sizes, counts, offsets). Throws ExprError. */
+/** Coerce an expression result to a non-negative integer that fits a safe Number (sizes, counts, offsets); `what` names it in the error. Accepts bigint or an integral float. Throws ExprError. */
 export function toNonNegativeInt(v: Value, what: string): number {
   const b = toBigInt(v, what);
   if (b < 0n) throw new ExprError(`${what} is negative (${b})`);
@@ -591,6 +617,7 @@ export function toNonNegativeInt(v: Value, what: string): number {
   return Number(b);
 }
 
+/** Accept a bigint or an integral float; anything else (null, string, fractional) throws ExprError mentioning `what`. */
 export function toBigInt(v: Value, what: string): bigint {
   if (typeof v === 'bigint') return v;
   if (typeof v === 'number' && Number.isInteger(v)) return BigInt(v);

@@ -46,8 +46,17 @@ import type { PrimitiveInfo } from './schema';
 
 // ------------------------------------------------------------------ public types
 
+/**
+ * Decoded value of a leaf node: 1-4 byte integers as number, 8-byte integers as bigint (exact), computed `value`
+ * fields as number when within the safe-integer range and bigint otherwise, floats as number, `str` as string, `bytes` as Uint8Array (the whole field up to `fullBytesMax`, otherwise only a preview of
+ * `previewBytes`; `Node.size` is still the real length).
+ */
 export type NodeValue = number | bigint | string | Uint8Array;
 
+/**
+ * Marks an array node whose tail (or whole body) was not parsed. Elements are fetched on demand with
+ * `expandLazy(result, node.id, {start, count})`; the node's `children` hold only what is already loaded.
+ */
 export interface LazyArray {
   /** Absolute offset of element 0. */
   start: number;
@@ -62,13 +71,25 @@ export interface LazyArray {
   resumeOffset: number | null;
 }
 
+/**
+ * One parsed item in the result tree. Plain data (structured-clone safe, so it crosses the worker boundary), but the
+ * tree is live: `expandLazy` (variable-size arrays) and `expandRef` append to `children` of the existing nodes, so
+ * treat nodes as shared and do not mutate them.
+ */
 export interface Node {
+  /**
+   * Unique within one ParseResult and never reused; the key for `expandLazy`/`expandRef` and for UI selection state.
+   * Ids are assigned in creation order, so nodes returned again by a repeated fixed-size `expandLazy` get fresh ids.
+   */
   id: number;
   name: string;
   typeName: string;
+  /** ABSOLUTE file offset of the first byte, in bytes (not relative to the parent). */
   offset: number;
+  /** Bytes covered; may exceed what was read (e.g. a long `bytes` field) and may be 0 (`value` fields, empty items). */
   size: number;
   value?: NodeValue;
+  /** Ready-to-show text for `value` (hex/enum label/string preview); `(struct)` for structs, `null` for skipped fields. */
   display?: string;
   enumName?: string;
   enumLabel?: string;
@@ -87,15 +108,22 @@ export interface Node {
   fromRef?: true;
 }
 
+/**
+ * A problem recorded during parsing. Parsing reports problems this way instead of throwing; the same message is
+ * usually also on the affected `Node.error`. Capped at `Limits.maxDiagnostics` per result.
+ */
 export interface Diagnostic {
   severity: 'error' | 'warning';
   code: 'read' | 'expr' | 'bounds' | 'validation' | 'cycle' | 'limit' | 'aborted' | 'array' | 'spec' | 'lazy' | 'internal' | 'parse' | 'find' | 'ref';
   message: string;
+  /** Spec-level location, e.g. `file.header.magic` (type and field names, not a file offset). */
   path?: string;
+  /** Absolute file offset, bytes. */
   offset?: number;
   nodeId?: number;
 }
 
+/** Work counters for the initial parse (expansion calls keep their own budgets; they only set the flags below). */
 export interface ParseStats {
   nodes: number;
   steps: number;
@@ -108,12 +136,22 @@ export interface ParseStats {
   suppressedDiagnostics: number;
 }
 
+/**
+ * Outcome of `parse`. `errors` is live: later `expandLazy`/`expandRef` calls append to it. The object also carries a
+ * hidden link to the parse's internal state (kept in a WeakMap), so `expandLazy`/`expandRef` only work with the very
+ * same object, not with a clone or a deserialised copy.
+ */
 export interface ParseResult {
   root: Node;
   errors: Diagnostic[];
   stats: ParseStats;
 }
 
+/**
+ * Budgets that bound the work an (untrusted) spec and file can cause. Hitting one stops that part of the parse,
+ * leaves a partial tree, sets `stats.truncated` and adds a 'limit' diagnostic; it never throws. Override with
+ * `ParseOptions.limits` (Partial); everything not given keeps DEFAULT_LIMITS.
+ */
 export interface Limits {
   /** Max user-type nesting depth. */
   maxDepth: number;
@@ -154,6 +192,7 @@ export interface Limits {
   maxRefNodesTotal: number;
 }
 
+/** Defaults sized for interactive use on large files: bounded I/O (256 MiB) and nodes (100k) regardless of file size. */
 export const DEFAULT_LIMITS: Limits = {
   maxDepth: 64,
   maxNodes: 100_000,
@@ -180,6 +219,7 @@ export const DEFAULT_LIMITS: Limits = {
 
 export interface ParseOptions {
   limits?: Partial<Limits>;
+  /** Aborting stops at the next step: `parse` still resolves, with a partial tree, `stats.aborted` and an 'aborted' diagnostic. */
   signal?: AbortSignal;
 }
 
@@ -1351,6 +1391,14 @@ async function runArray(run: Run, st: ArrayState, limitIndex: number, keepBelow:
 
 // ------------------------------------------------------------------ public API
 
+/**
+ * Interpret `spec` over `source` starting at offset 0 with the root type. The spec must already have passed
+ * `validateSpec`; the file contents are untrusted. Never rejects for bad data, limits or abort (see the file header
+ * and `Limits`); the problems are in `result.errors`, `Node.error` and `result.stats`. Reads go through `source`
+ * only in small exact-size requests, never the whole file. Offsets in the tree are absolute bytes.
+ * Safe to call concurrently on different sources. The returned tree stays valid only while `source` stays readable,
+ * because lazy expansion and refs re-read it.
+ */
 export async function parse(spec: FormatSpec, source: ByteSource, opts: ParseOptions = {}): Promise<ParseResult> {
   const limits: Limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const shared: Shared = { spec, source, limits, nextId: 1, exprCache: new Map(), enumMaps: new Map(), lazies: new Map(), refs: new Map(), refKeys: new Map(), refNodes: 0, sigCache: new Map(), result: null };
@@ -1390,17 +1438,21 @@ function pushResultDiag(result: ParseResult, shared: Shared | undefined, d: Diag
   else result.errors.push(d);
 }
 
+/** Element window for `expandLazy`; both are element indices/counts, not bytes. */
 export interface LazyRange {
   start: number;
   count: number;
 }
 
 /**
- * Parse a window of elements of a lazy array node.
+ * Parse a window of elements of a lazy array node (`nodeId` is `Node.id`; `range.count` is capped at
+ * `Limits.maxLazyRange`).
  * - Fixed-size arrays: returns freshly parsed nodes (not attached to the tree; the caller caches them).
  * - Variable-size arrays: resumes parsing, appends to `node.children`, updates `node.lazy`, and returns the
  *   requested slice. Calls on the same node are serialised.
- * Never throws for bad input; problems are returned as error nodes and appended to `result.errors`.
+ * Never throws for bad input; problems are returned as error nodes and appended to `result.errors`. An unknown
+ * node id or an invalid range yields [] plus a 'lazy' diagnostic; a start past a known count likewise.
+ * Cancellation: `opts.signal` aborts the expansion, returning whatever was collected so far.
  * A limit or abort during expansion yields a SHORT (partial) result and sets `result.stats.truncated` (and
  * `aborted`); those flags are sticky, meaning "some expansion was partial", and a retry may complete the rest.
  */
@@ -1553,6 +1605,8 @@ async function expandVariable(run: Run, entry: LazyEntry, start: number, count: 
 /**
  * Deepest node whose byte range covers `offset` (for hex-click -> tree selection), or null.
  * Lazy arrays are returned as-is when the offset lies inside their (unexpanded) range.
+ * `offset` is an absolute file offset in bytes; a non-finite value returns null. Pure and synchronous (does not
+ * trigger any lazy expansion), so it only sees nodes already loaded. `bits` children are skipped.
  * Children are searched even when the parent's own range does not cover the offset, because `at` fields
  * place children outside their parent's sequential extent. At equal depth the narrowest range wins, then the
  * earliest child. Nodes returned by `expandLazy` for fixed-size arrays are detached from the tree, so pass such a
@@ -1603,7 +1657,7 @@ function search(node: Node, offset: number, depth: number, allowRef: boolean): {
   return null;
 }
 
-/** Element index of a fixed-size lazy array that covers `offset`, or null. */
+/** Element index of a fixed-size lazy array that covers absolute `offset` (bytes), or null (not lazy, variable-size, unknown count, before the start, or past the last element). */
 export function lazyElementIndexAt(node: Node, offset: number): number | null {
   const lz = node.lazy;
   if (!lz || lz.elemSize === null || lz.count === null || offset < lz.start) return null;

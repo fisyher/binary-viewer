@@ -9,9 +9,12 @@ export const PAGE_SIZE = 200;
 /** Longest display string rendered in a cell. */
 export const MAX_CELL_CHARS = 200;
 
+/** Loaded pages of fixed-size lazy arrays: array node id -> page index (element index / PAGE_SIZE) -> that page's nodes. */
 export type Pages = ReadonlyMap<number, ReadonlyMap<number, readonly Node[]>>;
 
+/** UI state `flattenTree` needs; all keyed by `Node.id`. Not mutated by the helpers here. */
 export interface TreeState {
+  /** Ids of nodes the user has opened. */
   expanded: ReadonlySet<number>;
   /** Fixed-size lazy arrays only: arrayId -> pageIndex -> element nodes (cached). */
   pages: Pages;
@@ -19,6 +22,7 @@ export interface TreeState {
   loading?: ReadonlySet<string>;
 }
 
+/** A visible tree node. `key` is stable per node (see nodeKey) and `parentKey` is the key of the row above it in the hierarchy. */
 export interface NodeRow {
   kind: 'node';
   key: string;
@@ -29,6 +33,7 @@ export interface NodeRow {
   expanded: boolean;
 }
 
+/** A "load more" affordance for a lazy array: a gap of elements that are not loaded yet. */
 export interface MoreRow {
   kind: 'more';
   key: string;
@@ -54,6 +59,7 @@ export interface RefRow {
 
 export type Row = NodeRow | MoreRow | RefRow;
 
+/** Row keys; the prefixes keep node, load-request and ref-request keys from colliding. */
 export const nodeKey = (id: number) => `n${id}`;
 export const loadKey = (arrayId: number, start: number) => `${arrayId}:${start}`;
 export const refLoadKey = (nodeId: number) => `ref:${nodeId}`;
@@ -130,13 +136,19 @@ function appendNode(out: Row[], node: Node, depth: number, parentKey: string | n
   gap(next, totalPages);
 }
 
-/** Flatten the expanded part of the tree into display rows (pre-order). */
+/**
+ * Flatten the expanded part of the tree into display rows (pre-order). Only expanded nodes are descended, so the cost
+ * is proportional to what is visible, not to the file. Fixed-size lazy arrays show their cached pages (`st.pages`) plus
+ * a MoreRow per gap; variable-size ones show their loaded `children` plus one MoreRow to resume. Depth is capped at 256.
+ * Returns rows that reference (do not copy) the nodes.
+ */
 export function flattenTree(root: Node, st: TreeState): Row[] {
   const out: Row[] = [];
   appendNode(out, root, 0, null, st);
   return out;
 }
 
+/** Half-open row index range `[start, end)`. */
 export interface VirtualWindow {
   /** First rendered row index. */
   start: number;
@@ -144,7 +156,7 @@ export interface VirtualWindow {
   end: number;
 }
 
-/** Rows to render for a scroll position: the visible rows plus `overscan` on both sides, clamped. */
+/** Rows to render for a scroll position (pixels): the visible rows plus `overscan` on both sides, clamped. */
 export function virtualWindow(rowCount: number, scrollTop: number, viewportHeight: number, rowHeight: number, overscan = 6): VirtualWindow {
   if (rowCount <= 0 || rowHeight <= 0) return { start: 0, end: 0 };
   const top = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
@@ -153,13 +165,14 @@ export function virtualWindow(rowCount: number, scrollTop: number, viewportHeigh
   return { start: Math.max(0, first - overscan), end: Math.min(rowCount, Math.max(first + 1, last) + overscan) };
 }
 
-/** Expanded set that opens the root and its direct (non-lazy) children. */
+/** Initial expanded set: the root, plus those direct children that are non-lazy and already have children. */
 export function defaultExpanded(root: Node): Set<number> {
   const s = new Set<number>([root.id]);
   for (const c of root.children ?? []) if (!c.lazy && c.children && c.children.length > 0) s.add(c.id);
   return s;
 }
 
+/** Keys handled by `navigateRows` (tree-view keyboard model: Right expands then enters, Left collapses then goes to parent). */
 export type NavKey = 'ArrowDown' | 'ArrowUp' | 'ArrowRight' | 'ArrowLeft' | 'Home' | 'End';
 
 export interface NavResult {
@@ -199,13 +212,13 @@ export function navigateRows(rows: readonly Row[], index: number, key: NavKey): 
   }
 }
 
-/** Inclusive byte range of a node, or null for zero-size (or nonsensical) nodes. */
+/** Inclusive byte range `[start, end]` (absolute offsets) of a node, or null for zero-size or nonsensical (negative / non-integer) nodes. Note `end` is the last byte, not one past it. */
 export function nodeByteRange(node: Node): { start: number; end: number } | null {
   if (!Number.isSafeInteger(node.offset) || !Number.isSafeInteger(node.size) || node.offset < 0 || node.size <= 0) return null;
   return { start: node.offset, end: node.offset + node.size - 1 };
 }
 
-/** Inclusive byte range a node's `link` selects, or null for a caret-only (zero-size) or absent link. */
+/** Inclusive byte range `[start, end]` a node's `link` selects (absolute offsets), or null for a caret-only (zero-size) or absent link. */
 export function linkByteRange(node: Node): { start: number; end: number } | null {
   const l = node.link;
   if (!l || !Number.isSafeInteger(l.offset) || !Number.isSafeInteger(l.size) || l.offset < 0 || l.size <= 0) return null;
@@ -250,7 +263,10 @@ export function pathById(root: Node, id: number): Node[] | null {
   return null;
 }
 
-/** Follow a worker-provided id path from `root`; returns the nodes found (may stop early). */
+/**
+ * Follow a worker-provided id path (root first, as in `Located.path`) through the client's copy of the tree. Returns the
+ * nodes found, stopping early if a node is not attached yet (e.g. the array page is not loaded); empty if `ids[0]` is not `root`.
+ */
 export function followPath(root: Node, ids: readonly number[]): Node[] {
   const out: Node[] = [];
   let cur: Node | undefined = root;
@@ -266,6 +282,7 @@ export function followPath(root: Node, ids: readonly number[]): Node[] {
 
 const HEX = '0123456789abcdef';
 
+// Characters sanitizeText makes visible: controls, format (bidi, zero-width, BOM), surrogates, line/paragraph separators.
 const INVISIBLE = /^[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]$/u;
 
 /**
@@ -292,7 +309,7 @@ function bytesPreview(b: Uint8Array): string {
   return b.length > n ? `${s} … (${b.length} bytes)` : s;
 }
 
-/** Text of the value cell: lazy array summary, enum label (+ display), display, or the formatted raw value. */
+/** Text of the value cell (always passed through sanitizeText, at most MAX_CELL_CHARS): lazy array summary, enum label (+ display), display, or the formatted raw value. */
 export function formatNodeValue(node: Node): string {
   if (node.lazy) {
     const lz = node.lazy;
@@ -312,7 +329,7 @@ export function formatNodeValue(node: Node): string {
   return sanitizeText(base);
 }
 
-/** Tooltip text for the error/warning badge, or null when the node has no problems. */
+/** Messages for the error/warning badge (`error` first, then `expect`/`assert` validation messages); empty when the node has no problems. */
 export function problemMessages(node: Node): string[] {
   const out: string[] = [];
   if (node.error) out.push(node.error);
@@ -320,7 +337,7 @@ export function problemMessages(node: Node): string[] {
   return out;
 }
 
-/** Latest-wins throttle: first call runs now; calls within `ms` collapse into one trailing call with the last args. */
+/** Latest-wins throttle (uses Date.now/setTimeout, so main-thread/UI use): first call runs now; calls within `ms` collapse into one trailing call with the last args. */
 export function throttleLatest<A extends unknown[]>(fn: (...a: A) => void, ms: number): ((...a: A) => void) & { cancel(): void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastRun = -Infinity;
@@ -374,7 +391,7 @@ export function nodePathKeys(root: Node, limit = 200_000): Map<number, string> {
   return out;
 }
 
-/** Map ids of `oldRoot`'s nodes onto the nodes of `newRoot` that have the same path key. */
+/** Map ids of `oldRoot`'s nodes onto the nodes of `newRoot` that have the same path key (see nodePathKeys; ids are only unique per parse result, so this is how state survives a re-parse). Nodes without a counterpart are absent from the map. */
 export function matchNodeIds(oldRoot: Node, newRoot: Node): Map<number, number> {
   const byKey = new Map<string, number>();
   for (const [id, key] of nodePathKeys(newRoot)) byKey.set(key, id);

@@ -67,6 +67,12 @@
   let viewportHeight = $state(0);
   let loadError = $state<string | null>(null);
   let scroller: HTMLDivElement | undefined = $state();
+  const uid = $props.id(); // row ids are unique per tree instance (the viewer and the Formats preview may both be mounted)
+  const rowId = (key: string) => `${uid}-${key.replaceAll(':', '-')}`;
+  // The row of the latest first click on a row: a double-click acts on it, wherever the rows have moved to. Cleared by any
+  // other pointer action (twisty, buttons) and when the tree is replaced. Clicks on different rows reset the browser's click
+  // count, so a double-click is always two clicks on the same row.
+  let clickedKey: string | null = null;
   type Jump = { label: string; path: string };
   let jumpToken = 0; // bumped by every jump click (on any reference): only the newest click may select
   const wantedJump = new Map<number, { jump: Jump; token: number }>(); // ref node id -> newest jump click waiting for the open
@@ -78,6 +84,7 @@
     const keep = r !== null && preserveFor === r;
     const old = prevRoot;
     prevRoot = r;
+    clickedKey = null;
     if (keep && old) {
       untrack(() => {
         const ids = matchNodeIds(old, r);
@@ -119,6 +126,8 @@
   });
   const win = $derived(virtualWindow(rows.length, scrollTop, viewportHeight, ROW_HEIGHT));
   const visible = $derived(rows.slice(win.start, win.end));
+  // Only an active row that is rendered can be named; when it has scrolled out of the window the attribute is omitted.
+  const activeId = $derived(activeKey !== null && visible.some((r) => r.key === activeKey) ? rowId(activeKey) : undefined);
   const severity = $derived.by(() => {
     const m = new Map<number, 'error' | 'warning'>();
     for (const d of diagnostics) {
@@ -142,11 +151,12 @@
     else if (top + ROW_HEIGHT > scrollTop + viewportHeight) setScroll(center ? top - viewportHeight / 2 : top + ROW_HEIGHT - viewportHeight);
   }
 
-  function selectNode(node: Node, center = false) {
+  /** `scroll` false for pointer selection: the clicked row is already (partly) visible and moving it would break a double-click. */
+  function selectNode(node: Node, center = false, scroll = true) {
     const key = nodeKey(node.id);
     selectedKey = key;
     activeKey = key;
-    const i = rows.findIndex((r) => r.key === key);
+    const i = scroll ? rows.findIndex((r) => r.key === key) : -1;
     if (i >= 0) scrollToIndex(i, center);
     onSelect(node, nodeByteRange(node));
   }
@@ -309,11 +319,21 @@
     if (open) ensureFirstPage(node);
   }
 
-  function onRowClick(row: Row) {
+  function onRowClick(row: Row, e: MouseEvent) {
+    if (e.detail > 1) return; // the second click of a double-click: the first one already acted
+    clickedKey = row.key;
+    refocus(); // a focused row would drop focus to <body> when it scrolls out of the window
     activeKey = row.key;
     if (row.kind === 'more') void load(row.array, row.start);
     else if (row.kind === 'ref') void openRef(row.node);
-    else selectNode(row.node);
+    else selectNode(row.node, false, false);
+  }
+
+  function onRowDblClick(row: Row, e: MouseEvent) {
+    const key = e.detail >= 2 && clickedKey ? clickedKey : row.key; // a dblclick without a click count (synthetic) acts on its own row
+    clickedKey = null;
+    const target = rows.find((r) => r.key === key);
+    if (target?.kind === 'node' && target.expandable) setExpanded(target.node, !target.expanded);
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -388,6 +408,7 @@
     tabindex="0"
     role="tree"
     aria-label="Structure"
+    aria-activedescendant={activeId}
   >
     {#if !root}
       <p class="empty">No structure</p>
@@ -408,18 +429,23 @@
                 aria-level={row.depth + 1}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={row.key === selectedKey}
+                id={rowId(row.key)}
                 data-key={row.key}
-                onclick={() => onRowClick(row)}
+                onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
-                ondblclick={() => row.expandable && setExpanded(node, !row.expanded)}
+                ondblclick={(e) => onRowDblClick(row, e)}
               >
                 <span class="name" style:padding-left="{row.depth * 14 + 4}px">
                   <span
                     class="twisty"
                     role="presentation"
                     data-twisty
+                    ondblclick={(e) => e.stopPropagation()}
                     onclick={(e) => {
                       e.stopPropagation();
+                      clickedKey = null;
+                      if (e.detail > 1) return;
+                      refocus();
                       if (row.expandable) setExpanded(node, !row.expanded);
                     }}>{row.expandable ? (row.expanded ? '▾' : '▸') : ''}</span
                   >
@@ -434,6 +460,8 @@
                       aria-label="Jump to {sanitizeText(jump.label, 60)} of {sanitizeText(node.name, 60)}"
                       onclick={(e) => {
                         e.stopPropagation();
+                        clickedKey = null;
+                        if (e.detail > 1) return; // a double-click runs the jump once
                         void jumpRef(node, jump);
                         refocus();
                       }}
@@ -452,6 +480,8 @@
                       aria-label="Go to {sanitizeText(node.link.label ?? hex(node.link.offset), 60)} (offset {hex(node.link.offset)}) from {sanitizeText(node.name, 60)}"
                       onclick={(e) => {
                         e.stopPropagation();
+                        clickedKey = null;
+                        if (e.detail > 1) return; // a double-click runs the link once
                         useLink(node);
                         refocus();
                       }}
@@ -478,9 +508,10 @@
                 tabindex="-1"
                 aria-selected="false"
                 aria-level={row.depth + 1}
+                id={rowId(row.key)}
                 data-key={row.key}
                 data-ref
-                onclick={() => onRowClick(row)}
+                onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
                 <span class="name" style:padding-left="{row.depth * 14 + 4}px">
@@ -496,8 +527,9 @@
                 tabindex="-1"
                 aria-selected="false"
                 aria-level={row.depth + 1}
+                id={rowId(row.key)}
                 data-key={row.key}
-                onclick={() => onRowClick(row)}
+                onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
                 <span class="name" style:padding-left="{row.depth * 14 + 4}px">
