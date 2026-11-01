@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import bmpJson from '../../formats/bmp.json';
-import { buildDocModel, escapeHtml, generateHtml, generateMarkdown } from './docs';
+import { buildDocModel, escapeHtml, generateHtml, generateMarkdown, htmlPieces, mdPieces } from './docs';
 import { mkSpec } from './test-helpers';
 import { validateSpec } from './validate';
 
@@ -102,6 +102,22 @@ describe('generateHtml', () => {
     expect(bmp).toContain('<h1>Windows Bitmap</h1>');
     expect(bmp).toContain('<h3>file_header</h3>');
     expect(bmp.match(/<table>/g)!.length).toBeGreaterThanOrEqual(Object.keys(v.spec.types).length);
+  });
+});
+
+describe('label pieces', () => {
+  const hostile = [{ text: '<img src=x onerror=1> & more\nline' }, { text: '<b>x</b>', code: true }];
+  it('are escaped in Markdown', () => {
+    const out = mdPieces(hostile);
+    expect(out).toContain('&lt;img src=x onerror=1&gt; &amp; more line');
+    expect(out).not.toContain('<img');
+    expect(out).toContain('`<b>x</b>`');
+  });
+  it('are escaped in HTML', () => {
+    const out = htmlPieces(hostile);
+    expect(out).toContain('&lt;img src=x onerror=1&gt; &amp; more\nline');
+    expect(out).not.toContain('<img');
+    expect(out).toContain('<code>&lt;b&gt;x&lt;/b&gt;</code>');
   });
 });
 

@@ -45,6 +45,44 @@ function hexOff(n: number): string {
   return `0x${n.toString(16).toUpperCase().padStart(2, '0')} (${n})`;
 }
 
+/** A piece of plain (unescaped) label text; `code` pieces are rendered as code. Each renderer escapes for itself. */
+export interface DocTextPiece {
+  text: string;
+  code?: boolean;
+}
+
+/** Shared wording of the position column, so Markdown, HTML and the in-app view cannot drift apart. */
+export function positionPieces(p: DocPosition): DocTextPiece[] {
+  switch (p.kind) {
+    case 'at':
+      return [{ text: 'at ' }, { text: p.expr, code: true }, { text: ' (absolute file offset)' }];
+    case 'find':
+      return [
+        { text: `found by searching ${p.direction} from ` },
+        { text: p.from, code: true },
+        { text: ` (window ${p.window} bytes) for ` },
+        { text: p.bytes, code: true },
+      ];
+    case 'computed':
+      return [{ text: 'computed (no bytes)' }];
+    case 'variable':
+      return [{ text: 'variable (depends on earlier data)' }];
+    default:
+      return [{ text: hexOff(p.offset) }];
+  }
+}
+
+/** Explanation of the position column, shown under "Structures" in every renderer. */
+export const POSITION_NOTE_PIECES: DocTextPiece[] = [
+  { text: 'Offsets of sequential fields are relative to the start of the containing structure. ' },
+  { text: 'at', code: true },
+  { text: ' gives an absolute file offset; ' },
+  { text: 'find', code: true },
+  { text: ' places the field where a signature search finds it; computed (' },
+  { text: 'value', code: true },
+  { text: ') fields take no bytes; variable means the position depends on data read earlier.' },
+];
+
 // ---------------------------------------------------------------------------------------------------------------
 // Doc model: plain, renderer-neutral data (raw, UNESCAPED strings). Every renderer must escape for its own target.
 // ---------------------------------------------------------------------------------------------------------------
@@ -55,6 +93,7 @@ export type DocPosition =
   | { kind: 'at'; expr: string }
   | { kind: 'find'; direction: 'backward' | 'forward'; from: string; window: number; bytes: string }
   | { kind: 'offset'; offset: number }
+  | { kind: 'computed' }
   | { kind: 'variable' };
 export type DocSizeBase = { kind: 'eos' } | { kind: 'expr'; expr: string } | { kind: 'static'; bytes: number } | { kind: 'terminator'; terminator: string } | { kind: 'variable' };
 export type DocRepeat = { kind: 'eos' } | { kind: 'count'; expr: string } | { kind: 'until'; expr: string };
@@ -173,7 +212,8 @@ export function buildDocModel(spec: FormatSpec): DocModel {
     let cursor: number | null = 0;
     for (const f of def.fields) {
       let position: DocPosition;
-      if (f.at !== undefined) position = { kind: 'at', expr: String(f.at) };
+      if (f.type === 'value') position = { kind: 'computed' };
+      else if (f.at !== undefined) position = { kind: 'at', expr: String(f.at) };
       else if (f.find !== undefined) {
         position = { kind: 'find', direction: f.find.direction === 'forward' ? 'forward' : 'backward', from: String(f.find.from), window: Number(f.find.window), bytes: String(f.find.bytes).trim() };
       } else if (cursor === null) position = { kind: 'variable' };
@@ -245,9 +285,13 @@ function mdType(t: DocTypeRef): string {
   return `switch on ${code(t.on)}: ` + t.cases.map((c) => `${code(c.key)} → ${code(c.type)}`).join(', ') + (t.default !== undefined ? `, default → ${code(t.default)}` : '');
 }
 
+/** Markdown for label pieces. Plain pieces are flattened to one line and `& < >` become entities; they are not fully prose-escaped so that labels like `0x0E (14)` stay readable. */
+export function mdPieces(ps: DocTextPiece[]): string {
+  return ps.map((x) => (x.code ? code(x.text) : x.text.replace(LINE_BREAKS, ' ').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'))).join('');
+}
+
 function mdPosition(p: DocPosition): string {
-  if (p.kind === 'find') return `found by searching ${p.direction} from ${code(p.from)} (window ${p.window} bytes) for ${code(p.bytes)}`;
-  return p.kind === 'at' ? `at ${code(p.expr)}` : p.kind === 'variable' ? 'variable' : hexOff(p.offset);
+  return mdPieces(positionPieces(p));
 }
 
 function mdSize(s: DocField['size']): string {
@@ -268,9 +312,9 @@ function mdDesc(f: DocField): string {
   if (f.ifMagic) parts.push(`Present only if the bytes ${code(f.ifMagic.bytes)}${f.ifMagic.mask ? ` (mask ${code(f.ifMagic.mask)})` : ''} are at ${code(f.ifMagic.at)}.`);
   if (f.findMask !== undefined) parts.push(`Search mask: ${code(f.findMask)}.`);
   if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${code(a)}`).join('; ') + '.');
-  if (f.ref) parts.push(`Reference: can be opened as ${code(f.ref.type)} at ${code(f.ref.at)}${f.ref.doc ? ' — ' + esc(f.ref.doc) : ''}.`);
+  if (f.ref) parts.push(`Reference: can be opened as ${code(f.ref.type)} at file offset ${code(f.ref.at)}${f.ref.doc ? ' — ' + esc(f.ref.doc) : ''}.`);
   if (f.ref?.jumps) parts.push('Jump shortcuts: ' + f.ref.jumps.map((j) => `${esc(j.label)} → ${code(j.path)}`).join('; ') + '.');
-  if (f.link) parts.push(`Link: jumps to offset ${code(f.link.at)}${f.link.size !== undefined ? ` (${code(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + esc(f.link.label) : ''}.`);
+  if (f.link) parts.push(`Link: jumps to file offset ${code(f.link.at)}${f.link.size !== undefined ? ` (${code(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + esc(f.link.label) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(esc).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${code(f.enum.name)}${vals}.`);
@@ -285,8 +329,9 @@ function mdDesc(f: DocField): string {
 
 /**
  * Markdown reference for a spec. Safe for untrusted specs: all spec text is escaped (see the file header), so no raw
- * HTML, links or table breaks can be injected. Field offsets in the tables are relative to the containing structure
- * unless shown as an `at` expression (which is an absolute file offset). Same input gives the same output.
+ * HTML, links or table breaks can be injected. Offsets of sequential fields are relative to the containing structure;
+ * `at` fields show an absolute file offset, `find` fields where a search places them, `value` fields are computed
+ * (no bytes) and `variable` means the position depends on earlier data. Same input gives the same output.
  */
 export function generateMarkdown(spec: FormatSpec): string {
   const m = buildDocModel(spec);
@@ -305,7 +350,7 @@ export function generateMarkdown(spec: FormatSpec): string {
   for (const r of m.detect) out.push(`- Magic bytes: ${code(r.bytes)} at ${r.where}${r.mask ? `, mask ${code(r.mask)}` : ''}`);
   out.push(`- Extensions: ${m.extensions.length ? m.extensions.map((e) => code(e)).join(', ') : 'none'}`, '');
 
-  out.push('## Structures', '', `Root type: ${code(m.rootType)}. Offsets are relative to the start of the containing structure.`, '');
+  out.push('## Structures', '', `Root type: ${code(m.rootType)}. ${mdPieces(POSITION_NOTE_PIECES)}`, '');
   for (const t of m.types) {
     out.push(`### ${ident(t.name)}`, '');
     if (t.doc) out.push(esc(t.doc), '');
@@ -340,9 +385,13 @@ function htmlType(t: DocTypeRef): string {
   return `switch on ${hcode(t.on)}: ` + t.cases.map((c) => `${hcode(c.key)} → ${hcode(c.type)}`).join(', ') + (t.default !== undefined ? `, default → ${hcode(t.default)}` : '');
 }
 
+/** HTML for label pieces: every piece is escaped, code pieces are wrapped in `<code>`. */
+export function htmlPieces(ps: DocTextPiece[]): string {
+  return ps.map((x) => (x.code ? hcode(x.text) : h(x.text))).join('');
+}
+
 function htmlPosition(p: DocPosition): string {
-  if (p.kind === 'find') return `found by searching ${h(p.direction)} from ${hcode(p.from)} (window ${p.window} bytes) for ${hcode(p.bytes)}`;
-  return p.kind === 'at' ? `at ${hcode(p.expr)}` : p.kind === 'variable' ? 'variable' : h(hexOff(p.offset));
+  return htmlPieces(positionPieces(p));
 }
 
 function htmlSize(s: DocField['size']): string {
@@ -363,9 +412,9 @@ function htmlDesc(f: DocField): string {
   if (f.ifMagic) parts.push(`Present only if the bytes ${hcode(f.ifMagic.bytes)}${f.ifMagic.mask ? ` (mask ${hcode(f.ifMagic.mask)})` : ''} are at ${hcode(f.ifMagic.at)}.`);
   if (f.findMask !== undefined) parts.push(`Search mask: ${hcode(f.findMask)}.`);
   if (f.findAccept) parts.push('Search candidates are tried nearest first and accepted by the first condition that holds: ' + f.findAccept.map((a, i) => `${i + 1}. ${hcode(a)}`).join('; ') + '.');
-  if (f.ref) parts.push(`Reference: can be opened as ${hcode(f.ref.type)} at ${hcode(f.ref.at)}${f.ref.doc ? ' — ' + h(f.ref.doc) : ''}.`);
+  if (f.ref) parts.push(`Reference: can be opened as ${hcode(f.ref.type)} at file offset ${hcode(f.ref.at)}${f.ref.doc ? ' — ' + h(f.ref.doc) : ''}.`);
   if (f.ref?.jumps) parts.push('Jump shortcuts: ' + f.ref.jumps.map((j) => `${h(j.label)} → ${hcode(j.path)}`).join('; ') + '.');
-  if (f.link) parts.push(`Link: jumps to offset ${hcode(f.link.at)}${f.link.size !== undefined ? ` (${hcode(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + h(f.link.label) : ''}.`);
+  if (f.link) parts.push(`Link: jumps to file offset ${hcode(f.link.at)}${f.link.size !== undefined ? ` (${hcode(f.link.size)} bytes)` : ''}${f.link.label ? ' — ' + h(f.link.label) : ''}.`);
   if (f.enum) {
     const vals = f.enum.preview ? ` (${f.enum.preview.map(h).join(', ')}${f.enum.more ? ', …' : ''})` : '';
     parts.push(`Enum ${hcode(f.enum.name)}${vals}.`);
@@ -408,7 +457,7 @@ export function generateHtml(spec: FormatSpec): string {
   if (m.detect.length === 0) o.push('<li>Magic bytes: none</li>');
   for (const r of m.detect) o.push(`<li>Magic bytes: ${hcode(r.bytes)} at ${h(r.where)}${r.mask ? `, mask ${hcode(r.mask)}` : ''}</li>`);
   o.push(`<li>Extensions: ${m.extensions.length ? m.extensions.map(hcode).join(', ') : 'none'}</li>`, '</ul>');
-  o.push('<h2>Structures</h2>', `<p>Root type: ${hcode(m.rootType)}. Offsets are relative to the start of the containing structure.</p>`);
+  o.push('<h2>Structures</h2>', `<p>Root type: ${hcode(m.rootType)}. ${htmlPieces(POSITION_NOTE_PIECES)}</p>`);
   for (const t of m.types) {
     o.push(`<h3>${h(t.name)}</h3>`);
     if (t.doc) o.push(`<p>${h(t.doc)}</p>`);

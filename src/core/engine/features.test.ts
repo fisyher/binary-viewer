@@ -202,7 +202,7 @@ describe('value fields', () => {
   it('is zero-size for layout (docs cursor does not advance)', () => {
     const s = mkSpec({ root: { fields: [f('a', 'u2'), f('v', 'value', { value: 'a' }), f('b', 'u1')] } });
     const rows = buildDocModel(s).types[0]!.fields;
-    expect(rows[1]!.position).toEqual({ kind: 'offset', offset: 2 });
+    expect(rows[1]!.position).toEqual({ kind: 'computed' });
     expect(rows[2]!.position).toEqual({ kind: 'offset', offset: 2 });
   });
 });
@@ -552,11 +552,12 @@ describe('docs for the new features', () => {
     expect(row('eocd')).toContain('Search mask: `FF FF FF FF`');
     expect(row('eocd')).toContain('1. `n == 0`; 2. `true`');
     expect(row('opt')).toContain('Present only if the bytes `41 42` (mask `FF FF`) are at `_start + 2`');
+    expect(row('calc')).toContain('| computed (no bytes) |');
     expect(row('calc')).toContain('Computed value (no bytes): `eocd.n * 2`');
-    expect(row('ptr')).toContain('Reference: can be opened as `other` at `ptr` — where it lives');
+    expect(row('ptr')).toContain('Reference: can be opened as `other` at file offset `ptr` — where it lives');
     expect(md).toMatch(/\| `sig` .* Expected value: `.*` \(a mismatch stops parsing\)/);
     // placed / computed / guarded fields do not move the static cursor: `last` follows `ptr` (u4) at offset 0 + ... variable (ifMagic)
-    expect(row('last')).toContain('variable');
+    expect(row('last')).toContain('variable (depends on earlier data)');
   });
   it('the doc model carries the new data', () => {
     const fields = buildDocModel(spec).types.find((t) => t.name === 'root')!.fields;

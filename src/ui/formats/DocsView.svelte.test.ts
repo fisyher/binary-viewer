@@ -15,6 +15,18 @@ const bmp = (() => {
 })();
 
 describe('DocsView', () => {
+  it('explains positions and labels computed fields', () => {
+    const { container } = render(DocsView, { spec: bmp });
+    expect(container.textContent).toContain('Offsets of sequential fields are relative to the start of the containing structure.');
+    expect(container.textContent).toContain('computed (value) fields take no bytes; variable means the position depends on data read earlier.');
+    expect(container.textContent).toContain('(absolute file offset)');
+    expect(container.textContent).toContain('variable (depends on earlier data)');
+    const s = mkSpec({ root: { fields: [{ name: 'a', type: 'u2' }, { name: 'v', type: 'value', value: 'a' }] } }, { endian: 'le' });
+    const { container: c2 } = render(DocsView, { spec: s });
+    const cells = [...c2.querySelectorAll('tbody tr')].map((tr) => tr.children[3]!.textContent);
+    expect(cells).toEqual(['0x00 (0)', 'computed (no bytes)']);
+  });
+
   it('renders field tables per type, detection, enums and asserts for the BMP spec', () => {
     const { container, getByText } = render(DocsView, { spec: bmp });
     expect(getByText('Windows Bitmap')).toBeTruthy();
@@ -49,7 +61,7 @@ describe('DocsView', () => {
     });
     const { container } = render(DocsView, { spec });
     expect(container.querySelector('img, b')).toBeNull();
-    expect(container.textContent).toContain('Link: jumps to offset _ (2 bytes) — <img src=x onerror=alert(1)>.');
+    expect(container.textContent).toContain('Link: jumps to file offset _ (2 bytes) — <img src=x onerror=alert(1)>.');
     expect(container.textContent).toContain('Jump shortcuts: <b>d</b> → data.');
   });
 

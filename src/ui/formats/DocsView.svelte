@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { buildDocModel, type DocField, type DocModel, type DocPosition } from '../../core/engine';
+  import { buildDocModel, positionPieces, POSITION_NOTE_PIECES, type DocField, type DocModel, type DocTextPiece } from '../../core/engine';
   import type { FormatSpec } from '../../core/engine';
   import { sanitizeText } from '../../core/tree-model';
 
@@ -20,11 +20,6 @@
     target.focus();
   }
 
-  function position(p: DocPosition): string {
-    if (p.kind === 'find') return `found by searching ${p.direction} from ${p.from} (window ${p.window} bytes) for ${p.bytes}`;
-    return p.kind === 'at' ? `at ${p.expr}` : p.kind === 'variable' ? 'variable' : `0x${p.offset.toString(16).toUpperCase().padStart(2, '0')} (${p.offset})`;
-  }
-
   function size(s: DocField['size']): string {
     const b = s.base;
     const base = b.kind === 'eos' ? 'to end of stream' : b.kind === 'expr' ? b.expr : b.kind === 'static' ? `${b.bytes}` : b.kind === 'terminator' ? `until terminator ${b.terminator}` : 'variable';
@@ -33,6 +28,8 @@
     return `${base} × ${s.repeat.kind === 'count' ? s.repeat.expr : `until ${s.repeat.expr}`}`;
   }
 </script>
+
+{#snippet pieces(ps: DocTextPiece[])}{#each ps as x, i (i)}{#if x.code}<code>{t(x.text, 400)}</code>{:else}{x.text}{/if}{/each}{/snippet}
 
 {#snippet typeLink(name: string)}
   {#if typeNames.has(name)}
@@ -66,7 +63,7 @@
     </ul>
 
     <h3>Structures</h3>
-    <p>Root type: {@render typeLink(model.rootType)}. Offsets are relative to the start of the containing structure.</p>
+    <p>Root type: {@render typeLink(model.rootType)}. {@render pieces(POSITION_NOTE_PIECES)}</p>
     {#each model.types as ty (ty.name)}
       <section data-type={ty.name} tabindex="-1">
         <h4>{t(ty.name, 80)}</h4>
@@ -89,7 +86,7 @@
                   {/if}
                 </td>
                 <td>{f.endian}</td>
-                <td>{t(position(f.position))}</td>
+                <td>{t(positionPieces(f.position).map((x) => x.text).join(''))}</td>
                 <td>{t(size(f.size))}</td>
                 <td>
                   {#if f.doc}<div>{t(f.doc, 2000)}</div>{/if}
@@ -108,13 +105,13 @@
                     </div>
                   {/if}
                   {#if f.ref}
-                    <div>Reference: can be opened as <code>{t(f.ref.type, 80)}</code> at <code>{t(f.ref.at)}</code>{#if f.ref.doc} — {t(f.ref.doc, 400)}{/if}.</div>
+                    <div>Reference: can be opened as <code>{t(f.ref.type, 80)}</code> at file offset <code>{t(f.ref.at)}</code>{#if f.ref.doc} — {t(f.ref.doc, 400)}{/if}.</div>
                   {/if}
                   {#if f.ref?.jumps}
                     <div>Jump shortcuts: {#each f.ref.jumps as j, ji (ji)}{#if ji > 0}; {/if}{t(j.label, 100)} → <code>{t(j.path, 256)}</code>{/each}.</div>
                   {/if}
                   {#if f.link}
-                    <div>Link: jumps to offset <code>{t(f.link.at)}</code>{#if f.link.size !== undefined}{' '}(<code>{t(f.link.size)}</code> bytes){/if}{#if f.link.label}{' '}— {t(f.link.label, 100)}{/if}.</div>
+                    <div>Link: jumps to file offset <code>{t(f.link.at)}</code>{#if f.link.size !== undefined}{' '}(<code>{t(f.link.size)}</code> bytes){/if}{#if f.link.label}{' '}— {t(f.link.label, 100)}{/if}.</div>
                   {/if}
                   {#if f.enum}
                     <div>
