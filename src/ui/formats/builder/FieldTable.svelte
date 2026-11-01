@@ -361,11 +361,11 @@
   table {
     border-collapse: collapse;
     width: 100%;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   th {
     text-align: left;
-    color: var(--muted);
+    color: var(--ink-quiet);
     font-weight: 600;
     white-space: nowrap;
   }
@@ -374,20 +374,20 @@
     vertical-align: top;
   }
   tr.sel > td {
-    background: var(--panel);
+    background: var(--chrome);
   }
   tr.bad > td:nth-child(3) {
     border-left: 3px solid var(--error);
   }
   tr.over > td {
-    border-top: 2px solid var(--accent);
+    border-top: 2px solid var(--signal);
   }
   .handle {
     cursor: grab;
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .idx {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   input[type='text'],
   select {
@@ -400,7 +400,7 @@
   }
   .fb {
     color: var(--error);
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
   .acts {
     white-space: nowrap;
@@ -409,7 +409,7 @@
     padding: 0 5px;
   }
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .grid,
   .row {
@@ -425,9 +425,9 @@
   }
   fieldset {
     margin: 4px 0;
-    border: 1px solid var(--border);
+    border: 1px solid var(--rule);
   }
   .detail > td {
-    background: var(--panel);
+    background: var(--chrome);
   }
 </style>

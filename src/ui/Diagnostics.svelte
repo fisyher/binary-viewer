@@ -4,19 +4,31 @@
 
   const MAX_SHOWN = 500;
 
-  let { diagnostics, onJump }: { diagnostics: Diagnostic[]; onJump: (d: Diagnostic) => void } = $props();
+  let {
+    diagnostics,
+    onJump,
+    alwaysOpen = false,
+  }: {
+    diagnostics: Diagnostic[];
+    onJump: (d: Diagnostic) => void;
+    /** Show the list without the collapsible header (the bottom Problems panel supplies its own). */
+    alwaysOpen?: boolean;
+  } = $props();
 
-  let open = $state(false);
+  let openState = $state(false);
+  const open = $derived(alwaysOpen || openState);
   const errors = $derived(diagnostics.filter((d) => d.severity === 'error').length);
   const warnings = $derived(diagnostics.length - errors);
   const shown = $derived(diagnostics.slice(0, MAX_SHOWN));
 </script>
 
-<section class="diag">
-  <button type="button" class="toggle" aria-expanded={open} onclick={() => (open = !open)}>
-    <span>{open ? '▾' : '▸'}</span> Problems
-    <span class="count" class:has-errors={errors > 0}>{errors} errors, {warnings} warnings</span>
-  </button>
+<section class="diag" class:always={alwaysOpen}>
+  {#if !alwaysOpen}
+    <button type="button" class="toggle" aria-expanded={open} onclick={() => (openState = !openState)}>
+      <span>{open ? '▾' : '▸'}</span> Problems
+      <span class="count" class:has-errors={errors > 0}>{errors} errors, {warnings} warnings</span>
+    </button>
+  {/if}
   {#if open}
     <ul>
       {#each shown as d, i (i)}
@@ -37,13 +49,19 @@
 
 <style>
   .diag {
-    border-top: 1px solid var(--border);
-    background: var(--panel);
-    font-size: 12px;
+    border-top: 1px solid var(--rule);
+    background: var(--chrome);
+    font-size: var(--fs-sm);
     display: flex;
     flex-direction: column;
     max-height: 40%;
     min-height: 0;
+  }
+  .diag.always {
+    flex: 1;
+    max-height: none;
+    border-top: none;
+    background: var(--ground);
   }
   .toggle {
     border: none;
@@ -53,7 +71,7 @@
     padding: 4px 8px;
   }
   .count {
-    color: var(--muted);
+    color: var(--ink-quiet);
     margin-left: 8px;
   }
   .count.has-errors {
@@ -67,22 +85,22 @@
   }
   .item {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
     text-align: left;
     border: none;
     border-radius: 0;
     background: none;
-    padding: 2px 8px;
+    padding: 2px 12px;
   }
   .item:hover {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    background: var(--hover);
   }
   .item.error .sev {
     color: var(--error);
   }
   .item.warning .sev {
-    color: #d97706;
+    color: var(--warn);
   }
   .msg {
     flex: 1;
@@ -92,10 +110,10 @@
   }
   .at {
     font-family: var(--mono);
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .none {
-    color: var(--muted);
-    padding: 2px 8px;
+    color: var(--ink-quiet);
+    padding: 4px 12px;
   }
 </style>

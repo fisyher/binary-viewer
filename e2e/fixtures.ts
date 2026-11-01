@@ -41,7 +41,7 @@ export async function gotoApp(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Binary Viewer', level: 1 })).toBeVisible();
 }
 
-// The Formats view has a second (multiple) file input for importing specs.
+// The Formats side bar has a second (multiple) file input for importing specs.
 const OPEN_INPUT = 'input[type="file"]:not([multiple])';
 
 const tempFiles: string[] = [];

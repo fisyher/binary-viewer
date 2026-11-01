@@ -195,9 +195,9 @@ describe('App: format engine + structure tree', () => {
     const { container, findByText } = render(App, { createClient: () => createInlineClient() });
     await pick(container, new File([bytes.slice(0, 30)], 'cut.bmp')); // truncated inside the DIB header
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/[1-9]\d* errors/));
-    await fireEvent.click(await findByText(/Problems/));
+    // The bottom Problems panel is open by default and lists the diagnostics.
+    await waitFor(() => expect(container.querySelectorAll('.diag .item').length).toBeGreaterThan(0));
     const items = container.querySelectorAll('.diag .item');
-    expect(items.length).toBeGreaterThan(0);
     await fireEvent.click(items[0]!);
     await waitFor(() => expect(container.querySelector('[role="treeitem"][aria-selected="true"]')).not.toBeNull());
   });

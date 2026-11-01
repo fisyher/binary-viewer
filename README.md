@@ -29,6 +29,7 @@ Open any file, read and edit its bytes, and see its structure decoded field by f
 - **Built-in formats.** Windows Bitmap (BMP, all header versions) and ZIP (ZIP64, self-extracting stubs, data descriptors, large central directories loaded on demand).
 - **Format builder.** Write your own formats as JSON specs, with a visual builder, a JSON editor with live preview against the open file, and generated documentation that you can export as Markdown or HTML.
 - **Spec library.** Specs are stored in the browser and can be synced to a local folder of your choice, or imported and exported as JSON.
+- **Document-editor layout.** An activity bar, a side bar (structure or format library), editor tabs for the open file and the spec you are editing, a data inspector and a Problems panel. Panels resize with the mouse or the arrow keys and collapse; light and dark themes follow the system, with a remembered override in the status bar.
 
 > [!NOTE]
 > Every input file is treated as untrusted. Reads are bounds-checked, lengths from the file are never trusted, and parsing runs under strict node, step and I/O budgets, so a malformed or hostile file cannot hang or exhaust the app.
@@ -72,9 +73,10 @@ Both workflows can also be started by hand from the **Actions** tab.
 
 1. Click **Open…** or drop a file anywhere on the window.
 2. Browse the bytes in the hex view, or type an offset (hex or decimal) in **Go to**.
-3. If the format is recognized, the **Structure** panel shows the decoded tree. Click a node to select its bytes, and use the **→** buttons to jump to the data an offset points to.
+3. If the format is recognized, the **Structure** side bar shows the decoded tree. Click a node to select its bytes, and use the **→** buttons to jump to the data an offset points to. Parse problems are listed in the **Problems** panel under the hex view.
 4. Type over bytes to edit them, then **Save** or **Save As…**.
-5. Switch to **Formats** to browse the built-in specs, read their documentation, or create your own.
+5. Choose **Formats** in the activity bar (the left strip) to browse the built-in specs and your own. Picking one opens it in a second editor tab, next to the file, with its Builder, JSON and Docs views and a live preview on the open file; close the tab with its **×** to go back to the file.
+6. Drag the dividers (or focus one and press the arrow keys) to resize the side bar, the inspector and the Problems panel; double-click a divider to reset it. Click the active activity bar item to hide the side bar. The theme button at the right of the status bar cycles System, Light and Dark.
 
 ### Keyboard shortcuts
 
@@ -84,7 +86,7 @@ Both workflows can also be started by hand from the **Actions** tab.
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Undo / redo |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection as hex |
 | <kbd>Ctrl</kbd>+<kbd>Home</kbd> / <kbd>Ctrl</kbd>+<kbd>End</kbd> | Go to the start / end of the file |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save the format spec (Formats tab) |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save the format spec (in a spec tab) |
 
 ### Browser support
 
@@ -127,10 +129,10 @@ Formats are declarative JSON documents interpreted by the app's own engine; spec
 }
 ```
 
-The engine supports conditional fields, `switch` types, enums and bit fields, absolute placement (`at`), bounded signature search (`find`), computed `value` fields, deferred pointers (`ref`) and navigation links. The full language is documented in the [spec language reference](docs/SPEC-LANGUAGE.md). The **Formats** tab documents every field of a spec, and [`docs/DESIGN.md`](docs/DESIGN.md) describes the engine in detail. [`src/formats/`](src/formats/) holds the built-in BMP and ZIP specs as complete examples.
+The engine supports conditional fields, `switch` types, enums and bit fields, absolute placement (`at`), bounded signature search (`find`), computed `value` fields, deferred pointers (`ref`) and navigation links. The full language is documented in the [spec language reference](docs/SPEC-LANGUAGE.md). The **Docs** view of a spec documents every field of it, and [`docs/DESIGN.md`](docs/DESIGN.md) describes the engine in detail. [`src/formats/`](src/formats/) holds the built-in BMP and ZIP specs as complete examples.
 
 > [!TIP]
-> Open a sample file in the viewer before editing a spec in the Formats tab: the live preview parses that file as you type.
+> Open a sample file before editing a spec: the live preview in the spec tab parses that file as you type.
 
 ## Development
 
@@ -150,6 +152,7 @@ src/
     engine/  format schema, expression parser, interpreter, docs generator
   worker/    Web Worker that hosts detection and parsing
   ui/        Svelte components (hex view, inspector, structure tree, builder)
+    shell/   window layout: title bar, activity bar, side bar, editor tabs, resizers
   formats/   built-in format specs (bmp.json, zip.json)
 docs/        design notes, spec language reference, decisions/ (ADRs)
 ```

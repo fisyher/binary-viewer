@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Binary Viewer</title>
+    <script>
+      // Apply the remembered theme before first paint (no flash). Reads only localStorage; no network.
+      try {
+        var t = localStorage.getItem('binaryviewer.theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   </head>
   <body>

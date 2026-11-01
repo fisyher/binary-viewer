@@ -633,12 +633,14 @@
     overflow: auto;
     outline: none;
     font-family: var(--mono);
-    font-size: 13px;
-    background: var(--bg);
+    font-size: var(--fs-base);
+    background: var(--ground);
     user-select: none;
   }
+  /* The caret already shows the position, so the focused grid only gets a quiet 1px frame. */
   .scroller:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--accent);
+    outline: 1px solid color-mix(in srgb, var(--signal) 55%, transparent);
+    outline-offset: -1px;
   }
   .spacer {
     position: relative;
@@ -658,7 +660,7 @@
     box-sizing: border-box;
   }
   .off {
-    color: var(--muted);
+    color: var(--ink-faint);
   }
   .hex {
     display: inline-flex;
@@ -680,21 +682,21 @@
   }
   .ascii {
     display: inline-flex;
-    color: var(--ascii);
+    color: var(--ink-quiet);
   }
   [data-t='1'] {
-    background: var(--tint-1);
+    background: var(--struct-1-tint);
   }
   [data-t='2'] {
-    background: var(--tint-2);
+    background: var(--struct-2-tint);
   }
   [data-t='3'] {
-    background: var(--tint-3);
+    background: var(--struct-3-tint);
   }
   [data-t='4'] {
-    background: var(--tint-4);
+    background: var(--struct-4-tint);
   }
-  /* The tree-selected node: a distinct amber background plus an underline that stays visible under .sel. */
+  /* The tree-selected node: a signal-tinted background plus an underline that stays visible under .sel. */
   .node {
     background: var(--node-bg);
     box-shadow: inset 0 -2px 0 var(--node-edge);
@@ -702,14 +704,31 @@
   .sel {
     background: var(--sel-bg);
     color: var(--sel-fg);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--signal) 50%, transparent);
+  }
+  .sel.node {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--signal) 50%, transparent),
+      inset 0 -2px 0 var(--node-edge);
+  }
+  /* ASCII over a structure tint stays readable */
+  .c[data-t] {
+    color: var(--ink);
   }
   /* Bytes the user has written (live edits not yet saved). Declared after .sel so it stays visible when selected. */
   .mod {
     color: var(--edited);
     font-weight: 600;
   }
+  /* A modified byte inside the selection: the selection colour wins, the edit shows as an underline. */
+  .sel.mod {
+    color: var(--sel-fg);
+    text-decoration: underline var(--edited) 2px;
+    text-underline-offset: 2px;
+  }
   .caret {
-    outline: 1px solid var(--accent);
+    outline: 2px solid var(--signal);
     outline-offset: -1px;
+    border-radius: 2px;
   }
 </style>

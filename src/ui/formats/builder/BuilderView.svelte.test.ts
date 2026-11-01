@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { builtins, specText } from '../../../test/spec-fixtures';
 import { SpecLibrary } from '../../../core/spec-library';
 import { createMemoryStore } from '../../../core/spec-store';
-import FormatLibrary from '../FormatLibrary.svelte';
+import FormatLibrary from '../../../test/FormatsHarness.svelte';
 
 afterEach(cleanup);
 

@@ -9,7 +9,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: 'Ctrl+Z / Ctrl+Y', action: 'Undo / redo (Ctrl+Shift+Z also redoes)' },
   { keys: 'Ctrl+C', action: 'Copy the selected bytes' },
   { keys: 'Ctrl+Home / Ctrl+End', action: 'Jump to the start / end of the file' },
-  { keys: 'Ctrl+S', action: 'Save the format spec (in the Formats tab)' },
+  { keys: 'Ctrl+S', action: 'Save the format spec (in a spec tab)' },
 ];
 
 /** The few shown on the start screen. */

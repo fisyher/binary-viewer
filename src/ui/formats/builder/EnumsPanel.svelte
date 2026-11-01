@@ -56,11 +56,11 @@
 
 <style>
   .enums {
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   fieldset {
     margin: 4px 0;
-    border: 1px solid var(--border);
+    border: 1px solid var(--rule);
   }
   fieldset.bad {
     border-color: var(--error);
@@ -79,6 +79,6 @@
     color: var(--error);
   }
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
 </style>

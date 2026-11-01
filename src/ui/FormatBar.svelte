@@ -61,37 +61,42 @@
 </div>
 
 <style>
-  .formatbar {
+.formatbar {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 4px 12px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    font-size: 12px;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: var(--fs-sm);
     min-height: 26px;
+    min-width: 0;
+  }
+  label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-quiet);
   }
   select {
     font: inherit;
-    color: inherit;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    color: var(--ink);
+    background: var(--ground);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
     padding: 2px 6px;
-    max-width: 40ch;
+    max-width: 36ch;
   }
   .hint,
   .status {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .warn {
-    color: #d97706;
+    color: var(--warn);
   }
   .err {
     color: var(--error);
   }
   button {
     padding: 0 8px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
 </style>

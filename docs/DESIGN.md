@@ -18,6 +18,7 @@ Each decision has an [architecture decision record](decisions/README.md) with co
 - [ADR-0008](decisions/0008-spec-storage-indexeddb-and-folder-sync.md): specs in IndexedDB, optional local-folder sync, verify mode after timed-out writes.
 - [ADR-0009](decisions/0009-no-network-requests.md): the app makes no network requests at runtime.
 - [ADR-0010](decisions/0010-deferred-refs-and-navigation-links.md): deferred refs (`ref`/`expandRef`) and navigation links (`link`, `jumps`).
+- [ADR-0011](decisions/0011-ide-shell-and-editor-tabs.md): IDE-style shell with editor tabs (file + spec), light/dark themes, bundled fonts.
 
 Two choices without an ADR:
 
@@ -36,8 +37,29 @@ src/
     engine/          format schema, expression parser, interpreter (Phase 3)
   worker/      Web Worker hosting parsing/detection/search (Phase 3)
   ui/          Svelte components (HexView, Inspector, StructureTree, Builder)
+    shell/         window layout: TitleBar, ActivityBar, SideBar, EditorTabs, BottomPanel, Resizer, Welcome
+    formats/       FormatsState (shared library UI state), FormatList (side bar), FormatDetail (spec tab)
   formats/     built-in specs (bmp.json, zip.json)
 ```
+
+### App shell (UI layout)
+
+`App.svelte` wires the document and engine state to a window-sized grid; see [ADR-0011](decisions/0011-ide-shell-and-editor-tabs.md).
+
+```
+title bar:    brand (About), New, Open…, Save, Save As…, ?
+activity bar | side bar (Structure | Formats) | tab bar: [file] [spec ×]            | inspector
+             |                               | editor header: Format, status, Go to  |
+             |                               | editor body: hex grid | minimap slot  |
+             |                               | Problems panel (file tab only)        |
+status bar:   format, byte order, selection, insert/overwrite, notices, size, theme
+```
+
+- **Editor tabs.** `activeTab` is `'file'` or `'spec'`; a spec tab exists while `FormatsState.selected` does, and `specActive` (spec tab is the active one) replaces the old Viewer/Formats mode. Both panels are mounted at all times; the hidden one is `visibility: hidden`, `inert` and `aria-hidden` so scroll position and drafts survive. Choosing a spec in the side bar goes through `FormatsState.select`, which asks before dropping unsaved changes and then calls `onOpened`; closing calls `onClosed`. Showing the file tab re-parses the viewer's format if a draft preview owned the worker (`draftOnWorker`), exactly as before.
+- **Side bar.** Both views stay mounted (stacked, one hidden) so the structure tree keeps its scroll and expansion state. While a spec tab is active and a draft is on the worker the Structure view shows "Paused while a format preview is running".
+- **Panels.** `Resizer` is a `role="separator"` with `aria-valuenow/min/max`; arrows move by 16 px, Home/End go to the limits, double-click resets. Side bar 200–600 px (default 300), inspector 240–520 (320), Problems 80 px up to 60% of the editor column (180). Sizes and open flags are stored under `binaryviewer.layout.*` (`src/ui/prefs.ts`) only when the user changes them, so a narrow screen's collapsed defaults (< 900 px: side bar and inspector start collapsed and open as drawers) are not frozen into storage.
+- **Themes.** Tokens live in `src/app.css` (light base; dark under `prefers-color-scheme` unless `data-theme="light"`, or `data-theme="dark"`). The pref `binaryviewer.theme` is `light` or `dark`; absent means system. `index.html` applies it before first paint.
+- **Fonts.** IBM Plex Sans Condensed (400/500/600) and IBM Plex Mono (400/500), latin subset, from `@fontsource` packages bundled by Vite (same-origin, no CDN).
 
 ### Byte access (all phases)
 

@@ -58,7 +58,11 @@ async function pick(container: HTMLElement, f: File) {
   await fireEvent.change(input);
 }
 
-const panes = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.stage > .pane')];
+const panels = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.panels > .panel')];
+// The viewer's structure tree lives in the side bar's Structure view.
+const viewerTree = (c: HTMLElement) => c.querySelector<HTMLElement>('.views > .view')!;
+const fileTab = (c: HTMLElement) => c.querySelector<HTMLElement>('#editor-tab-file')!;
+const formatList = (c: HTMLElement) => c.querySelector<HTMLElement>('section[aria-label="Format library"]')!;
 const names = (root: Element) => [...root.querySelectorAll('[role="treeitem"] .nm')].map((e) => e.textContent);
 const preview = (c: HTMLElement) => c.querySelector('section[aria-label="Preview on open file"]') as HTMLElement | null;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -71,7 +75,7 @@ async function setup(seed: Array<[string, string]> = [['mine', mine], ['other', 
   const select = (await r.findByLabelText('Format')) as HTMLSelectElement;
   if (seed.length > 0) {
     await waitFor(() => expect(select.value).toBe('mine'), T);
-    await waitFor(() => expect(names(panes(r.container)[0]!)).toContain('sig'), T);
+    await waitFor(() => expect(names(viewerTree(r.container))).toContain('sig'), T);
   }
   const toFormats = async (id: string, tab?: string) => {
     await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
@@ -96,6 +100,19 @@ describe('Preview on open file', () => {
     expect(calls.drafts).toHaveLength(1);
     await waitFor(() => expect(names(preview(container)!)).toContain('a3'), T);
     expect(calls.drafts).toHaveLength(2);
+  });
+
+  it('the side-bar tree is inert while a draft preview owns the worker, and live again on the file tab', async () => {
+    const { container, toFormats, calls } = await setup();
+    const wrap = () => container.querySelector('.tree-wrap')!;
+    expect(wrap().hasAttribute('inert')).toBe(false);
+    await toFormats('other');
+    await waitFor(() => expect(calls.drafts).toHaveLength(1), T);
+    await waitFor(() => expect(wrap().hasAttribute('inert')).toBe(true), T);
+    expect(container.querySelector('.views .quiet')!.textContent).toContain('Paused while a format preview is running');
+    await fireEvent.click(fileTab(container));
+    await waitFor(() => expect(wrap().hasAttribute('inert')).toBe(false), T);
+    expect(container.querySelector('.views .quiet')).toBeNull();
   });
 
   it('shows validation errors for an invalid draft and makes no parseDraft call', async () => {
@@ -133,15 +150,15 @@ describe('Preview on open file', () => {
     const row = [...preview(container)!.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === 'zzz')!;
     await fireEvent.click(row);
     await fireEvent.click(within(preview(container)!).getByRole('button', { name: 'Show in viewer' }));
-    expect(panes(container)[0]!.classList.contains('hidden')).toBe(false);
+    expect(panels(container)[0]!.classList.contains('hidden')).toBe(false);
     await waitFor(() => {
       for (const o of [0, 1, 2, 3]) expect(container.querySelector(`.b.sel[data-o="${o}"]`)).not.toBeNull();
     }, T);
     expect(container.querySelector('.b.sel[data-o="4"]')).toBeNull();
     // The viewer still names and shows its own format, never the draft's tree.
     expect(select.value).toBe('mine');
-    await waitFor(() => expect(names(panes(container)[0]!)).toContain('sig'), T);
-    expect(names(panes(container)[0]!)).not.toContain('zzz');
+    await waitFor(() => expect(names(viewerTree(container))).toContain('sig'), T);
+    expect(names(viewerTree(container))).not.toContain('zzz');
   });
 
   it('a link button in the preview tree sets the preview selection, and Show in viewer selects those bytes', async () => {
@@ -157,7 +174,7 @@ describe('Preview on open file', () => {
     }, T);
     expect(container.querySelector('.b.sel[data-o="6"]')).toBeNull();
     expect(container.querySelector('.b.sel[data-o="3"]')).toBeNull();
-    expect(getByRole('button', { name: 'Viewer' })).toBeTruthy();
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
   });
 
   it('switching back to the Viewer re-parses the viewer format: FormatBar and tree agree', async () => {
@@ -165,16 +182,16 @@ describe('Preview on open file', () => {
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
     const parsesBefore = calls.parses.length;
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
+    await fireEvent.click(fileTab(container));
     await waitFor(() => expect(calls.parses.length).toBe(parsesBefore + 1), T);
     expect(calls.parses[calls.parses.length - 1]).toBe('mine');
-    await waitFor(() => expect(names(panes(container)[0]!)).toContain('rest'), T);
-    expect(names(panes(container)[0]!)).not.toContain('zzz');
+    await waitFor(() => expect(names(viewerTree(container))).toContain('rest'), T);
+    expect(names(viewerTree(container))).not.toContain('zzz');
     expect(select.value).toBe('mine');
     // Without a preview in between there is nothing to restore.
     const n = calls.parses.length;
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
+    await fireEvent.click(fileTab(container));
     await sleep(50);
     expect(calls.parses.length).toBe(n);
   });
@@ -183,9 +200,9 @@ describe('Preview on open file', () => {
     const { container, toFormats, getByRole } = await setup();
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
-    await waitFor(() => expect(names(panes(container)[0]!)).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
-    const row = [...panes(container)[0]!.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === 'rest')!;
+    await fireEvent.click(fileTab(container));
+    await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
+    const row = [...viewerTree(container).querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === 'rest')!;
     await fireEvent.click(row);
     await waitFor(() => expect(container.querySelector('.b.sel[data-o="4"]')).not.toBeNull(), T);
   });
@@ -237,7 +254,7 @@ describe('New format flow', () => {
   it('creates a format from the starter, previews a new field live, saves it and detects it on the next open', async () => {
     const { container, getByRole, getByLabelText, findByLabelText } = await setup([]);
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
-    await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'New' }));
+    await fireEvent.click(within(formatList(container)).getByRole('button', { name: 'New' }));
     await fireEvent.input(getByLabelText('New format id'), { target: { value: 'cafe' } });
     await fireEvent.input(getByLabelText('New format name'), { target: { value: 'Cafe' } });
     await fireEvent.input(getByLabelText('New format magic'), { target: { value: 'CA FE' } });
@@ -252,21 +269,21 @@ describe('New format flow', () => {
     await fireEvent.click(wiz.getByRole('button', { name: 'Insert' }));
     // live preview on the open document (DE AD BE EF 09 ... does not start with the magic, but the field is shown)
     await waitFor(() => expect(names(preview(container)!)).toContain('value'), T);
-    await fireEvent.click(within(container.querySelector('.builder') as HTMLElement).getByRole('button', { name: 'Save' }));
+    await fireEvent.click(within(container.querySelector('.builder') as HTMLElement).getByRole('button', { name: 'Save spec' }));
     await waitFor(() => expect(container.querySelector('.builder .result')?.textContent).toBe('Saved.'), T);
 
     // Open a file with the magic: the viewer detects the new format.
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
+    await fireEvent.click(fileTab(container));
     await pick(container, new File([Uint8Array.from([0xca, 0xfe, 1, 2, 3, 4])], 'y.caf'));
     const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe('cafe'), T);
-    await waitFor(() => expect(names(panes(container)[0]!)).toEqual(expect.arrayContaining(['magic', 'value'])), T);
+    await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['magic', 'value'])), T);
   });
 
   it('refuses a bad starter without creating anything', async () => {
     const { container, getByRole, getByLabelText, lib } = await setup([]);
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
-    await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'New' }));
+    await fireEvent.click(within(formatList(container)).getByRole('button', { name: 'New' }));
     await fireEvent.input(getByLabelText('New format id'), { target: { value: 'ok-id' } });
     await fireEvent.input(getByLabelText('New format magic'), { target: { value: 'zz' } });
     await fireEvent.click(getByRole('button', { name: 'Create' }));
@@ -344,9 +361,9 @@ describe('Preview: races and stale state', () => {
     await waitFor(() => expect(calls.parses.length).toBeGreaterThan(parsesBefore), T);
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
     await waitFor(() => expect(calls.drafts.length).toBeGreaterThan(0), T);
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
-    await waitFor(() => expect(names(panes(container)[0]!)).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
-    expect(names(panes(container)[0]!)).not.toContain('zzz');
+    await fireEvent.click(fileTab(container));
+    await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
+    expect(names(viewerTree(container))).not.toContain('zzz');
     expect(select.value).toBe('mine');
     expect(container.querySelector('.b[data-o="5"]')!.textContent!.toLowerCase()).toBe('aa');
   });
@@ -366,22 +383,21 @@ describe('Preview: races and stale state', () => {
     }
     const r = render(App, { createClient: () => c.client, createLibrary: () => lib });
     await pick(r.container, new File([Uint8Array.from([0xde, 0xad, 0xbe, 0xef, ...new Array<number>(3000).fill(1)])], 'big.bin'));
-    await waitFor(() => expect(names(panes(r.container)[0]!)).toContain('arr'), T);
+    await waitFor(() => expect(names(viewerTree(r.container))).toContain('arr'), T);
     await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
     const entry = [...r.container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'other')!;
     await fireEvent.click(entry);
     await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
     const before = { ...counts };
 
-    const viewer = panes(r.container)[0]!;
+    const viewer = viewerTree(r.container);
+    const filePanel = panels(r.container)[0]!;
     const byte = r.container.querySelector('.b[data-o="1"]')!;
     await fireEvent.mouseDown(byte); // locate
     await fireEvent.mouseUp(byte);
     const arrRow = [...viewer.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((x) => x.querySelector('.nm')?.textContent === 'arr')!;
     await fireEvent.click(arrRow.querySelector('[data-twisty]')!); // loadPage
-    const toggle = viewer.querySelector<HTMLButtonElement>('.diag .toggle')!;
-    await fireEvent.click(toggle);
-    const item = viewer.querySelector<HTMLButtonElement>('.diag .item');
+    const item = filePanel.querySelector<HTMLButtonElement>('.diag .item'); // the Problems panel is always open
     if (item) await fireEvent.click(item); // jumpToDiagnostic
     await sleep(300);
     expect(counts).toEqual(before);

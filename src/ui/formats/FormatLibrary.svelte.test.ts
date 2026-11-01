@@ -6,7 +6,7 @@ import { builtins, specText } from '../../test/spec-fixtures';
 import { FolderSync } from '../../core/spec-folder';
 import { SpecLibrary } from '../../core/spec-library';
 import { createMemoryStore } from '../../core/spec-store';
-import FormatLibrary from './FormatLibrary.svelte';
+import FormatLibrary from '../../test/FormatsHarness.svelte';
 
 const downloads: Array<{ name: string; blob: Blob }> = [];
 
@@ -177,7 +177,7 @@ describe('FormatLibrary', () => {
     await fireEvent.click(entryButton(container, 'before'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: specText('after') } });
-    const save = getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+    const save = getByRole('button', { name: 'Save spec' }) as HTMLButtonElement;
     await waitFor(() => expect(save.disabled).toBe(false));
     await fireEvent.click(save);
     await waitFor(() => expect(lib.get('after')).toBeDefined());
@@ -196,7 +196,7 @@ describe('FormatLibrary', () => {
       const { container, getByRole, fs, lib, queryByRole } = await mk({ files: { 'ext.json': { text: specText('ext'), lastModified: 5 } } });
       expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: not connected');
       await fireEvent.click(getByRole('button', { name: 'Connect folder…' }));
-      await waitFor(() => expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs · synced'));
+      await waitFor(() => expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs (synced)'));
       await waitFor(() => expect(lib.get('ext')).toBeDefined());
       await waitFor(() => expect(entryButton(container, 'ext')).toBeDefined());
       expect(entryButton(container, 'ext').textContent).toContain('in folder');
@@ -214,10 +214,10 @@ describe('FormatLibrary', () => {
       const lib = new SpecLibrary({ store, builtins: builtins(), folder: new FolderSync({ store, picker: async () => fs.dir }) });
       await lib.init();
       const { container, getByRole } = render(FormatLibrary, { library: lib });
-      expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs · permission needed');
+      expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs (permission needed)');
       fs.state.permission = 'granted';
       await fireEvent.click(getByRole('button', { name: 'Reconnect folder' }));
-      await waitFor(() => expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs · synced'));
+      await waitFor(() => expect(container.querySelector('.folder-line')!.textContent).toBe('Folder: specs (synced)'));
       expect(fs.state.requested).toBe(1);
     });
   });
@@ -267,7 +267,7 @@ describe('FormatLibrary: unsaved edits and renames', () => {
     await fireEvent.click(entryButton(container, 'before'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: specText('after') } });
-    const save = getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+    const save = getByRole('button', { name: 'Save spec' }) as HTMLButtonElement;
     await waitFor(() => expect(save.disabled).toBe(false));
     await fireEvent.click(save);
     expect(await findByText('Saved.')).toBeTruthy();

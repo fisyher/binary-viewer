@@ -64,25 +64,44 @@ async function pick(container: HTMLElement, file: File) {
 }
 
 const rowOf = (c: HTMLElement, name: string) => ([...c.querySelectorAll('[role="treeitem"]')] as HTMLElement[]).find((r) => r.querySelector('.nm')?.textContent === name);
-const panes = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.stage > .pane')];
+const panels = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.panels > .panel')];
+const entry = (c: HTMLElement, id: string) =>
+  [...c.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === id)!;
+const fileTab = (c: HTMLElement) => c.querySelector<HTMLElement>('#editor-tab-file')!;
+const specTab = (c: HTMLElement) => c.querySelector<HTMLElement>('#editor-tab-spec')!;
+const formatList = (c: HTMLElement) => c.querySelector<HTMLElement>('section[aria-label="Format library"]')!;
 
-describe('App: Viewer / Formats mode switch', () => {
-  it('starts in the viewer; the formats pane is hidden and inert, and vice versa', async () => {
-    const lib = await mkLib();
+describe('App: file tab / spec tab', () => {
+  it('starts on the file tab; the spec panel is hidden and inert, and vice versa', async () => {
+    const lib = await mkLib([['draft', specText('draft')]]);
     const { container, getByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
-    const [viewer, formats] = panes(container);
-    expect(viewer!.classList.contains('hidden')).toBe(false);
-    expect(formats!.classList.contains('hidden')).toBe(true);
-    expect(formats!.hasAttribute('inert')).toBe(true);
-    expect((getByRole('button', { name: 'Viewer' }) as HTMLElement).getAttribute('aria-pressed')).toBe('true');
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
+    await waitFor(() => expect(fileTab(container)).not.toBeNull());
+    const [file, spec] = panels(container);
+    expect(file!.classList.contains('hidden')).toBe(false);
+    expect(spec!.classList.contains('hidden')).toBe(true);
+    expect(spec!.hasAttribute('inert')).toBe(true);
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(specTab(container)).toBeNull();
+
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
-    expect(viewer!.classList.contains('hidden')).toBe(true);
-    expect(viewer!.hasAttribute('inert')).toBe(true);
-    expect(formats!.classList.contains('hidden')).toBe(false);
-    expect(formats!.hasAttribute('inert')).toBe(false);
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    expect(file!.classList.contains('hidden')).toBe(true);
+    expect(file!.hasAttribute('inert')).toBe(true);
+    expect(spec!.classList.contains('hidden')).toBe(false);
+    expect(spec!.hasAttribute('inert')).toBe(false);
+    expect(specTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('false');
+    expect(specTab(container).textContent).toContain('Fmt draft');
+
+    await fireEvent.click(fileTab(container));
+    expect(file!.classList.contains('hidden')).toBe(false);
+    expect(spec!.classList.contains('hidden')).toBe(true);
+    expect(specTab(container)).not.toBeNull(); // still open, just not active
   });
 
-  it('keeps the viewer document (same DOM, selection, edits) while in Formats', async () => {
+  it('keeps the viewer document (same DOM, selection, edits) while a spec tab is active', async () => {
     const lib = await mkLib();
     const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([1, 2, 3, 4, 5, 6])], 'data.bin'));
@@ -95,40 +114,130 @@ describe('App: Viewer / Formats mode switch', () => {
     const hexRoot = container.querySelector('.hexcol')!;
 
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
-    await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'New' }));
-    await fireEvent.click(within(panes(container)[1]!).getByRole('button', { name: 'Create' }));
+    await fireEvent.click(within(formatList(container)).getByRole('button', { name: 'New' }));
+    await fireEvent.click(within(formatList(container)).getByRole('button', { name: 'Create' }));
     await findByLabelText('Spec JSON');
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
+    await fireEvent.click(fileTab(container));
 
     expect(container.querySelector('.hexcol')).toBe(hexRoot);
     expect(container.querySelector('.b[data-o="3"]')).toBe(byte);
     expect(container.querySelector('.b.sel[data-o="3"]')).not.toBeNull();
-    expect(container.textContent).toContain('data.bin');
+    expect(fileTab(container).textContent).toContain('data.bin');
   });
 
-  it('keeps an unsaved spec draft across mode switches and warns before unloading', async () => {
+  it('keeps an unsaved spec draft across tab switches and warns before unloading', async () => {
     const lib = await mkLib([['draft', specText('draft')]]);
     const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await waitFor(() => expect(container.querySelector('button.entry')).not.toBeNull());
-    await fireEvent.click([...container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'draft')!);
+    await fireEvent.click(entry(container, 'draft'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
     const typed = area.value;
-    await fireEvent.click(getByRole('button', { name: 'Viewer' }));
-    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    expect(within(specTab(container)).getByLabelText('Unsaved changes')).toBeTruthy();
+    await fireEvent.click(fileTab(container));
+    await fireEvent.click(specTab(container));
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(typed);
     const ev = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
   });
 
-  it('opening a file from the Formats view switches back to the viewer', async () => {
-    const lib = await mkLib();
+  it('opening a file while a spec tab is active shows the file tab', async () => {
+    const lib = await mkLib([['draft', specText('draft')]]);
     const { container, getByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    expect(panels(container)[1]!.classList.contains('hidden')).toBe(false);
     await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
-    await waitFor(() => expect(panes(container)[0]!.classList.contains('hidden')).toBe(false));
+    await waitFor(() => expect(panels(container)[0]!.classList.contains('hidden')).toBe(false));
+    expect(panels(container)[1]!.classList.contains('hidden')).toBe(true);
+    expect(specTab(container)).not.toBeNull();
+  });
+
+  it('closing the spec tab returns to the file tab', async () => {
+    const lib = await mkLib([['draft', specText('draft')]]);
+    const { container, getByRole, queryByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
+    expect(specTab(container)).toBeNull();
+    expect(queryByRole('button', { name: 'Close Fmt draft' })).toBeNull();
+    expect(panels(container)[0]!.classList.contains('hidden')).toBe(false);
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(queryByRole('button', { name: 'Close a.bin' })).toBeNull(); // the file tab cannot be closed
+  });
+
+  it('opening another spec replaces the spec tab; unsaved changes ask first', async () => {
+    const lib = await mkLib([['draft', specText('draft')], ['other', specText('other')]]);
+    const { container, getByRole, findByLabelText, getByText, queryByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    expect(specTab(container).textContent).toContain('Fmt draft');
+    // a clean spec is replaced without asking
+    await fireEvent.click(entry(container, 'other'));
+    expect(queryByRole('alertdialog')).toBeNull();
+    expect(container.querySelectorAll('[role="tab"][id^="editor-tab"]').length).toBe(1);
+    expect(specTab(container).textContent).toContain('Fmt other');
+
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt other', 'Fmt other edited') } });
+    await fireEvent.click(entry(container, 'draft'));
+    expect(getByRole('alertdialog')).toBeTruthy();
+    expect(getByText(/has unsaved changes/)).toBeTruthy();
+    await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    expect(specTab(container).textContent).toContain('Fmt other');
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toContain('Fmt other edited');
+
+    await fireEvent.click(entry(container, 'draft'));
+    await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(specTab(container).textContent).toContain('Fmt draft');
+    expect(container.querySelectorAll('[role="tab"][id^="editor-tab"]').length).toBe(1);
+  });
+
+  it('a spec removed behind the open tab (e.g. by folder sync) closes the tab and clears its draft state', async () => {
+    const lib = await mkLib([['draft', specText('draft')]]);
+    const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
+    expect(specTab(container)).not.toBeNull();
+
+    await lib.delete('draft'); // removed outside the UI
+    await waitFor(() => expect(specTab(container)).toBeNull());
+    expect(panels(container)[0]!.classList.contains('hidden')).toBe(false); // back on the file tab
+    const ev = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false); // the dead draft no longer arms the warning
+
+    await lib.create('draft'); // the id reappearing must not resurrect the tab
+    await lib.save('draft', specText('draft'));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    expect(specTab(container)).toBeNull();
+  });
+
+  it('closing a spec tab with unsaved changes asks first', async () => {
+    const lib = await mkLib([['draft', specText('draft')]]);
+    const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
+    await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    expect(specTab(container)).not.toBeNull();
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
+    await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(specTab(container)).toBeNull();
   });
 });
 

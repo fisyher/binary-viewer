@@ -93,14 +93,14 @@ describe('About dialog and file drops', () => {
 describe('start screen', () => {
   it('shows the tagline, privacy line, built-in formats and shortcuts', () => {
     const { container } = render(App);
-    const text = container.querySelector('.empty')!.textContent ?? '';
+    const text = container.querySelector('.welcome')!.textContent ?? '';
     expect(text).toContain('Hex editor and binary format inspector');
     expect(text).toContain('Your files never leave this browser.');
     for (const s of loadBuiltinSpecs().specs) expect(text).toContain(s.name);
     for (const s of START_SHORTCUTS) expect(text).toContain(s.keys);
   });
 
-  it('"Browse formats" switches to the Formats tab', async () => {
+  it('"Browse formats" opens the Formats side bar', async () => {
     const { getByRole } = render(App);
     expect(getByRole('button', { name: 'Formats' }).getAttribute('aria-pressed')).toBe('false');
     await fireEvent.click(getByRole('button', { name: 'Browse formats' }));

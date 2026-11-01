@@ -5,7 +5,7 @@ import { isModelError, toModel, toText } from '../../../core/builder';
 import { SpecLibrary } from '../../../core/spec-library';
 import { createMemoryStore } from '../../../core/spec-store';
 import { builtins, specText } from '../../../test/spec-fixtures';
-import FormatLibrary from '../FormatLibrary.svelte';
+import FormatLibrary from '../../../test/FormatsHarness.svelte';
 
 beforeEach(() => localStorage.clear());
 afterEach(cleanup);
@@ -153,7 +153,7 @@ describe('Builder: canonical rewrite confirmation and semantic dirty', () => {
     await fireEvent.click(getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
     expect(queryByText(/Unsaved edits/)).toBeNull();
-    expect((getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((getByRole('button', { name: 'Save spec' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('swapping switch cases or value-equal enum keys in the JSON counts as a change', async () => {

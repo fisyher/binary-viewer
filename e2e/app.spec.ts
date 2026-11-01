@@ -7,15 +7,20 @@ test.describe('viewer', () => {
     await gotoApp(page);
   });
 
-  test('start screen shows the title, tagline, built-in formats and switches to Formats', async ({ page }) => {
+  test('start screen shows the title, tagline, built-in formats and opens the Formats side bar', async ({ page }) => {
     await expect(page).toHaveTitle('Binary Viewer');
     await expect(page.getByText('Hex editor and binary format inspector')).toBeVisible();
-    await expect(page.getByText(/Built-in formats:.*Windows Bitmap.*ZIP/)).toBeVisible();
-    const modes = page.getByRole('group', { name: 'Mode' });
-    await expect(modes.getByRole('button', { name: 'Viewer' })).toHaveAttribute('aria-pressed', 'true');
+    const welcome = page.getByRole('tabpanel', { name: 'Welcome' });
+    await expect(welcome.getByRole('heading', { name: 'Built-in formats' })).toBeVisible();
+    await expect(welcome.getByText('Windows Bitmap')).toBeVisible();
+    await expect(welcome.getByText(/^ZIP/)).toBeVisible();
+    const activity = page.getByRole('navigation', { name: 'Activity bar' });
+    await expect(activity.getByRole('button', { name: 'Structure' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(activity.getByRole('button', { name: 'Formats' })).toHaveAttribute('aria-pressed', 'false');
     await page.getByRole('button', { name: 'Browse formats' }).click();
-    await expect(modes.getByRole('button', { name: 'Formats' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByRole('button', { name: 'Browse formats' })).toBeHidden();
+    await expect(activity.getByRole('button', { name: 'Formats' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('region', { name: 'Format library' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Windows Bitmap' })).toBeVisible();
   });
 
   test('BMP: hex bytes, structure tree, node selection, Data Inspector and the off_bits link', async ({ page }) => {
@@ -293,4 +298,130 @@ test.describe('About dialog', () => {
       await expect(opener).toBeFocused();
     });
   }
+});
+
+test.describe('shell', () => {
+  test.beforeEach(async ({ page }) => {
+    await gotoApp(page);
+  });
+
+  test('opening a spec from the Formats side bar opens a spec tab; closing it returns to the file', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const fileTab = page.getByRole('tab', { name: 'pic.bmp' });
+    await expect(fileTab).toHaveAttribute('aria-selected', 'true');
+
+    await page.getByRole('button', { name: 'Formats', exact: true }).click();
+    await page.getByRole('button', { name: /^Windows Bitmap/ }).click();
+    const specTab = page.getByRole('tab', { name: 'Windows Bitmap' });
+    await expect(specTab).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tabpanel', { name: 'Windows Bitmap' })).toBeVisible();
+    await expect(page.getByLabel('Spec JSON')).toBeVisible();
+    await expect(hexView(page)).toBeHidden(); // the file tab is not the active editor
+
+    await page.getByRole('button', { name: 'Close Windows Bitmap' }).click();
+    await expect(specTab).toHaveCount(0);
+    await expect(fileTab).toHaveAttribute('aria-selected', 'true');
+    await expect(hexView(page)).toBeVisible();
+    await expect(hexByte(page, 0)).toHaveText('42');
+  });
+
+  test('the theme button cycles System, Light and Dark, sets data-theme and is remembered', async ({ page }) => {
+    const html = page.locator('html');
+    const theme = page.getByRole('button', { name: /^Theme:/ });
+    const ground = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    await expect(theme).toHaveAccessibleName('Theme: System');
+    await expect(html).not.toHaveAttribute('data-theme', /.*/);
+
+    await theme.click();
+    await expect(theme).toHaveAccessibleName('Theme: Light');
+    await expect(html).toHaveAttribute('data-theme', 'light');
+    expect(await ground()).toBe('rgb(251, 251, 252)');
+
+    await theme.click();
+    await expect(theme).toHaveAccessibleName('Theme: Dark');
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    expect(await ground()).toBe('rgb(26, 30, 38)');
+
+    await page.reload();
+    await expect(html).toHaveAttribute('data-theme', 'dark'); // applied before the app mounts
+    await expect(page.getByRole('button', { name: 'Theme: Dark' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Theme: Dark' }).click();
+    await expect(page.getByRole('button', { name: 'Theme: System' })).toBeVisible();
+    await expect(html).not.toHaveAttribute('data-theme', /.*/);
+  });
+
+  test('panels collapse and come back, and the layout is remembered', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const inspector = page.getByRole('complementary', { name: 'Data inspector' });
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    const problems = page.getByRole('region', { name: 'Problems' });
+    await expect(inspector).toBeVisible();
+    await expect(tree).toBeVisible();
+    await expect(problems).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide data inspector' }).click();
+    await expect(inspector).toBeHidden();
+    await page.getByRole('button', { name: 'Show data inspector' }).click();
+    await expect(inspector).toBeVisible();
+
+    const activityStructure = page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' });
+    await activityStructure.click(); // the active item collapses the side bar
+    await expect(tree).toBeHidden();
+    await expect(activityStructure).toHaveAttribute('aria-pressed', 'false');
+    await activityStructure.click();
+    await expect(tree).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide problems panel' }).click();
+    await expect(problems).toBeHidden();
+    await page.getByRole('button', { name: 'Show problems panel' }).click();
+    await expect(problems).toBeVisible();
+
+    // resize with the keyboard, then collapse the inspector and reload: both are remembered
+    const sep = page.getByRole('separator', { name: 'Resize side bar' });
+    await sep.focus();
+    await expect(sep).toHaveAttribute('aria-valuenow', '300');
+    await page.keyboard.press('ArrowRight');
+    await expect(sep).toHaveAttribute('aria-valuenow', '316');
+    await page.getByRole('button', { name: 'Hide data inspector' }).click();
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expect(page.getByRole('separator', { name: 'Resize side bar' })).toHaveAttribute('aria-valuenow', '316');
+    await expect(page.getByRole('complementary', { name: 'Data inspector' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Show data inspector' })).toBeVisible();
+  });
+});
+test.describe('narrow screens', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('the side bar is a drawer with a scrim; the scrim and Escape close it; the page does not scroll sideways', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    const structure = page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' });
+    await expect(tree).toBeHidden(); // starts collapsed
+
+    await structure.click();
+    await expect(tree).toBeVisible();
+    const scrim = page.getByRole('button', { name: 'Close panel' });
+    await expect(scrim).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await scrim.click({ position: { x: 320, y: 400 } }); // right of the drawer
+    await expect(tree).toBeHidden();
+    await expect(scrim).toHaveCount(0);
+
+    await structure.click();
+    await expect(tree).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(tree).toBeHidden();
+
+    // the inspector is a drawer too
+    await page.getByRole('button', { name: 'Show data inspector' }).click();
+    await expect(page.getByRole('complementary', { name: 'Data inspector' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('complementary', { name: 'Data inspector' })).toBeHidden();
+  });
 });

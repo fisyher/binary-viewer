@@ -10,6 +10,11 @@ This history was reconstructed from `git log`; the development phases are the on
 
 Work in progress, not yet in a release:
 
+- IDE-style window layout ([ADR-0011](docs/decisions/0011-ide-shell-and-editor-tabs.md)): a title bar with the file actions, an activity bar that switches the side bar between the structure tree and the format library, editor tabs for the open file and the spec being edited (replacing the Viewer/Formats modes), a resizable data inspector, a bottom Problems panel, and an always-visible status bar with the format name, byte order and theme.
+- Panels can be resized (mouse, or arrow keys on a focused divider; double-click resets) and collapsed; sizes and visibility are remembered. On screens narrower than 900 px the side bar and inspector start collapsed and open as drawers.
+- Light and dark themes that follow the system, with a System / Light / Dark button in the status bar whose choice is remembered and applied before first paint.
+- New look: "Bench" colour tokens (graphite chrome, one amber accent, four structure colours for decoded bytes), IBM Plex Sans Condensed and IBM Plex Mono bundled with the app (no network requests), sentence-case headings, a redesigned start screen.
+- The spec editor's Save buttons are now named "Save spec" (the title bar keeps "Save" for the file); Duplicate, Delete and Export moved from the format list into the spec tab's header.
 - Real-browser end-to-end tests with Playwright (`npm run e2e`).
 - Pull-request workflow: CI (type checks, unit and end-to-end tests) runs on every pull request into `main`; deployment runs only on pushes to `main` and publishes the build CI tested.
 - Svelte 5 best-practice cleanup of the UI components.

@@ -551,7 +551,8 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
+    container: tree / inline-size;
   }
   .head,
   .row {
@@ -561,10 +562,26 @@
     min-width: 470px;
     box-sizing: border-box;
   }
+  /* In a narrow side bar the Type column gives way, so the default width needs no horizontal scrolling. */
+  @container tree (max-width: 469px) {
+    .tree .head,
+    .tree .row {
+      grid-template-columns: minmax(100px, 2fr) minmax(56px, 1fr) 52px 30px 20px;
+      gap: 4px;
+      min-width: 280px;
+    }
+    .head > :nth-child(3),
+    .row > :nth-child(3) {
+      display: none;
+    }
+    .scroller .spacer {
+      min-width: 280px;
+    }
+  }
   .head {
-    color: var(--muted);
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
+    color: var(--ink-quiet);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--rule);
     padding: 3px 0;
     gap: 6px;
   }
@@ -578,8 +595,14 @@
     outline: none;
     user-select: none;
   }
+  /* Quiet frame on the container; the keyboard cue is the active row. */
   .scroller:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--accent);
+    outline: 1px solid color-mix(in srgb, var(--signal) 55%, transparent);
+    outline-offset: -1px;
+  }
+  .scroller:focus-visible .row.active {
+    outline: 2px solid var(--signal);
+    outline-offset: -2px;
   }
   .spacer {
     position: relative;
@@ -597,10 +620,10 @@
     white-space: nowrap;
   }
   .row:hover {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    background: var(--hover);
   }
   .row.active {
-    outline: 1px dotted var(--muted);
+    outline: 1px dotted var(--ink-quiet);
     outline-offset: -1px;
   }
   .row.selected {
@@ -623,7 +646,7 @@
     flex: none;
     width: 14px;
     text-align: center;
-    color: var(--muted);
+    color: var(--ink-quiet);
     cursor: pointer;
   }
   .val,
@@ -649,47 +672,49 @@
     line-height: 15px;
     font-size: 11px;
     font-family: inherit;
-    color: var(--accent);
+    color: var(--ink);
     background: transparent;
-    border: 1px solid var(--accent);
-    border-radius: 3px;
+    border: 1px solid var(--ink-quiet);
+    border-radius: var(--radius);
     cursor: pointer;
   }
   .val .jump {
     margin-left: 0;
   }
-  .jump:hover,
+  .jump:hover {
+    background: var(--hover);
+  }
   .jump:focus-visible {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    outline: none;
+    outline: 2px solid var(--signal);
+    outline-offset: 1px;
   }
   .row.selected .jump {
     color: var(--sel-fg);
     border-color: var(--sel-fg);
   }
   .type {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .off {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .num {
     text-align: right;
     padding-right: 4px;
   }
   .more {
-    color: var(--accent);
+    color: var(--ink-quiet);
+    text-decoration: underline;
     cursor: pointer;
   }
   .refmark {
     flex: none;
     margin-left: 4px;
-    color: var(--accent);
+    color: var(--ink-quiet);
   }
   .empty {
-    color: var(--muted);
-    text-align: center;
-    margin: 16px;
+    color: var(--ink-quiet);
+    margin: 16px 12px;
   }
   .badge {
     display: inline-block;
@@ -700,17 +725,17 @@
     border-radius: 50%;
     font-weight: 700;
     font-size: 11px;
-    color: #fff;
+    color: var(--ground);
   }
   .badge.error {
     background: var(--error);
   }
   .badge.warning {
-    background: #d97706;
+    background: var(--warn);
   }
   .err {
     color: var(--error);
     padding: 4px 8px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--rule);
   }
 </style>

@@ -22,15 +22,38 @@
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import Diagnostics from './ui/Diagnostics.svelte';
   import FormatBar from './ui/FormatBar.svelte';
-  import FormatLibrary from './ui/formats/FormatLibrary.svelte';
+  import FormatDetail from './ui/formats/FormatDetail.svelte';
+  import FormatList from './ui/formats/FormatList.svelte';
+  import { FormatsState } from './ui/formats/formats-state.svelte';
   import HexView from './ui/HexView.svelte';
   import Inspector from './ui/Inspector.svelte';
   import { loadBuiltinSpecs } from './formats';
-  import { loadLittleEndian, saveLittleEndian } from './ui/prefs';
-  import { START_SHORTCUTS } from './ui/shortcuts';
+  import {
+    applyTheme,
+    loadFlag,
+    loadLittleEndian,
+    loadSideView,
+    loadSize,
+    loadTheme,
+    saveFlag,
+    saveLittleEndian,
+    saveSideView,
+    saveSize,
+    saveTheme,
+    type SideView,
+    type ThemePref,
+  } from './ui/prefs';
+  import ActivityBar from './ui/shell/ActivityBar.svelte';
+  import BottomPanel from './ui/shell/BottomPanel.svelte';
+  import EditorTabs, { type EditorTab } from './ui/shell/EditorTabs.svelte';
+  import GoTo from './ui/shell/GoTo.svelte';
+  import Resizer from './ui/shell/Resizer.svelte';
+  import SideBar from './ui/shell/SideBar.svelte';
+  import TitleBar from './ui/shell/TitleBar.svelte';
+  import Welcome from './ui/shell/Welcome.svelte';
   import StatusBar from './ui/StatusBar.svelte';
   import StructureTree from './ui/StructureTree.svelte';
-  import Toolbar from './ui/Toolbar.svelte';
+  import { sanitizeText } from './core/tree-model';
   import { PreviewUnavailableError } from './ui/formats/preview';
   import { EngineFatalError, createWorkerClient, SupersededError, type EngineClient } from './worker/engine-client';
   import type { DetectionInfo, ParseSnapshot, RangeSegment, SpecInfo } from './worker/protocol';
@@ -40,10 +63,9 @@
     createLibrary = createAppLibrary,
   }: { createClient?: () => EngineClient; createLibrary?: () => SpecLibrary } = $props();
 
-  // Top-level view. Both views stay mounted (the inactive one is hidden), so the open document, its scroll position
-  // and any unsaved spec draft survive switching.
-  let mode = $state<'viewer' | 'formats'>('viewer');
-  let formatsDirty = $state(false);
+  // The active editor tab: the binary file or the spec being edited. Both panels stay mounted (the inactive one is
+  // hidden), so the open document, its scroll position and any unsaved spec draft survive switching.
+  let activeTab = $state<'file' | 'spec'>('file');
   // About dialog; the opener button gets focus back when it closes.
   let aboutOpen = $state(false);
   let aboutOpener: HTMLElement | null = null;
@@ -62,6 +84,15 @@
   }
   // The user's format library (IndexedDB + optional folder). Its valid specs are mirrored into the engine worker.
   const library: SpecLibrary = untrack(() => createLibrary());
+  // The format library UI state (open spec, unsaved draft, actions), shared by the side bar list and the spec tab.
+  const formats = new FormatsState(library);
+  formats.onOpened = () => (activeTab = 'spec');
+  formats.onClosed = () => showFileTab();
+  $effect(() => formats.connect());
+  // A spec tab is open while a spec is selected; it is the active editor exactly when it was last picked. The Formats
+  // preview (parseDraft) and the draft-on-worker blocking below key off this.
+  const specOpen = $derived(formats.selected !== undefined);
+  const specActive = $derived(activeTab === 'spec' && specOpen);
   let rawChosen = false; // the user explicitly picked "None (raw)": library changes must not auto-select a format
   // What the worker already has: `id:rev` of the custom specs last sent (rev changes whenever a spec's text does).
   let sentSpecsKey = '';
@@ -127,18 +158,102 @@
   let engineToken = 0; // bumped by every open/parse; results from older ones are ignored
   let needsDetect = false; // startEngine was started but its detection result has not been applied yet
   let locateToken = 0;
-  let treeWidth = $state(460);
-  let treeCollapsed = $state(false);
-  let resizing = false;
+  // ---- Shell layout and theme (remembered in local storage) ----
+  const SIDE_RANGE = { min: 200, max: 600, def: 300 };
+  const INSPECTOR_RANGE = { min: 240, max: 520, def: 320 };
+  const PROBLEMS = { min: 80, def: 180 };
+  const clampTo = (r: { min: number; max: number }, v: number) => Math.min(r.max, Math.max(r.min, v));
+  const startsNarrow = typeof matchMedia === 'function' && matchMedia('(max-width: 899px)').matches;
+  let narrow = $state(startsNarrow);
+  let theme = $state<ThemePref>(loadTheme());
+  let sideView = $state<SideView>(loadSideView());
+  // On a narrow screen the side bar and inspector are drawers: they always start closed, whatever was saved.
+  let sideOpen = $state(startsNarrow ? false : loadFlag('sideOpen', true));
+  let sideWidth = $state(clampTo(SIDE_RANGE, loadSize('sideWidth', SIDE_RANGE.def)));
+  let inspectorOpen = $state(startsNarrow ? false : loadFlag('inspectorOpen', true));
+  let inspectorWidth = $state(clampTo(INSPECTOR_RANGE, loadSize('inspectorWidth', INSPECTOR_RANGE.def)));
+  let problemsOpen = $state(loadFlag('problemsOpen', !startsNarrow));
+  let problemsHeight = $state(Math.max(PROBLEMS.min, loadSize('problemsHeight', PROBLEMS.def)));
+  let editorColumnHeight = $state(0);
+  const problemsMax = $derived(Math.max(PROBLEMS.min, Math.floor(editorColumnHeight * 0.6)));
+  const problemsPx = $derived(Math.min(problemsHeight, problemsMax));
+
+  $effect(() => applyTheme(theme));
+  $effect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const q = matchMedia('(max-width: 899px)');
+    const on = () => {
+      narrow = q.matches;
+      if (narrow && sideOpen && inspectorOpen) inspectorOpen = false; // one drawer at a time
+    };
+    q.addEventListener('change', on);
+    return () => q.removeEventListener('change', on);
+  });
+
+  const THEME_ORDER: ThemePref[] = ['system', 'light', 'dark'];
+  function cycleTheme() {
+    theme = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length]!;
+    saveTheme(theme);
+  }
+  function setSideOpen(v: boolean) {
+    sideOpen = v;
+    if (narrow) {
+      if (v) inspectorOpen = false; // drawers: only one at a time, and never persisted
+    } else saveFlag('sideOpen', v);
+  }
+  function showSide(view: SideView) {
+    sideView = view;
+    saveSideView(view);
+    setSideOpen(true);
+  }
+  /** Activity bar: the active item collapses/expands the side bar, the other one switches the view. */
+  function onActivity(view: SideView) {
+    if (sideOpen && sideView === view) setSideOpen(false);
+    else showSide(view);
+  }
+  function setSideWidth(px: number) {
+    sideWidth = clampTo(SIDE_RANGE, px);
+    saveSize('sideWidth', sideWidth);
+  }
+  function setInspectorOpen(v: boolean) {
+    inspectorOpen = v;
+    if (narrow) {
+      if (v) sideOpen = false;
+    } else saveFlag('inspectorOpen', v);
+  }
+  const drawerOpen = $derived(narrow && (sideOpen || inspectorOpen));
+  function closeDrawers() {
+    sideOpen = false;
+    inspectorOpen = false;
+  }
+  function onWindowKeyDown(e: KeyboardEvent) {
+    if (e.defaultPrevented || e.key !== 'Escape' || !drawerOpen || aboutOpen || confirm || formats.confirm) return;
+    e.preventDefault();
+    closeDrawers();
+  }
+  function setInspectorWidth(px: number) {
+    inspectorWidth = clampTo(INSPECTOR_RANGE, px);
+    saveSize('inspectorWidth', inspectorWidth);
+  }
+  function setProblemsOpen(v: boolean) {
+    problemsOpen = v;
+    saveFlag('problemsOpen', v);
+  }
+  function setProblemsHeight(px: number) {
+    problemsHeight = Math.max(PROBLEMS.min, px);
+    saveSize('problemsHeight', problemsHeight);
+  }
   // Live preview of a format draft (Formats view). parseDraft REPLACES the worker's single result slot, so the viewer's
   // own tree is no longer backed by the worker while `draftOnWorker` is true: every viewer call that needs the slot
   // is blocked until the viewer re-parses (on switching back to it, or after any viewer engine operation).
   let draftOnWorker = false;
+  let draftActive = $state(false); // reactive mirror of draftOnWorker, for the "paused" note
   let viewerOps = 0; // viewer engine operations (open/parse) in flight; a draft parse never starts while > 0
   let previewEpoch = $state(0); // bumped when the last viewer operation finishes: the preview then re-parses
   const opStart = () => {
     viewerOps++;
     draftOnWorker = false;
+    draftActive = false;
   };
   const opEnd = () => {
     if (--viewerOps === 0) previewEpoch++;
@@ -148,7 +263,7 @@
 
   // Warn before leaving the page with unsaved edits; the listener exists only while dirty.
   $effect(() => {
-    if (!dirty && !formatsDirty) return;
+    if (!dirty && !formats.editorDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = true;
@@ -395,9 +510,10 @@
    */
   async function parseDraftPreview(text: string): Promise<ParseSnapshot | null> {
     const c = client;
-    if (!c || !editor || saving || unreadable || viewerOps > 0 || mode !== 'formats') throw new PreviewUnavailableError('the viewer is busy');
+    if (!c || !editor || saving || unreadable || viewerOps > 0 || !specActive) throw new PreviewUnavailableError('the viewer is busy');
     const token = ++engineToken;
     draftOnWorker = true;
+    draftActive = true;
     try {
       const snap = await c.parseDraft(text);
       if (token !== engineToken) throw new SupersededError();
@@ -421,20 +537,29 @@
   }
 
   /**
-   * Switch views. Returning to the Viewer after a draft preview ran re-parses the viewer's own format (or raw bytes), so
+   * Show the file tab. Returning to it after a draft preview ran re-parses the viewer's own format (or raw bytes), so
    * the worker, the tree and the FormatBar agree again. The draft's tree is never shown in the viewer.
    */
-  function setMode(m: 'viewer' | 'formats') {
-    mode = m;
-    if (m === 'viewer' && draftOnWorker && !saving && !unreadable && client) void runParse(selectedSpec);
+  function showFileTab() {
+    activeTab = 'file';
+    reparseAfterDraft();
   }
+
+  function reparseAfterDraft() {
+    if (draftOnWorker && !saving && !unreadable && client) void runParse(selectedSpec);
+  }
+
+  // Safety net for a spec tab that vanished without going through showFileTab (e.g. the spec was removed by a folder sync).
+  $effect(() => {
+    if (!specActive) untrack(reparseAfterDraft);
+  });
 
   /**
    * "Show in viewer" from the preview: the simpler of the two options. The viewer keeps its own format and tree (re-parsed
    * as above); only the byte range of the previewed node is selected and highlighted.
    */
   function showInViewer(range: { start: number; end: number } | null, offset: number) {
-    setMode('viewer'); // clears nodeRange synchronously when it re-parses, so select afterwards
+    showFileTab(); // clears nodeRange synchronously when it re-parses, so select afterwards
     const size = source?.size ?? 0;
     if (range && range.start < size) {
       const end = Math.min(range.end, size - 1);
@@ -553,19 +678,6 @@
     requestTints();
   }
 
-  function startResize(e: MouseEvent) {
-    e.preventDefault();
-    resizing = true;
-  }
-
-  function onWindowMouseMove(e: MouseEvent) {
-    if (resizing) treeWidth = Math.min(900, Math.max(240, e.clientX));
-  }
-
-  function onWindowMouseUp() {
-    resizing = false;
-  }
-
   let loadToken = 0;
 
   /**
@@ -623,7 +735,7 @@
     unreadable = false;
     treeKeep = null;
     rawChosen = false;
-    mode = 'viewer';
+    activeTab = 'file';
   }
 
   /** Run `action` now, or after the user agrees to discard unsaved edits. Never while a save is running. */
@@ -865,114 +977,211 @@
       guardDirty(() => void load(file));
     }
   }
+
+  // ---- Derived shell state ----
+  const formatName = $derived(
+    selectedSpec === null ? null : sanitizeText(specs.find((s) => s.id === selectedSpec)?.name ?? selectedSpec, 80),
+  );
+  const errorCount = $derived(diagnostics.filter((d) => d.severity === 'error').length);
+  const warningCount = $derived(diagnostics.length - errorCount);
+  const tabs: EditorTab[] = $derived([
+    ...(source !== null
+      ? [{ id: 'file' as const, label: fileName ?? 'Untitled', modified: dirty, modifiedLabel: 'Modified', closable: false }]
+      : []),
+    ...(formats.selected
+      ? [{ id: 'spec' as const, label: sanitizeText(formats.selected.name, 60), modified: formats.editorDirty, modifiedLabel: 'Unsaved changes', closable: true }]
+      : []),
+  ]);
+  const hiddenAttrs = (hide: boolean) => (hide ? { inert: true, 'aria-hidden': 'true' as const } : {});
 </script>
 
 <svelte:head>
   <title>{(dirty ? '• ' : '') + (fileName !== null ? `${fileName} — Binary Viewer` : 'Binary Viewer')}</title>
 </svelte:head>
 
-<svelte:window
-  ondragenter={onDragEnter}
-  ondragleave={onDragLeave}
-  ondragover={onDragOver}
-  ondrop={onDrop}
-  onmousemove={onWindowMouseMove}
-  onmouseup={onWindowMouseUp}
-/>
+<svelte:window onkeydown={onWindowKeyDown} ondragenter={onDragEnter} ondragleave={onDragLeave} ondragover={onDragOver} ondrop={onDrop} />
 
 <input type="file" hidden bind:this={fileInput} onchange={onInputChange} />
 
 <div class="app" class:drag-over={dragDepth > 0} {...(aboutOpen ? { inert: true } : {})}>
-  <Toolbar
-    {fileName}
-    {size}
-    hasFile={source !== null && size > 0}
-    {dirty}
+  <TitleBar
+    hasName={fileName !== null}
     {saving}
     {unreadable}
+    {loadError}
     onNew={newFile}
     onOpen={openFile}
     onSave={() => void save()}
     onSaveAs={() => void saveAs()}
-    onGoTo={goTo}
-    {gotoError}
-    {loadError}
-    view={mode}
-    onView={setMode}
     onAbout={openAbout}
   />
-  <div class="stage">
-  <div class="pane" class:hidden={mode !== 'viewer'} {...(mode !== 'viewer' ? { inert: true } : {})}>
-  {#if source}
-    <FormatBar
-      {specs}
-      {detections}
-      selected={selectedSpec}
-      {status}
-      errorText={engineError ?? specRejected}
-      onSelect={(id) => {
-        rawChosen = id === null;
-        void runParse(id);
-      }}
-      onCancel={() => client?.cancel()}
-    />
-  {/if}
-  <div class="main">
-    {#if source}
-      {#if treeCollapsed}
-        <button type="button" class="expand-tree" onclick={() => (treeCollapsed = false)} title="Show structure" aria-label="Show structure">&#9656;</button>
-      {:else}
-        <aside class="side" style:width="{treeWidth}px" aria-label="Structure panel">
-          <div class="side-head">
-            <span>Structure</span>
-            <button type="button" onclick={() => (treeCollapsed = true)} title="Hide structure" aria-label="Hide structure">&#9666;</button>
+  <div
+    class="shell"
+    class:narrow
+    style:grid-template-columns="44px {sideOpen && !narrow ? `${sideWidth}px 1px ` : ''}minmax(0, 1fr){inspectorOpen ? (narrow ? '' : ` 1px ${inspectorWidth}px`) : ' 28px'}"
+  >
+    <ActivityBar view={sideView} open={sideOpen} onSelect={onActivity} />
+
+    <!-- Stays mounted while collapsed (hidden, inert) so the tree keeps its expansion, scroll and active row, and hex clicks can still reveal nodes. -->
+    <div
+      class="side-slot"
+      class:overlay={narrow && sideOpen}
+      class:closed={!sideOpen}
+      class:hidden={!sideOpen}
+      {...hiddenAttrs(!sideOpen)}
+      style:width={narrow ? `min(${sideWidth}px, calc(100vw - 44px - 24px))` : !sideOpen ? `${sideWidth}px` : undefined}
+    >
+        <SideBar title={sideView === 'structure' ? 'Structure' : 'Formats'} onCollapse={() => setSideOpen(false)}>
+          <div class="views">
+            <div class="view" class:hidden={sideView !== 'structure'} {...hiddenAttrs(sideView !== 'structure')}>
+              {#if source}
+                {#if specActive && draftActive}<p class="quiet" role="status">Paused while a format preview is running</p>{/if}
+                <div class="tree-wrap" {...(specActive && draftActive ? { inert: true } : {})}>
+                  <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onJump={onTreeJump} preserveFor={treeKeep} />
+                </div>
+              {:else}
+                <p class="quiet">Open a file to see its structure.</p>
+              {/if}
+            </div>
+            <div class="view" class:hidden={sideView !== 'formats'} {...hiddenAttrs(sideView !== 'formats')}>
+              <FormatList ctl={formats} />
+            </div>
           </div>
-          <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onJump={onTreeJump} preserveFor={treeKeep} />
-          <Diagnostics {diagnostics} onJump={(d) => void jumpToDiagnostic(d)} />
-        </aside>
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize structure panel" onmousedown={startResize}></div>
-      {/if}
+        </SideBar>
+    </div>
+    {#if sideOpen && !narrow}
+      <Resizer
+        orientation="vertical"
+        label="Resize side bar"
+        value={sideWidth}
+        min={SIDE_RANGE.min}
+        max={SIDE_RANGE.max}
+        onResize={setSideWidth}
+        onReset={() => setSideWidth(SIDE_RANGE.def)}
+      />
     {/if}
-    {#if source && editor}
-      <div class="hexcol">
-        {#if size === 0}<div class="empty-note"><p>Empty file (0 bytes)</p></div>{/if}
-        <HexView
-          bind:this={hexView}
-          {source}
-          bind:selection
-          bind:error={readError}
-          bind:insertMode
-          {editor}
-          {editVersion}
-          locked={saving || unreadable}
-          onNotice={(m) => (notice = m)}
-          {nodeRange}
-          {tints}
-          {onViewChange}
-          onByteClick={locate}
+    {#if drawerOpen}
+      <button type="button" class="scrim" aria-label="Close panel" onclick={closeDrawers}></button>
+    {/if}
+
+    <main class="editor" bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
+      <EditorTabs {tabs} activeId={specActive ? 'spec' : 'file'} onSelect={(id) => (id === 'spec' ? (activeTab = 'spec') : showFileTab())} onClose={() => formats.close()} />
+      <div class="panels">
+        <div
+          class="panel"
+          class:hidden={specActive}
+          {...hiddenAttrs(specActive)}
+          id="editor-panel-file"
+          role="tabpanel"
+          aria-labelledby={source ? 'editor-tab-file' : undefined}
+          aria-label={source ? undefined : 'Welcome'}
+        >
+          {#if source && editor}
+            <div class="editor-head">
+              <FormatBar
+                {specs}
+                {detections}
+                selected={selectedSpec}
+                {status}
+                errorText={engineError ?? specRejected}
+                onSelect={(id) => {
+                  rawChosen = id === null;
+                  void runParse(id);
+                }}
+                onCancel={() => client?.cancel()}
+              />
+              <GoTo disabled={size === 0} error={gotoError} onGoTo={goTo} />
+            </div>
+            <div class="hexcol">
+              {#if size === 0}<div class="empty-note"><p>Empty file (0 bytes)</p></div>{/if}
+              <div class="hexrow">
+                <HexView
+                  bind:this={hexView}
+                  {source}
+                  bind:selection
+                  bind:error={readError}
+                  bind:insertMode
+                  {editor}
+                  {editVersion}
+                  locked={saving || unreadable}
+                  onNotice={(m) => (notice = m)}
+                  {nodeRange}
+                  {tints}
+                  {onViewChange}
+                  onByteClick={locate}
+                />
+                <!-- Reserved for the structure minimap (phase 2): a narrow column right of the hex grid. -->
+                <div class="minimap-slot" data-slot="minimap"></div>
+              </div>
+            </div>
+            {#if problemsOpen}
+              <Resizer
+                orientation="horizontal"
+                label="Resize problems panel"
+                invert
+                value={problemsPx}
+                min={PROBLEMS.min}
+                max={problemsMax}
+                onResize={setProblemsHeight}
+                onReset={() => setProblemsHeight(PROBLEMS.def)}
+              />
+            {/if}
+            <div class="bottom" style:height={problemsOpen ? `${problemsPx}px` : '28px'}>
+              <BottomPanel open={problemsOpen} errors={errorCount} warnings={warningCount} onToggle={() => setProblemsOpen(!problemsOpen)}>
+                <Diagnostics {diagnostics} alwaysOpen onJump={(d) => void jumpToDiagnostic(d)} />
+              </BottomPanel>
+            </div>
+          {:else}
+            <Welcome formatNames={builtinNames} onBrowse={() => showSide('formats')} />
+          {/if}
+        </div>
+        <div
+          class="panel"
+          class:hidden={!specActive}
+          {...hiddenAttrs(!specActive)}
+          id="editor-panel-spec"
+          role="tabpanel"
+          aria-labelledby="editor-tab-spec"
+        >
+          {#if specOpen}
+            <FormatDetail
+              ctl={formats}
+              previewDoc={editor ? (fileName ?? 'Untitled') : null}
+              previewActive={specActive}
+              previewBusy={saving}
+              previewEpoch={previewEpoch}
+              parseDraft={parseDraftPreview}
+              loadPreviewPage={loadPreviewPage}
+              loadPreviewRef={loadPreviewRef}
+              onShowInViewer={showInViewer}
+            />
+          {/if}
+        </div>
+      </div>
+    </main>
+
+    {#if inspectorOpen}
+      {#if !narrow}
+        <Resizer
+          orientation="vertical"
+          label="Resize inspector"
+          invert
+          value={inspectorWidth}
+          min={INSPECTOR_RANGE.min}
+          max={INSPECTOR_RANGE.max}
+          onResize={setInspectorWidth}
+          onReset={() => setInspectorWidth(INSPECTOR_RANGE.def)}
         />
+      {/if}
+      <div class="inspector-slot" class:overlay={narrow} style:width={narrow ? `min(${inspectorWidth}px, calc(100vw - 44px - 24px))` : undefined}>
+        <Inspector source={source && size > 0 ? source : null} offset={inspectOffset} version={editVersion} bind:littleEndian onCollapse={() => setInspectorOpen(false)} />
       </div>
     {:else}
-      <div class="empty">
-        <h1>Binary Viewer</h1>
-        <p class="tagline">Hex editor and binary format inspector</p>
-        <p class="hint">Click <strong>Open…</strong> or drop a file anywhere on this window.</p>
-        <p class="hint">Your files never leave this browser.</p>
-        <div class="start-section">
-          <p class="hint">Built-in formats: {builtinNames.join(', ')}</p>
-          <button type="button" onclick={() => setMode('formats')}>Browse formats</button>
-        </div>
-        <p class="hint">When a file is open:</p>
-        <dl class="start-keys" aria-label="Keyboard shortcuts">
-          {#each START_SHORTCUTS as s (s.keys)}
-            <dt><kbd>{s.keys}</kbd></dt>
-            <dd>{s.action}</dd>
-          {/each}
-        </dl>
-      </div>
+      <button type="button" class="rail" aria-label="Show data inspector" title="Show data inspector" aria-expanded="false" onclick={() => setInspectorOpen(true)}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span>Inspector</span>
+      </button>
     {/if}
-    <Inspector source={source && size > 0 ? source : null} offset={inspectOffset} version={editVersion} bind:littleEndian />
   </div>
   <StatusBar
     {selection}
@@ -981,23 +1190,14 @@
     {info}
     insertMode={source ? insertMode : null}
     onRetry={() => hexView?.retry()}
+    formatName={source ? formatName : null}
+    {littleEndian}
+    onToggleEndian={() => (littleEndian = !littleEndian)}
+    size={source ? size : null}
+    {saving}
+    {theme}
+    onCycleTheme={cycleTheme}
   />
-  </div>
-  <div class="pane" class:hidden={mode !== 'formats'} {...(mode !== 'formats' ? { inert: true } : {})}>
-    <FormatLibrary
-      {library}
-      onDirtyChange={(d) => (formatsDirty = d)}
-      previewDoc={editor ? (fileName ?? 'Untitled') : null}
-      previewActive={mode === 'formats'}
-      previewBusy={saving}
-      {previewEpoch}
-      parseDraft={parseDraftPreview}
-      loadPreviewPage={loadPreviewPage}
-      loadPreviewRef={loadPreviewRef}
-      onShowInViewer={showInViewer}
-    />
-  </div>
-  </div>
 </div>
 {#if confirm}
   {@const pending = confirm}
@@ -1011,79 +1211,147 @@
     }}
   />
 {/if}
+{#if formats.confirm}
+  {@const pending = formats.confirm}
+  <ConfirmDialog
+    message={pending.message}
+    confirmLabel={pending.label}
+    onCancel={() => (formats.confirm = null)}
+    onConfirm={() => {
+      const run = pending.run;
+      formats.confirm = null;
+      run();
+    }}
+  />
+{/if}
 {#if aboutOpen}
   <AboutDialog onClose={() => void closeAbout()} />
 {/if}
 
 <style>
   .app {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     height: 100vh;
+    height: 100dvh;
+    min-width: 0;
   }
   .app.drag-over {
-    outline: 2px dashed var(--accent);
+    outline: 2px dashed var(--signal);
     outline-offset: -4px;
   }
-  .stage {
-    flex: 1;
+  .shell {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
     min-height: 0;
+    min-width: 0;
     position: relative;
   }
-  .pane {
+  .side-slot {
+    min-width: 0;
+    min-height: 0;
+    background: var(--chrome);
+  }
+  .overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 5;
+    border: 0 solid var(--rule);
+  }
+  .side-slot.overlay {
+    left: 44px;
+    border-right-width: 1px;
+  }
+  .side-slot.closed {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 44px;
+  }
+  .scrim {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 44px;
+    right: 0;
+    z-index: 4;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: var(--scrim);
+  }
+  .scrim:hover:not(:disabled) {
+    background: var(--scrim);
+  }
+  .tree-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .inspector-slot {
+    min-width: 0;
+    min-height: 0;
+    background: var(--chrome);
+  }
+  .inspector-slot.overlay {
+    right: 0;
+    border-left-width: 1px;
+  }
+  .views {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .view {
     position: absolute;
     inset: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden;
   }
-  .pane.hidden {
+  .hidden {
     visibility: hidden;
     pointer-events: none;
   }
-  .main {
-    flex: 1;
-    min-height: 0;
-    display: flex;
+  .quiet {
+    margin: 0;
+    padding: 10px 12px;
+    color: var(--ink-quiet);
+    font-size: var(--fs-sm);
   }
-  .side {
+  .editor {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    flex: none;
-    border-right: 1px solid var(--border);
-    background: var(--bg);
+    min-height: 0;
+    background: var(--ground);
   }
-  .side-head {
+  .panels {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .panel {
+    position: absolute;
+    inset: 0;
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+  .editor-head {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    padding: 2px 8px;
-    font-weight: 600;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
-  }
-  .side-head button,
-  .expand-tree {
-    padding: 0 6px;
-    border: none;
-    background: none;
-  }
-  .expand-tree {
-    flex: none;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-  }
-  .resizer {
-    flex: none;
-    width: 5px;
-    margin-left: -3px;
-    cursor: col-resize;
-    z-index: 1;
-  }
-  .resizer:hover {
-    background: var(--accent);
-    opacity: 0.4;
+    justify-content: space-between;
+    gap: 4px 16px;
+    padding: 4px 12px;
+    background: var(--ground);
+    border-bottom: 1px solid var(--rule);
   }
   .hexcol {
     flex: 1;
@@ -1092,53 +1360,42 @@
     display: flex;
     flex-direction: column;
   }
+  .hexrow {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .minimap-slot {
+    flex: none;
+    width: 0;
+  }
   .empty-note {
     padding: 6px 12px;
-    color: var(--muted);
-    border-bottom: 1px solid var(--border);
+    color: var(--ink-quiet);
+    border-bottom: 1px solid var(--rule);
   }
   .empty-note p {
     margin: 0;
   }
-  .empty {
-    flex: 1;
+  .bottom {
+    flex: none;
+    min-height: 28px;
+    border-top: 1px solid var(--rule);
+  }
+  .rail {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    color: var(--muted);
+    gap: 10px;
+    padding: 10px 0;
+    border: none;
+    border-left: 1px solid var(--rule);
+    border-radius: 0;
+    background: var(--chrome);
+    color: var(--ink-quiet);
+    font-size: var(--fs-sm);
   }
-  .empty p {
-    margin: 4px;
-  }
-  .empty h1 {
-    margin: 0;
-    font-size: 1.6rem;
-    color: var(--fg);
-  }
-  .tagline {
-    font-size: 1.1rem;
-  }
-  .start-section {
-    margin-top: 16px;
-    text-align: center;
-    padding: 0 12px;
-  }
-  .start-keys {
-    display: grid;
-    grid-template-columns: max-content max-content;
-    gap: 2px 12px;
-    margin: 4px 0 0;
-    font-size: 0.9rem;
-  }
-  .start-keys dt,
-  .start-keys dd {
-    margin: 0;
-  }
-  .start-keys kbd {
-    font-family: var(--mono);
-  }
-  .hint {
-    font-size: 0.9rem;
+  .rail span {
+    writing-mode: vertical-rl;
   }
 </style>

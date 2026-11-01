@@ -120,7 +120,7 @@
 </script>
 
 {#if docName !== null}
-  <section class="preview" aria-label="Preview on open file">
+  <section class="preview" class:collapsed aria-label="Preview on open file">
     <div class="head">
       <button type="button" class="toggle" aria-expanded={!collapsed} onclick={() => (collapsed = !collapsed)}>{collapsed ? '▸' : '▾'} Preview</button>
       <label><input type="checkbox" bind:checked={enabled} /> Preview on open file</label>
@@ -155,34 +155,45 @@
 {/if}
 
 <style>
-  .preview {
-    flex: none;
-    border-top: 1px solid var(--border);
-    background: var(--bg);
+.preview {
+    flex: 0 0 42%;
+    min-height: 140px;
+    border-top: 1px solid var(--rule);
+    background: var(--ground);
     display: flex;
     flex-direction: column;
   }
+  .preview.collapsed {
+    flex: none;
+    min-height: 0;
+  }
   .head {
+    flex: none;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 2px 8px;
-    background: var(--panel);
-    font-size: 12px;
+    gap: 16px;
+    padding: 2px 12px 2px 6px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--rule);
+    font-size: var(--fs-sm);
+  }
+  .head label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   .toggle {
-    border: none;
-    background: none;
+    border-color: transparent;
     font-weight: 600;
   }
   .doc,
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .body {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    height: 260px;
     min-height: 0;
   }
   .tree {
@@ -192,18 +203,22 @@
     flex-direction: column;
   }
   .pad {
-    padding: 4px 8px;
+    padding: 6px 12px;
     margin: 0;
   }
   .problems {
-    padding: 4px 8px;
+    padding: 6px 12px;
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--fs-sm);
     overflow: auto;
   }
   .selinfo {
-    padding: 2px 8px;
-    font-size: 12px;
-    border-top: 1px solid var(--border);
+    flex: none;
+    padding: 4px 12px;
+    font-size: var(--fs-sm);
+    border-top: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
 </style>

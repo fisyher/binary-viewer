@@ -27,18 +27,19 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 10;
   }
   .dialog {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    background: var(--chrome);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
     padding: 16px 20px;
     max-width: 420px;
+    box-shadow: 0 8px 28px var(--dialog-shadow);
   }
   p {
     margin: 0 0 16px;

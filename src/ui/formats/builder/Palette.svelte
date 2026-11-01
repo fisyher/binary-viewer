@@ -115,14 +115,14 @@
 <style>
   .palette {
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   h4,
   h5 {
     margin: 4px 0;
   }
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
     margin: 2px 0;
   }
   .group {
@@ -130,9 +130,8 @@
   }
   .gname {
     font-weight: 600;
-    text-transform: uppercase;
-    font-size: 11px;
-    color: var(--muted);
+    font-size: var(--fs-xs);
+    color: var(--ink-quiet);
   }
   .block {
     display: block;
@@ -145,11 +144,11 @@
   }
   .bd {
     display: block;
-    color: var(--muted);
-    font-size: 11px;
+    color: var(--ink-quiet);
+    font-size: var(--fs-xs);
   }
   .wizard {
-    border: 1px solid var(--border);
+    border: 1px solid var(--rule);
     padding: 6px;
     margin-top: 8px;
   }
