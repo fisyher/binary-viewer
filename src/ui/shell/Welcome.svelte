@@ -23,6 +23,7 @@
 
     <p class="prompt">Click <strong>Open…</strong> or drop a file anywhere on this window.</p>
     <p class="privacy">Your files never leave this browser.</p>
+    <p class="palette-hint">Press <kbd>Ctrl+K</kbd> or <kbd>F1</kbd> to search every command.</p>
 
     <section class="block" aria-labelledby="welcome-formats">
       <h2 id="welcome-formats">Built-in formats</h2>
@@ -33,7 +34,7 @@
     </section>
 
     <section class="block" aria-labelledby="welcome-keys">
-      <h2 id="welcome-keys">When a file is open</h2>
+      <h2 id="welcome-keys">Keyboard shortcuts</h2>
       <dl class="keys" aria-label="Keyboard shortcuts">
         {#each START_SHORTCUTS as s (s.keys)}
           <dt><kbd>{s.keys}</kbd></dt>
@@ -108,6 +109,13 @@
   .privacy {
     margin: 4px 0 0;
     color: var(--ink-quiet);
+  }
+  .palette-hint {
+    margin: 12px 0 0;
+    color: var(--ink-quiet);
+  }
+  .palette-hint kbd {
+    font-size: var(--fs-sm);
   }
   .block {
     margin-top: 32px;

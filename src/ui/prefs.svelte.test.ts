@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyTheme, loadFlag, loadShowMinimap, loadSideView, loadSize, loadTheme, saveFlag, saveShowMinimap, saveSideView, saveSize, saveTheme } from './prefs';
+import { applyTheme, loadFlag, loadRecentCommands, loadShowMinimap, loadSideView, loadSize, loadTheme, saveFlag, saveRecentCommands, saveShowMinimap, saveSideView, saveSize, saveTheme, withRecentCommand } from './prefs';
 
 afterEach(() => {
   localStorage.clear();
@@ -91,5 +91,40 @@ describe('layout preferences', () => {
     expect(loadSideView()).toBe('formats');
     localStorage.setItem('binaryviewer.layout.sideView', 'other');
     expect(loadSideView()).toBe('structure');
+  });
+});
+
+describe('recent commands', () => {
+  it('round-trips, newest first, at most five', () => {
+    expect(loadRecentCommands()).toEqual([]);
+    let r: string[] = [];
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) r = withRecentCommand(r, id);
+    expect(r).toEqual(['f', 'e', 'd', 'c', 'b']);
+    saveRecentCommands(r);
+    expect(loadRecentCommands()).toEqual(r);
+  });
+
+  it('moves a repeated command to the front without duplicating it', () => {
+    expect(withRecentCommand(['a', 'b', 'c'], 'c')).toEqual(['c', 'a', 'b']);
+  });
+
+  it('reads malformed storage as empty or keeps only the valid strings', () => {
+    localStorage.setItem('binaryviewer.recentCommands', '{not json');
+    expect(loadRecentCommands()).toEqual([]);
+    localStorage.setItem('binaryviewer.recentCommands', '{"a":1}');
+    expect(loadRecentCommands()).toEqual([]);
+    localStorage.setItem('binaryviewer.recentCommands', JSON.stringify(['a', 3, '', 'a', null, 'b', 'x'.repeat(500)]));
+    expect(loadRecentCommands()).toEqual(['a', 'b']);
+  });
+
+  it('survives unavailable storage', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('denied');
+    });
+    expect(loadRecentCommands()).toEqual([]);
+    expect(() => saveRecentCommands(['a'])).not.toThrow();
   });
 });

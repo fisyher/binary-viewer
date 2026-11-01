@@ -131,3 +131,33 @@ export function loadShowMinimap(): boolean {
 export function saveShowMinimap(on: boolean): void {
   saveFlag('showMinimap', on);
 }
+
+// ---- Command palette ----
+
+const RECENT_KEY = 'binaryviewer.recentCommands';
+export const MAX_RECENT_COMMANDS = 5;
+
+/** The ids of the most recently used palette commands, newest first. Anything that is not a short string list reads as empty. */
+export function loadRecentCommands(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
+    if (!Array.isArray(v)) return [];
+    const ids = v.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 200);
+    return [...new Set(ids)].slice(0, MAX_RECENT_COMMANDS);
+  } catch {
+    return [];
+  }
+}
+
+export function saveRecentCommands(ids: readonly string[]): void {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(ids.slice(0, MAX_RECENT_COMMANDS)));
+  } catch {
+    // not persisted
+  }
+}
+
+/** `id` moved to the front of `recent` (no duplicates, at most MAX_RECENT_COMMANDS). */
+export function withRecentCommand(recent: readonly string[], id: string): string[] {
+  return [id, ...recent.filter((x) => x !== id)].slice(0, MAX_RECENT_COMMANDS);
+}

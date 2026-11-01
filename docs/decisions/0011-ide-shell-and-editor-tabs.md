@@ -34,6 +34,7 @@ The app had two top-level modes, Viewer and Formats, switched from the toolbar. 
 ## Consequences
 
 - Phase 1b can add spec tabs by turning the single `selectedId` of `FormatsState` into a list; the tab bar, panels and `specActive` rule already treat the spec tab as one of several editors. It will also need a second engine worker so a preview no longer takes over the viewer's result slot.
+- The command palette (phase 3) opens with Ctrl+K and F1 and from a title bar button; the window-level key handler skips keys a focused control already handled and everything while a dialog is open (see "Command palette and global keys" in `docs/DESIGN.md`). Ctrl+Shift+P is deliberately not bound because Firefox keeps it.
 - The structure minimap fits in the empty column to the right of the hex grid (`data-slot="minimap"`).
 - The bundle includes five font files (about 90 kB as woff2).
 - The two side bar views and the two editor panels are stacked and hidden rather than unmounted, which keeps state but means hidden views stay in the DOM.

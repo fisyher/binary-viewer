@@ -9,6 +9,7 @@
     onSave,
     onSaveAs,
     onAbout,
+    onPalette,
   }: {
     /** A document is open (Save / Save As need one). */
     hasName: boolean;
@@ -23,10 +24,12 @@
     onSaveAs: () => void;
     /** Opens the About dialog; gets the clicked button so focus can return to it. */
     onAbout: (opener: HTMLElement) => void;
+    /** Opens the command palette; gets the clicked button so focus can return to it. */
+    onPalette: (opener: HTMLElement) => void;
   } = $props();
 </script>
 
-<!-- The single place for app-level actions: file actions now, the command palette entry point later. -->
+<!-- The single place for app-level actions: the file actions and the entry point of the command palette (Ctrl+K, F1). -->
 <header class="titlebar">
   <button type="button" class="brand" aria-label="About Binary Viewer" title="About Binary Viewer" onclick={(e) => onAbout(e.currentTarget)}>
     <svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true" focusable="false">
@@ -46,6 +49,12 @@
   </div>
   {#if loadError}<span class="error" role="alert">{loadError}</span>{/if}
   <span class="spacer"></span>
+  <button type="button" class="palette" aria-label="Commands" title="Commands (Ctrl+K)" aria-keyshortcuts="Control+K F1" onclick={(e) => onPalette(e.currentTarget)}>
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <circle cx="6.5" cy="6.5" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M10 10l4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+    </svg>
+  </button>
   <button type="button" class="about" aria-label="About" title="About Binary Viewer" onclick={(e) => onAbout(e.currentTarget)}>?</button>
 </header>
 
@@ -85,6 +94,7 @@
   .actions button:hover:not(:disabled) {
     border-color: var(--rule);
   }
+  .palette,
   .about {
     border-color: transparent;
     min-width: 28px;

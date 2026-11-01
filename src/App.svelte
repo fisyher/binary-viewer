@@ -20,6 +20,7 @@
   import { throttleLatest } from './core/tree-model';
   import AboutDialog from './ui/AboutDialog.svelte';
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
+  import { buildCommands, type CommandContext } from './ui/commands';
   import Diagnostics from './ui/Diagnostics.svelte';
   import FormatBar from './ui/FormatBar.svelte';
   import FormatDetail from './ui/formats/FormatDetail.svelte';
@@ -33,22 +34,28 @@
     applyTheme,
     loadFlag,
     loadLittleEndian,
+    loadRecentCommands,
     loadShowMinimap,
     loadSideView,
     loadSize,
     loadTheme,
     saveFlag,
     saveLittleEndian,
+    saveRecentCommands,
+    saveShowMinimap,
     saveSideView,
     saveSize,
     saveTheme,
+    withRecentCommand,
     type SideView,
     type ThemePref,
   } from './ui/prefs';
   import ActivityBar from './ui/shell/ActivityBar.svelte';
   import BottomPanel from './ui/shell/BottomPanel.svelte';
+  import CommandPalette from './ui/shell/CommandPalette.svelte';
   import EditorTabs, { tabDomId, type EditorTab } from './ui/shell/EditorTabs.svelte';
   import GoTo from './ui/shell/GoTo.svelte';
+  import { globalKey } from './ui/shell/keys';
   import Resizer from './ui/shell/Resizer.svelte';
   import SideBar from './ui/shell/SideBar.svelte';
   import TitleBar from './ui/shell/TitleBar.svelte';
@@ -90,6 +97,44 @@
     await tick(); // the background stays inert until the dialog is gone
     aboutOpener?.focus();
     aboutOpener = null;
+  }
+
+  // Command palette; the element that had focus gets it back when the palette closes (see closePalette).
+  let paletteOpen = $state(false);
+  let paletteOpener: HTMLElement | null = null;
+  let recentCommands = $state.raw(loadRecentCommands());
+
+  function openPalette(opener?: HTMLElement) {
+    if (paletteOpen) return;
+    const el = opener ?? document.activeElement;
+    paletteOpener = el instanceof HTMLElement && el !== document.body ? el : null;
+    paletteOpen = true;
+  }
+
+  /** Close the palette, give focus back, then run `then` (a chosen command), so the command decides where focus ends up. */
+  async function closePalette(then?: () => void) {
+    if (!paletteOpen) return;
+    paletteOpen = false;
+    await tick(); // the background stays inert until the palette is gone
+    const opener = paletteOpener;
+    paletteOpener = null;
+    if (opener?.isConnected && !opener.closest('[inert]')) opener.focus();
+    then?.();
+    await tick();
+    // The command may have removed the element that had focus (Close spec tab from inside that tab): land on the editor.
+    const now = document.activeElement;
+    if (!now || now === document.body || now.closest('[inert]')) focusEditor();
+  }
+
+  /** The active editor tab, else the editor column. */
+  function focusEditor() {
+    const tab = document.getElementById(tabDomId(activeEditorId));
+    (tab ?? editorMain)?.focus();
+  }
+
+  function useCommand(id: string) {
+    recentCommands = withRecentCommand(recentCommands, id);
+    saveRecentCommands(recentCommands);
   }
   // The user's format library (IndexedDB + optional folder). Its valid specs are mirrored into the engine worker.
   const library: SpecLibrary = untrack(() => createLibrary());
@@ -147,6 +192,7 @@
   let hexView: ReturnType<typeof HexView> | undefined = $state();
   let tree: ReturnType<typeof StructureTree> | undefined = $state();
   let fileInput: HTMLInputElement | undefined = $state();
+  let editorMain: HTMLElement | undefined = $state();
 
   // ---- Format engine (runs in a worker) ----
   let client: EngineClient | null = null;
@@ -240,10 +286,24 @@
     sideOpen = false;
     inspectorOpen = false;
   }
+  /**
+   * App-wide keys, after the focused control had its turn (a control that handled the key called preventDefault, which
+   * skips everything here). Nothing happens while a dialog or the palette is open.
+   */
   function onWindowKeyDown(e: KeyboardEvent) {
-    if (e.defaultPrevented || e.key !== 'Escape' || !drawerOpen || aboutOpen || confirm || formats.confirm) return;
-    e.preventDefault();
-    closeDrawers();
+    if (e.defaultPrevented || aboutOpen || paletteOpen || confirm || formats.confirm) return;
+    const key = globalKey(e);
+    if (key === 'palette') {
+      e.preventDefault();
+      if (!e.repeat) openPalette(); // a held key repeats: keep the browser out of it, but do not act again
+    } else if (key === 'save') {
+      if (specActive) return; // a spec tab: its editors own Ctrl+S
+      e.preventDefault(); // the viewer owns Ctrl+S: no "Save page" dialog
+      if (canSave && !e.repeat) void save();
+    } else if (e.key === 'Escape' && drawerOpen) {
+      e.preventDefault();
+      closeDrawers();
+    }
   }
   function setInspectorWidth(px: number) {
     inspectorWidth = clampTo(INSPECTOR_RANGE, px);
@@ -1017,7 +1077,7 @@
 
   // enter/leave fire for every child element, so count them to avoid overlay flicker.
   function onDragEnter(e: DragEvent) {
-    if (!aboutOpen && hasFiles(e)) dragDepth++; // the About dialog is modal: no drop overlay behind it
+    if (!aboutOpen && !paletteOpen && hasFiles(e)) dragDepth++; // the About dialog is modal: no drop overlay behind it
   }
 
   function onDragLeave(e: DragEvent) {
@@ -1031,7 +1091,7 @@
   function onDrop(e: DragEvent) {
     e.preventDefault();
     dragDepth = 0;
-    if (aboutOpen) return; // modal: swallow the drop (so the browser doesn't navigate) but load nothing
+    if (aboutOpen || paletteOpen) return; // modal: swallow the drop (so the browser doesn't navigate) but load nothing
     const item = e.dataTransfer?.items[0];
     const entry = item?.webkitGetAsEntry?.();
     const file = e.dataTransfer?.files[0];
@@ -1056,6 +1116,106 @@
   const activeEditorId = $derived(specActive ? SPEC_TAB + formats.activeSpecId : 'file');
   const editorPanelId = (id: string) => (id === 'file' ? 'editor-panel-file' : 'editor-panel-spec');
   const hiddenAttrs = (hide: boolean) => (hide ? { inert: true, 'aria-hidden': 'true' as const } : {});
+  // Same rule as the Save buttons in the title bar.
+  const canSave = $derived(fileName !== null && editor !== null && !saving && !unreadable);
+
+  function toggleMinimap() {
+    showMinimap = !showMinimap;
+    saveShowMinimap(showMinimap);
+  }
+
+  /** What the command palette may read and do; the getters keep it current while the palette is open. */
+  const commandCtx: CommandContext = {
+    get hasFile() {
+      return editor !== null;
+    },
+    get canSave() {
+      return canSave;
+    },
+    get fileSize() {
+      return size;
+    },
+    get saving() {
+      return saving;
+    },
+    get unreadable() {
+      return unreadable;
+    },
+    get parsing() {
+      return status.state === 'parsing';
+    },
+    get specActive() {
+      return specActive;
+    },
+    get sideOpen() {
+      return sideOpen;
+    },
+    get sideView() {
+      return sideView;
+    },
+    get inspectorOpen() {
+      return inspectorOpen;
+    },
+    get problemsOpen() {
+      return problemsOpen;
+    },
+    get showMinimap() {
+      return showMinimap;
+    },
+    get theme() {
+      return theme;
+    },
+    get littleEndian() {
+      return littleEndian;
+    },
+    get specs() {
+      return specs;
+    },
+    get detections() {
+      return detections;
+    },
+    get selectedSpec() {
+      return selectedSpec;
+    },
+    get tabs() {
+      return tabs.map((t) => ({ id: t.id, label: t.label, active: t.id === activeEditorId }));
+    },
+    get library() {
+      return formats.snap.entries.map((e) => ({ id: e.id, name: e.name, custom: e.source === 'user' }));
+    },
+    actions: {
+      newFile,
+      openFile,
+      save: () => void save(),
+      saveAs: () => void saveAs(),
+      goToOffset: (offset) => {
+        showFileTab();
+        gotoError = null;
+        void tick().then(() => hexView?.goTo(offset));
+      },
+      chooseFormat: (id) => {
+        showFileTab();
+        rawChosen = id === null;
+        void runParse(id);
+      },
+      cancelParse: () => client?.cancel(),
+      toggleSide: () => setSideOpen(!sideOpen),
+      showView: showSide,
+      toggleInspector: () => setInspectorOpen(!inspectorOpen),
+      toggleProblems: () => setProblemsOpen(!problemsOpen),
+      toggleMinimap,
+      setTheme: (t) => {
+        theme = t;
+        saveTheme(t);
+      },
+      setLittleEndian: (le) => (littleEndian = le),
+      selectTab: selectEditorTab,
+      closeSpecTab: () => formats.close(),
+      openSpec: (id) => formats.select(id),
+      openAbout: () => openAbout(document.activeElement instanceof HTMLElement ? document.activeElement : document.body),
+    },
+  };
+  const commands = $derived(buildCommands(commandCtx));
 </script>
 
 <svelte:head>
@@ -1066,7 +1226,7 @@
 
 <input type="file" hidden bind:this={fileInput} onchange={onInputChange} />
 
-<div class="app" class:drag-over={dragDepth > 0} {...(aboutOpen ? { inert: true } : {})}>
+<div class="app" class:drag-over={dragDepth > 0} {...(aboutOpen || paletteOpen ? { inert: true } : {})}>
   <TitleBar
     hasName={fileName !== null}
     {saving}
@@ -1077,6 +1237,7 @@
     onSave={() => void save()}
     onSaveAs={() => void saveAs()}
     onAbout={openAbout}
+    onPalette={openPalette}
   />
   <div
     class="shell"
@@ -1126,7 +1287,7 @@
       <button type="button" class="scrim" aria-label="Close panel" onclick={closeDrawers}></button>
     {/if}
 
-    <main class="editor" bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
+    <main class="editor" tabindex="-1" bind:this={editorMain} bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
       <EditorTabs {tabs} activeId={activeEditorId} panelId={editorPanelId} onSelect={selectEditorTab} onClose={closeEditorTab} />
       <div class="panels">
         <div
@@ -1301,6 +1462,9 @@
 {#if aboutOpen}
   <AboutDialog onClose={() => void closeAbout()} />
 {/if}
+{#if paletteOpen}
+  <CommandPalette {commands} recent={recentCommands} onUse={useCommand} onClose={(then) => void closePalette(then)} />
+{/if}
 
 <style>
   .app {
@@ -1397,6 +1561,7 @@
     font-size: var(--fs-sm);
   }
   .editor {
+    outline: none; /* focusable by script only (the fallback focus target) */
     display: flex;
     flex-direction: column;
     min-width: 0;

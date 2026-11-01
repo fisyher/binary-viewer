@@ -78,16 +78,18 @@ Both workflows can also be started by hand from the **Actions** tab.
 4. Type over bytes to edit them, then **Save** or **Save As…**.
 5. Choose **Formats** in the activity bar (the left strip) to browse the built-in specs and your own. Picking one opens it in its own editor tab, next to the file, with its Builder, JSON and Docs views and a live preview on the open file. You can keep several spec tabs open: each remembers its unsaved text (a dot marks a modified tab, and the Formats list marks open and modified specs), and you can switch between them and the file, or keep using the Structure side bar, while a preview runs. Close a tab with its **×**, a middle click or <kbd>Delete</kbd> on the focused tab (it asks first if the spec has unsaved changes).
 6. Drag the dividers (or focus one and press the arrow keys) to resize the side bar, the inspector and the Problems panel; double-click a divider to reset it. Click the active activity bar item to hide the side bar. The theme button at the right of the status bar cycles System, Light and Dark.
+7. Press <kbd>Ctrl</kbd>+<kbd>K</kbd> or <kbd>F1</kbd> (<kbd>Cmd</kbd>+<kbd>K</kbd> on macOS), or click the search button in the title bar, to open the **command palette**: type a few letters of any command (the letters you typed are underlined, and they need not be next to each other), use <kbd>↑</kbd> / <kbd>↓</kbd> to choose and <kbd>Enter</kbd> to run it, <kbd>Esc</kbd> to close. It can open, save and create files, go to an offset, choose the format, show or hide the side bar, inspector, Problems panel and minimap, switch the theme and byte order, switch between and open editor tabs and format specs, and show the keyboard shortcuts. Commands that cannot run right now are dimmed with the reason. The last few commands you used are listed first.
 
 ### Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>F1</kbd> | Open the command palette (<kbd>Cmd</kbd>+<kbd>K</kbd> on macOS) |
 | <kbd>Insert</kbd> | Toggle insert / overwrite mode |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Undo / redo |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection as hex |
 | <kbd>Ctrl</kbd>+<kbd>Home</kbd> / <kbd>Ctrl</kbd>+<kbd>End</kbd> | Go to the start / end of the file |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save the format spec (in a spec tab) |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save the file, or the format spec in a spec tab |
 
 ### Browser support
 

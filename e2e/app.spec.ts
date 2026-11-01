@@ -588,3 +588,164 @@ test.describe('narrow screens', () => {
     await expect(page.getByRole('complementary', { name: 'Data inspector' })).toBeHidden();
   });
 });
+
+test.describe('command palette', () => {
+  // The dialog is named after its mode ("Command palette", "Go to offset", ...), so find it by its input.
+  const box = (page: Page) => page.getByRole('dialog').getByRole('combobox');
+  const dialog = (page: Page) => page.getByRole('dialog').filter({ has: page.getByRole('combobox') });
+
+  /** Records, for every later key press, whether the page called preventDefault. This listener is added after the app's own, so it runs after it. */
+  async function watchKeys(page: Page): Promise<() => Promise<Array<{ key: string; prevented: boolean }>>> {
+    await page.evaluate(() => {
+      const seen: Array<{ key: string; prevented: boolean }> = [];
+      (window as unknown as { __seen: typeof seen }).__seen = seen;
+      window.addEventListener('keydown', (e) => seen.push({ key: e.key, prevented: e.defaultPrevented }));
+    });
+    return () => page.evaluate(() => (window as unknown as { __seen: Array<{ key: string; prevented: boolean }> }).__seen);
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await gotoApp(page);
+  });
+
+  test('Ctrl+K and F1 reach the page, are prevented (no browser UI) and open the palette', async ({ page }) => {
+    const seen = await watchKeys(page);
+    for (const key of ['Control+k', 'F1']) {
+      await page.keyboard.press(key);
+      await expect(dialog(page)).toBeVisible();
+      await expect(box(page)).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(dialog(page)).toBeHidden();
+    }
+    const keys = (await seen()).filter((k) => k.key === 'k' || k.key === 'F1');
+    expect(keys).toEqual([
+      { key: 'k', prevented: true },
+      { key: 'F1', prevented: true },
+    ]);
+  });
+
+  test('Ctrl+K also works from inside the hex grid and Ctrl+S does not leave the page to the browser', async ({ page }) => {
+    await openBytes(page, 'a.bin', Uint8Array.from({ length: 64 }, (_, i) => i));
+    const seen = await watchKeys(page);
+    await hexByte(page, 3).click();
+    await page.keyboard.press('Control+k');
+    await expect(dialog(page)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(hexView(page)).toBeFocused();
+    await expect(statusBar(page)).toContainText('Start: 0x3 (3)'); // the keys did not edit or move anything
+    expect((await seen()).find((k) => k.key === 'k')).toEqual({ key: 'k', prevented: true });
+  });
+
+  test('Ctrl+S without a file is claimed by the page (no Save page dialog)', async ({ page }) => {
+    const seen = await watchKeys(page);
+    await page.keyboard.press('Control+s');
+    expect((await seen()).find((k) => k.key === 's')).toEqual({ key: 's', prevented: true });
+    await expect(dialog(page)).toBeHidden();
+  });
+
+  test('the Commands button opens it', async ({ page }) => {
+    await page.getByRole('button', { name: 'Commands' }).click();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page).getByRole('option').first()).toBeVisible();
+  });
+
+  test('typing "minimap" and Enter hides the minimap, and again shows it', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await expect(minimap(page)).toBeVisible();
+    await page.keyboard.press('Control+k');
+    await box(page).fill('minimap');
+    await expect(dialog(page).getByRole('option')).toHaveText([/Hide minimap/]);
+    await page.keyboard.press('Enter');
+    await expect(dialog(page)).toBeHidden();
+    await expect(minimap(page)).toHaveCount(0);
+
+    await page.keyboard.press('F1');
+    await box(page).fill('minimap');
+    await expect(dialog(page).getByRole('option')).toHaveText([/Show minimap/]);
+    await page.keyboard.press('Enter');
+    await expect(minimap(page)).toBeVisible();
+  });
+
+  test('Go to offset: "go", Enter, 1F4, Enter selects that byte', async ({ page }) => {
+    await openBytes(page, 'big.bin', Uint8Array.from({ length: 2048 }, (_, i) => i & 0xff));
+    await page.keyboard.press('Control+k');
+    await box(page).fill('go');
+    await expect(dialog(page).getByRole('option').first()).toContainText('Go to offset');
+    await page.keyboard.press('Enter');
+    await expect(dialog(page)).toHaveAccessibleName('Go to offset');
+    await expect(box(page)).toBeFocused();
+    await box(page).fill('99999');
+    await page.keyboard.press('Enter');
+    await expect(dialog(page).getByRole('alert')).toContainText('Out of range');
+    await box(page).fill('1F4');
+    await page.keyboard.press('Enter');
+    await expect(dialog(page)).toBeHidden();
+    await expect(statusBar(page)).toContainText('Start: 0x1F4 (500)');
+    await expect(hexByte(page, 500)).toBeVisible();
+    await expect(hexView(page)).toBeFocused();
+  });
+
+  test('Escape closes it and focus returns to the element that had it', async ({ page }) => {
+    await openBytes(page, 'a.bin', new Uint8Array(32));
+    const activity = page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Formats' });
+    await activity.focus();
+    await page.keyboard.press('Control+k');
+    await expect(box(page)).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    await expect(activity).toBeFocused();
+  });
+
+  test('the background is inert while it is open, and a click outside closes it', async ({ page }) => {
+    await page.keyboard.press('Control+k');
+    await expect(dialog(page)).toBeVisible();
+    await expect(page.locator('.app')).toHaveAttribute('inert', '');
+    await page.mouse.click(5, 400);
+    await expect(dialog(page)).toBeHidden();
+    await expect(page.locator('.app')).not.toHaveAttribute('inert', '');
+  });
+
+  test('About Binary Viewer from the palette', async ({ page }) => {
+    await page.keyboard.press('F1');
+    await box(page).fill('about');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: /^Binary Viewer$/ })).toBeVisible();
+    await expect(page.getByRole('dialog').getByRole('heading', { name: 'Keyboard shortcuts' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+
+  test('Choose format switches the parse', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await page.keyboard.press('Control+k');
+    await box(page).fill('choose format');
+    await page.keyboard.press('Enter');
+    await expect(dialog(page).getByRole('option', { name: /None \(raw\)/ })).toBeVisible();
+    await dialog(page).getByRole('option', { name: /None \(raw\)/ }).click();
+    await expect(page.getByLabel('Format', { exact: true })).toHaveValue('');
+  });
+});
+
+test.describe('command palette: held keys', () => {
+  test('holding F1 or Ctrl+K opens it once and does not flicker it shut', async ({ page }) => {
+    await gotoApp(page);
+    const dialog = page.getByRole('dialog').filter({ has: page.getByRole('combobox') });
+    await page.keyboard.down('F1');
+    await page.keyboard.down('F1'); // auto-repeat
+    await page.keyboard.down('F1');
+    await page.keyboard.up('F1');
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+
+    await page.keyboard.down('Control');
+    await page.keyboard.down('k');
+    await page.keyboard.down('k');
+    await page.keyboard.down('k');
+    await page.keyboard.up('k');
+    await page.keyboard.up('Control');
+    await expect(dialog).toBeVisible();
+  });
+});
