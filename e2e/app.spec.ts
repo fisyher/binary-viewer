@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { Page } from '@playwright/test';
 import { buildZip } from '../src/test/zip-builder';
 import { expect, expectParsed, expectSelection, gotoApp, hex, hexByte, hexView, makeBmp, openBytes, openLargeFile, revealRow, statusBar, test, treeRow } from './fixtures';
 
@@ -300,6 +301,8 @@ test.describe('About dialog', () => {
   }
 });
 
+const editorTabs = (page: Page) => page.getByRole('tablist', { name: 'Editors' }).getByRole('tab');
+
 test.describe('shell', () => {
   test.beforeEach(async ({ page }) => {
     await gotoApp(page);
@@ -324,6 +327,69 @@ test.describe('shell', () => {
     await expect(fileTab).toHaveAttribute('aria-selected', 'true');
     await expect(hexView(page)).toBeVisible();
     await expect(hexByte(page, 0)).toHaveText('42');
+  });
+
+  test('several spec tabs: edits stay per tab, a modified dot shows, closing a modified tab asks first', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await page.getByRole('button', { name: 'Formats', exact: true }).click();
+    await page.getByRole('button', { name: /^Windows Bitmap/ }).click();
+    await page.getByRole('button', { name: 'Duplicate', exact: true }).click(); // an editable copy opens in its own tab
+    const copyTab = page.getByRole('tab', { name: /^Windows Bitmap \(copy\)/ });
+    await expect(copyTab).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('button', { name: /^ZIP Archive/ }).click();
+    const zipTab = page.getByRole('tab', { name: 'ZIP Archive', exact: true });
+    await expect(zipTab).toHaveAttribute('aria-selected', 'true');
+    // original, copy, zip: three spec tabs next to the file tab
+    await expect(editorTabs(page)).toHaveCount(4);
+
+    await copyTab.click();
+    const area = page.getByLabel('Spec JSON');
+    const original = await area.inputValue();
+    await area.fill(original.replace('(copy)', '(copy) edited'));
+    await expect(copyTab.getByLabel('Modified')).toBeVisible();
+    await expect(zipTab.getByLabel('Modified')).toHaveCount(0);
+
+    await zipTab.click();
+    await expect(page.getByLabel('Spec JSON')).not.toHaveValue(/\(copy\) edited/);
+    await copyTab.click();
+    await expect(page.getByLabel('Spec JSON')).toHaveValue(original.replace('(copy)', '(copy) edited')); // the text survived the switch
+    await expect(copyTab.getByLabel('Modified')).toBeVisible();
+
+    await page.getByRole('button', { name: /^Close Windows Bitmap \(copy\)/ }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('has unsaved changes. Discard them?');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(copyTab).toBeVisible();
+    await page.getByRole('button', { name: /^Close Windows Bitmap \(copy\)/ }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+    await expect(copyTab).toHaveCount(0);
+    await expect(editorTabs(page)).toHaveCount(3);
+    await expect(zipTab).toHaveAttribute('aria-selected', 'true'); // the right neighbour took over
+  });
+
+  test('the Structure side bar tree stays usable while a spec tab with a running preview is active', async ({ page }) => {
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await page.getByRole('button', { name: 'Formats', exact: true }).click();
+    await page.getByRole('button', { name: /^Windows Bitmap/ }).click();
+    const preview = page.locator('section.preview');
+    await expect(preview.getByRole('status').filter({ hasText: /^Parsed: \d+ nodes/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Windows Bitmap', exact: true })).toHaveAttribute('aria-selected', 'true');
+
+    // The viewer's own tree (side bar) is live: no "paused" note, rows can be selected and the hex selection follows.
+    await page.getByRole('button', { name: 'Structure', exact: true }).click();
+    await expect(page.getByText('Paused while a format preview is running')).toHaveCount(0);
+    const viewerRow = page.locator('.tree-wrap').getByRole('treeitem').filter({ has: page.locator('.nm', { hasText: /^file_header$/ }) });
+    await viewerRow.click();
+    await expectSelection(page, 0, 14);
+    await expect(statusBar(page)).toContainText('End: 0xD (13)');
+    // Still on the spec tab, and its preview is still there.
+    await expect(page.getByRole('tab', { name: 'Windows Bitmap', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(preview.getByRole('status').filter({ hasText: /^Parsed: \d+ nodes/ })).toBeVisible();
+    await page.getByRole('tab', { name: 'pic.bmp' }).click();
+    await expect(hexByte(page, 0)).toBeVisible();
+    await expect(page.locator('.hex .b.sel[data-o="13"]')).toBeVisible();
   });
 
   test('the theme button cycles System, Light and Dark, sets data-theme and is remembered', async ({ page }) => {

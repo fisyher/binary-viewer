@@ -11,6 +11,7 @@
     onSave,
     onDuplicate,
     onDirtyChange = () => {},
+    initialResult = null,
     text: textProp,
     onText,
     onResult,
@@ -19,6 +20,8 @@
     onSave: (text: string) => Promise<SaveResult>;
     onDuplicate: () => void;
     onDirtyChange?: (dirty: boolean) => void;
+    /** The save outcome to show when the editor is mounted again (switching back to its tab). */
+    initialResult?: { ok: boolean; text: string } | null;
     /** Controlled draft text (owned by the parent, shared with the builder). Omit to let the editor own it. */
     text?: string;
     onText?: (text: string) => void;
@@ -39,7 +42,7 @@
   let base = $state(untrack(() => entry.text)); // the library's text as last seen
   let check = $state.raw<TextCheck>(untrack(() => checkSpecText(entry.text)));
   let saving = $state(false);
-  let result = $state<{ ok: boolean; text: string } | null>(null);
+  let result = $state<{ ok: boolean; text: string } | null>(untrack(() => initialResult));
   let area: HTMLTextAreaElement | undefined = $state();
   let gutter: HTMLPreElement | undefined = $state();
 

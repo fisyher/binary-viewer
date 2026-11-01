@@ -154,22 +154,21 @@ describe('FormatLibrary', () => {
     expect(await findByText('Magic and detection')).toBeTruthy();
   });
 
-  it('asks before leaving a spec with unsaved edits', async () => {
-    const { container, getByRole, findByRole, queryByRole, onDirtyChange, findByLabelText } = await mk({ seed: [['one', specText('one')], ['two', specText('two')]] });
+  it('opening another spec keeps the edited one open with its text, without asking', async () => {
+    const { container, queryByRole, onDirtyChange, findByLabelText } = await mk({ seed: [['one', specText('one')], ['two', specText('two')]] });
     await fireEvent.click(entryButton(container, 'one'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: area.value.replace('Fmt one', 'Fmt one edited') } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     await fireEvent.click(entryButton(container, 'two'));
-    const dialog = await findByRole('alertdialog');
-    expect(dialog.textContent).toContain('unsaved changes');
-    await fireEvent.click(getByRole('button', { name: 'Cancel' }));
     expect(queryByRole('alertdialog')).toBeNull();
-    expect(entryButton(container, 'one').classList.contains('selected')).toBe(true);
-    await fireEvent.click(entryButton(container, 'two'));
-    await fireEvent.click(getByRole('button', { name: 'Discard changes' }));
     await waitFor(() => expect(entryButton(container, 'two').classList.contains('selected')).toBe(true));
-    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false)); // the active tab is the clean one
+    expect(entryButton(container, 'one').classList.contains('open')).toBe(true);
+    expect(entryButton(container, 'one').querySelector('.dirty')).not.toBeNull();
+    await fireEvent.click(entryButton(container, 'one'));
+    expect(((await findByLabelText('Spec JSON')) as HTMLTextAreaElement).value).toContain('Fmt one edited');
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
   });
 
   it('saving a changed id inside the JSON keeps the selection on the renamed spec', async () => {

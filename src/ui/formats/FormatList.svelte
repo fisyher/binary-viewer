@@ -80,11 +80,12 @@
             <button
               type="button"
               class="entry"
-              class:selected={e.id === ctl.selectedId}
-              aria-current={e.id === ctl.selectedId ? 'true' : undefined}
+              class:selected={e.id === ctl.activeSpecId}
+              class:open={ctl.isOpen(e.id)}
+              aria-current={e.id === ctl.activeSpecId ? 'true' : undefined}
               onclick={() => ctl.select(e.id)}
             >
-              <span class="name">{t(e.name)}</span>
+              <span class="name">{#if ctl.isDirty(e.id)}<span class="dirty" role="img" aria-label="Unsaved changes" title="Unsaved changes">●</span>{/if}{t(e.name)}</span>
               <span class="id">{t(e.id, 64)}</span>
               {#if e.extensions.length > 0}<span class="exts">{e.extensions.slice(0, 6).map((x) => '.' + t(x, 16)).join(' ')}</span>{/if}
               <span class="badges">
@@ -190,6 +191,9 @@
     border-radius: 0;
     padding: 5px 12px 5px 10px;
   }
+  .entry.open {
+    border-left-color: var(--rule);
+  }
   .entry.selected {
     background: var(--sel-bg);
     color: var(--sel-fg);
@@ -200,6 +204,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .dirty {
+    margin-right: 6px;
+    color: var(--edited);
+    font-size: var(--fs-xs);
+  }
+  .entry.selected .dirty {
+    color: inherit;
   }
   .id,
   .exts {

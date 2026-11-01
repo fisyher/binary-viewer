@@ -1,6 +1,7 @@
 <script module lang="ts">
   export interface EditorTab {
-    id: 'file' | 'spec';
+    /** 'file' for the binary file; any other string is a spec tab (the app chooses it). */
+    id: string;
     label: string;
     /** Unsaved changes: shows a marker. */
     modified: boolean;
@@ -8,28 +9,59 @@
     modifiedLabel: string;
     closable: boolean;
   }
+
+  /** DOM id of a tab button (spec ids are user text: keep it selector-safe). */
+  export const tabDomId = (id: string) => 'editor-tab-' + id.replace(/[^A-Za-z0-9_-]/g, '_');
 </script>
 
 <script lang="ts">
+  import { tick } from 'svelte';
+
   let {
     tabs,
     activeId,
+    panelId,
     onSelect,
     onClose,
   }: {
     tabs: EditorTab[];
     activeId: EditorTab['id'];
+    /** The id of the panel the active tab controls. */
+    panelId: (id: EditorTab['id']) => string;
     onSelect: (id: EditorTab['id']) => void;
     onClose: (id: EditorTab['id']) => void;
   } = $props();
 
   let list: HTMLElement | undefined = $state();
-  // The active tab can vanish (the spec tab closed): fall back to the first one.
+  // The active tab can vanish (no file open yet): fall back to the first one.
   const current = $derived(tabs.some((t) => t.id === activeId) ? activeId : tabs[0]?.id);
 
-  function onKeyDown(e: KeyboardEvent) {
+  // Many tabs scroll horizontally; the active one is kept in view.
+  $effect(() => {
+    void current;
+    void tabs.length;
+    const box = list;
+    const el = box?.querySelector<HTMLElement>('.tab.active');
+    if (!box || !el) return;
+    if (el.offsetLeft < box.scrollLeft) box.scrollLeft = el.offsetLeft;
+    else if (el.offsetLeft + el.offsetWidth > box.scrollLeft + box.clientWidth) box.scrollLeft = el.offsetLeft + el.offsetWidth - box.clientWidth;
+  });
+
+  const tabButtons = () => [...(list?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
+
+  async function onKeyDown(e: KeyboardEvent) {
     const i = tabs.findIndex((t) => t.id === current);
     if (i < 0) return;
+    if (e.key === 'Delete') {
+      const tab = tabs[i]!;
+      if (!tab.closable) return;
+      e.preventDefault();
+      onClose(tab.id);
+      await tick();
+      // The tab is gone: keep the keyboard on the tab bar unless a dialog took the focus.
+      if (document.activeElement === document.body || document.activeElement === null) tabButtons().find((b) => b.tabIndex === 0)?.focus();
+      return;
+    }
     let next = -1;
     if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
     else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
@@ -37,13 +69,21 @@
     else if (e.key === 'End') next = tabs.length - 1;
     if (next < 0 || next === i) return;
     e.preventDefault();
-    const id = tabs[next]!.id;
-    onSelect(id);
-    list?.querySelector<HTMLElement>(`#editor-tab-${id}`)?.focus();
+    onSelect(tabs[next]!.id);
+    tabButtons()[next]?.focus();
+  }
+
+  /** The browser's middle-click autoscroll would start on mousedown; the close happens on auxclick. */
+  function onMouseDown(e: MouseEvent) {
+    if (e.button === 1) e.preventDefault();
+  }
+  function onAuxClick(e: MouseEvent, tab: EditorTab) {
+    if (e.button !== 1 || !tab.closable) return;
+    e.preventDefault();
+    onClose(tab.id);
   }
 </script>
 
-<!-- Phase 1b adds more spec tabs here; each tab is a role=tab button with its own close button beside it. -->
 <div class="tabbar">
   {#if tabs.length > 0}
     <div class="tabs" role="tablist" aria-label="Editors" bind:this={list}>
@@ -53,19 +93,30 @@
           <button
             type="button"
             role="tab"
-            id="editor-tab-{tab.id}"
+            id={tabDomId(tab.id)}
             aria-selected={active}
-            aria-controls="editor-panel-{tab.id}"
+            aria-controls={active ? panelId(tab.id) : undefined}
             tabindex={active ? 0 : -1}
             title={tab.label}
             onclick={() => onSelect(tab.id)}
             onkeydown={onKeyDown}
+            onmousedown={onMouseDown}
+            onauxclick={(e) => onAuxClick(e, tab)}
           >
             <span class="label" class:file={tab.id === 'file'}>{tab.label}</span>
             {#if tab.modified}<span class="dirty" aria-label={tab.modifiedLabel} title={tab.modifiedLabel}>●</span>{/if}
           </button>
           {#if tab.closable}
-            <button type="button" class="close" aria-label="Close {tab.label}" title="Close {tab.label}" onclick={() => onClose(tab.id)}>
+            <button
+              type="button"
+              class="close"
+              tabindex={active ? 0 : -1}
+              aria-label="Close {tab.label}"
+              title="Close {tab.label}"
+              onclick={() => onClose(tab.id)}
+              onmousedown={onMouseDown}
+              onauxclick={(e) => onAuxClick(e, tab)}
+            >
               <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" focusable="false"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none" /></svg>
             </button>
           {/if}
@@ -85,6 +136,7 @@
     min-width: 0;
   }
   .tabs {
+    position: relative;
     display: flex;
     min-width: 0;
     overflow-x: auto;

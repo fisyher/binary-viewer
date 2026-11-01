@@ -4,7 +4,7 @@
   import { describeStatus, type ParseStatus } from '../../core/format-status';
   import { checkSpecText } from '../../core/spec-text';
   import { nodeByteRange, sanitizeText } from '../../core/tree-model';
-  import { SupersededError } from '../../worker/engine-client';
+  import { EngineFatalError, SupersededError } from '../../worker/engine-client';
   import type { ParseSnapshot } from '../../worker/protocol';
   import Diagnostics from '../Diagnostics.svelte';
   import StructureTree from '../StructureTree.svelte';
@@ -25,11 +25,11 @@
     text: string;
     /** Name of the document open in the viewer; null = none (the pane is hidden). */
     docName: string | null;
-    /** The Formats view is showing. No parse is requested while it is not. */
+    /** This spec tab is showing. No parse is requested while it is not. */
     active: boolean;
     /** A save is in progress: no parse is requested. */
     busy: boolean;
-    /** Changes whenever the viewer finished an engine operation; the preview then re-parses. */
+    /** Changes whenever the open document changed; the preview then parses it again. */
     epoch: number;
     parseDraft: (text: string) => Promise<ParseSnapshot | null>;
     loadPage: (nodeId: number, start: number, count: number) => Promise<{ nodes: Node[]; lazy: LazyArray | null }>;
@@ -44,6 +44,7 @@
   let diagnostics = $state.raw<Diagnostic[]>([]);
   let status = $state<ParseStatus>({ state: 'idle' });
   let problems = $state.raw<string[]>([]);
+  let engineProblem = $state<string | null>(null); // the preview's engine worker failed (the viewer's is separate)
   let sel = $state.raw<{ node: Node | null; range: { start: number; end: number } | null; offset: number } | null>(null);
   let runId = 0;
 
@@ -72,6 +73,7 @@
   async function run(t: string) {
     const id = ++runId;
     sel = null; // a node of the previous parse
+    engineProblem = null;
     const c = checkSpecText(t);
     if (!c.valid) {
       root = null;
@@ -102,7 +104,8 @@
         return;
       }
       root = null;
-      problems = [e instanceof Error ? e.message : String(e)];
+      if (e instanceof EngineFatalError) engineProblem = e.message;
+      else problems = [e instanceof Error ? e.message : String(e)];
       status = { state: 'idle' };
     }
   }
@@ -134,6 +137,10 @@
           <p class="muted pad">Preview is off.</p>
         {:else if busy}
           <p class="muted pad">Waiting for the save to finish…</p>
+        {:else if engineProblem}
+          <div class="problems" role="alert" aria-label="Preview engine problem">
+            <p>The preview engine is not available: {sanitizeText(engineProblem, 300)}</p>
+          </div>
         {:else if problems.length > 0}
           <div class="problems" role="alert" aria-label="Draft problems">
             <p>The draft is not valid, so it cannot be previewed:</p>

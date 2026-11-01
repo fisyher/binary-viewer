@@ -68,7 +68,9 @@ const panels = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.panels 
 const entry = (c: HTMLElement, id: string) =>
   [...c.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === id)!;
 const fileTab = (c: HTMLElement) => c.querySelector<HTMLElement>('#editor-tab-file')!;
-const specTab = (c: HTMLElement) => c.querySelector<HTMLElement>('#editor-tab-spec')!;
+const specTab = (c: HTMLElement, id: string) => c.querySelector<HTMLElement>(`#editor-tab-spec_${id}`)!;
+/** Labels of the spec tabs in the tab bar, left to right. */
+const editorTabs = (c: HTMLElement) => [...c.querySelectorAll('[role="tab"][id^="editor-tab-spec_"]')].map((t) => t.querySelector('.label')!.textContent);
 const formatList = (c: HTMLElement) => c.querySelector<HTMLElement>('section[aria-label="Format library"]')!;
 
 describe('App: file tab / spec tab', () => {
@@ -82,7 +84,7 @@ describe('App: file tab / spec tab', () => {
     expect(spec!.classList.contains('hidden')).toBe(true);
     expect(spec!.hasAttribute('inert')).toBe(true);
     expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
-    expect(specTab(container)).toBeNull();
+    expect(specTab(container, 'draft')).toBeNull();
 
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
@@ -91,14 +93,14 @@ describe('App: file tab / spec tab', () => {
     expect(file!.hasAttribute('inert')).toBe(true);
     expect(spec!.classList.contains('hidden')).toBe(false);
     expect(spec!.hasAttribute('inert')).toBe(false);
-    expect(specTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(specTab(container, 'draft').getAttribute('aria-selected')).toBe('true');
     expect(fileTab(container).getAttribute('aria-selected')).toBe('false');
-    expect(specTab(container).textContent).toContain('Fmt draft');
+    expect(specTab(container, 'draft').textContent).toContain('Fmt draft');
 
     await fireEvent.click(fileTab(container));
     expect(file!.classList.contains('hidden')).toBe(false);
     expect(spec!.classList.contains('hidden')).toBe(true);
-    expect(specTab(container)).not.toBeNull(); // still open, just not active
+    expect(specTab(container, 'draft')).not.toBeNull(); // still open, just not active
   });
 
   it('keeps the viewer document (same DOM, selection, edits) while a spec tab is active', async () => {
@@ -135,9 +137,9 @@ describe('App: file tab / spec tab', () => {
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
     const typed = area.value;
-    expect(within(specTab(container)).getByLabelText('Unsaved changes')).toBeTruthy();
+    expect(within(specTab(container, 'draft')).getByLabelText('Modified')).toBeTruthy();
     await fireEvent.click(fileTab(container));
-    await fireEvent.click(specTab(container));
+    await fireEvent.click(specTab(container, 'draft'));
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(typed);
     const ev = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(ev);
@@ -154,7 +156,7 @@ describe('App: file tab / spec tab', () => {
     await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
     await waitFor(() => expect(panels(container)[0]!.classList.contains('hidden')).toBe(false));
     expect(panels(container)[1]!.classList.contains('hidden')).toBe(true);
-    expect(specTab(container)).not.toBeNull();
+    expect(specTab(container, 'draft')).not.toBeNull();
   });
 
   it('closing the spec tab returns to the file tab', async () => {
@@ -165,39 +167,134 @@ describe('App: file tab / spec tab', () => {
     await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
     await fireEvent.click(entry(container, 'draft'));
     await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
-    expect(specTab(container)).toBeNull();
+    expect(specTab(container, 'draft')).toBeNull();
     expect(queryByRole('button', { name: 'Close Fmt draft' })).toBeNull();
     expect(panels(container)[0]!.classList.contains('hidden')).toBe(false);
     expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
     expect(queryByRole('button', { name: 'Close a.bin' })).toBeNull(); // the file tab cannot be closed
   });
 
-  it('opening another spec replaces the spec tab; unsaved changes ask first', async () => {
+  it('opening another spec opens a second tab next to the first; no prompt, drafts stay per tab', async () => {
     const lib = await mkLib([['draft', specText('draft')], ['other', specText('other')]]);
-    const { container, getByRole, findByLabelText, getByText, queryByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container, getByRole, findByLabelText, queryByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
     await fireEvent.click(entry(container, 'draft'));
-    expect(specTab(container).textContent).toContain('Fmt draft');
-    // a clean spec is replaced without asking
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
+    // a modified spec is not replaced: the next one opens beside it, without asking
     await fireEvent.click(entry(container, 'other'));
     expect(queryByRole('alertdialog')).toBeNull();
-    expect(container.querySelectorAll('[role="tab"][id^="editor-tab"]').length).toBe(1);
-    expect(specTab(container).textContent).toContain('Fmt other');
+    expect(editorTabs(container)).toEqual(['Fmt draft', 'Fmt other']);
+    expect(specTab(container, 'other').getAttribute('aria-selected')).toBe('true');
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toContain('"Fmt other"');
+    expect(within(specTab(container, 'draft')).getByLabelText('Modified')).toBeTruthy();
+    expect(within(specTab(container, 'other')).queryByLabelText('Modified')).toBeNull();
 
+    // back to the first one: its unsaved text is still there
+    await fireEvent.click(specTab(container, 'draft'));
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toContain('Fmt draft edited');
+    // picking an open spec in the side bar activates its tab instead of opening another
+    await fireEvent.click(entry(container, 'other'));
+    expect(editorTabs(container)).toEqual(['Fmt draft', 'Fmt other']);
+    expect(specTab(container, 'other').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('only the active spec tab has mounted editors', async () => {
+    const lib = await mkLib([['draft', specText('draft')], ['other', specText('other')]]);
+    const { container, getByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
+    await fireEvent.click(entry(container, 'draft'));
+    await fireEvent.click(entry(container, 'other'));
+    expect(container.querySelectorAll('textarea[aria-label="Spec JSON"]')).toHaveLength(1);
+    expect(container.querySelectorAll('section[aria-label="Format details"]')).toHaveLength(1);
+  });
+
+  it('closing a spec tab activates its right neighbour, else the left one, else the file tab', async () => {
+    const lib = await mkLib([['a', specText('a')], ['b', specText('b')], ['c', specText('c')]]);
+    const { container, getByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'c')).toBeTruthy());
+    for (const id of ['a', 'b', 'c']) await fireEvent.click(entry(container, id));
+    await fireEvent.click(specTab(container, 'a'));
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt a' }));
+    expect(editorTabs(container)).toEqual(['Fmt b', 'Fmt c']);
+    expect(specTab(container, 'b').getAttribute('aria-selected')).toBe('true'); // the right neighbour
+    await fireEvent.click(specTab(container, 'c'));
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt c' }));
+    expect(specTab(container, 'b').getAttribute('aria-selected')).toBe('true'); // no right one: the left
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt b' }));
+    expect(editorTabs(container)).toEqual([]);
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(panels(container)[0]!.classList.contains('hidden')).toBe(false);
+  });
+
+  it('closing a tab in the background leaves the shown tab alone; a middle click closes too', async () => {
+    const lib = await mkLib([['a', specText('a')], ['b', specText('b')]]);
+    const { container, getByRole } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await pick(container, new File([Uint8Array.from([1, 2])], 'a.bin'));
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'b')).toBeTruthy());
+    await fireEvent.click(entry(container, 'a'));
+    await fireEvent.click(entry(container, 'b'));
+    await fireEvent.click(fileTab(container));
+    await fireEvent(specTab(container, 'a'), new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }));
+    expect(editorTabs(container)).toEqual(['Fmt b']);
+    expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
+    expect(panels(container)[0]!.classList.contains('hidden')).toBe(false);
+  });
+
+  it('Delete on a focused spec tab closes it, after the prompt when it has unsaved changes', async () => {
+    const lib = await mkLib([['a', specText('a')]]);
+    const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'a')).toBeTruthy());
+    await fireEvent.click(entry(container, 'a'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
-    await fireEvent.input(area, { target: { value: area.value.replace('Fmt other', 'Fmt other edited') } });
-    await fireEvent.click(entry(container, 'draft'));
-    expect(getByRole('alertdialog')).toBeTruthy();
-    expect(getByText(/has unsaved changes/)).toBeTruthy();
-    await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
-    expect(specTab(container).textContent).toContain('Fmt other');
-    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toContain('Fmt other edited');
-
-    await fireEvent.click(entry(container, 'draft'));
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt a', 'Fmt a edited') } });
+    await fireEvent.keyDown(specTab(container, 'a'), { key: 'Delete' });
+    expect(getByRole('alertdialog').textContent).toContain('has unsaved changes');
     await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
-    expect(specTab(container).textContent).toContain('Fmt draft');
-    expect(container.querySelectorAll('[role="tab"][id^="editor-tab"]').length).toBe(1);
+    expect(editorTabs(container)).toEqual([]);
+  });
+
+  it('beforeunload is armed while any one of several spec tabs has unsaved changes', async () => {
+    const lib = await mkLib([['a', specText('a')], ['b', specText('b')]]);
+    const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'b')).toBeTruthy());
+    const armed = () => {
+      const ev = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    };
+    await fireEvent.click(entry(container, 'a'));
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt a', 'Fmt a edited') } });
+    await fireEvent.click(entry(container, 'b')); // the dirty one is now in the background
+    expect(armed()).toBe(true);
+    await fireEvent.click(getByRole('button', { name: 'Close Fmt b' }));
+    expect(armed()).toBe(true); // a is active again, still dirty
+    await fireEvent.input(container.querySelector('textarea') as HTMLTextAreaElement, { target: { value: lib.get('a')!.text } });
+    expect(armed()).toBe(false);
+  });
+
+  it('marks open and modified specs in the Formats list', async () => {
+    const lib = await mkLib([['a', specText('a')], ['b', specText('b')]]);
+    const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    await fireEvent.click(getByRole('button', { name: 'Formats' }));
+    await waitFor(() => expect(entry(container, 'b')).toBeTruthy());
+    expect(entry(container, 'a').classList.contains('open')).toBe(false);
+    await fireEvent.click(entry(container, 'a'));
+    const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
+    await fireEvent.input(area, { target: { value: area.value.replace('Fmt a', 'Fmt a edited') } });
+    await fireEvent.click(entry(container, 'b'));
+    expect(entry(container, 'a').classList.contains('open')).toBe(true);
+    expect(entry(container, 'a').classList.contains('selected')).toBe(false);
+    expect(within(entry(container, 'a')).getByLabelText('Unsaved changes')).toBeTruthy();
+    expect(within(entry(container, 'b')).queryByLabelText('Unsaved changes')).toBeNull();
   });
 
   it('a spec removed behind the open tab (e.g. by folder sync) closes the tab and clears its draft state', async () => {
@@ -209,10 +306,10 @@ describe('App: file tab / spec tab', () => {
     await fireEvent.click(entry(container, 'draft'));
     const area = (await findByLabelText('Spec JSON')) as HTMLTextAreaElement;
     await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
-    expect(specTab(container)).not.toBeNull();
+    expect(specTab(container, 'draft')).not.toBeNull();
 
     await lib.delete('draft'); // removed outside the UI
-    await waitFor(() => expect(specTab(container)).toBeNull());
+    await waitFor(() => expect(specTab(container, 'draft')).toBeNull());
     expect(panels(container)[0]!.classList.contains('hidden')).toBe(false); // back on the file tab
     const ev = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(ev);
@@ -221,7 +318,7 @@ describe('App: file tab / spec tab', () => {
     await lib.create('draft'); // the id reappearing must not resurrect the tab
     await lib.save('draft', specText('draft'));
     await waitFor(() => expect(entry(container, 'draft')).toBeTruthy());
-    expect(specTab(container)).toBeNull();
+    expect(specTab(container, 'draft')).toBeNull();
   });
 
   it('closing a spec tab with unsaved changes asks first', async () => {
@@ -234,10 +331,10 @@ describe('App: file tab / spec tab', () => {
     await fireEvent.input(area, { target: { value: area.value.replace('Fmt draft', 'Fmt draft edited') } });
     await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
     await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
-    expect(specTab(container)).not.toBeNull();
+    expect(specTab(container, 'draft')).not.toBeNull();
     await fireEvent.click(getByRole('button', { name: 'Close Fmt draft' }));
     await fireEvent.click(within(getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
-    expect(specTab(container)).toBeNull();
+    expect(specTab(container, 'draft')).toBeNull();
   });
 });
 

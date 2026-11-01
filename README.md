@@ -75,7 +75,7 @@ Both workflows can also be started by hand from the **Actions** tab.
 2. Browse the bytes in the hex view, or type an offset (hex or decimal) in **Go to**.
 3. If the format is recognized, the **Structure** side bar shows the decoded tree. Click a node to select its bytes, and use the **→** buttons to jump to the data an offset points to. Parse problems are listed in the **Problems** panel under the hex view.
 4. Type over bytes to edit them, then **Save** or **Save As…**.
-5. Choose **Formats** in the activity bar (the left strip) to browse the built-in specs and your own. Picking one opens it in a second editor tab, next to the file, with its Builder, JSON and Docs views and a live preview on the open file; close the tab with its **×** to go back to the file.
+5. Choose **Formats** in the activity bar (the left strip) to browse the built-in specs and your own. Picking one opens it in its own editor tab, next to the file, with its Builder, JSON and Docs views and a live preview on the open file. You can keep several spec tabs open: each remembers its unsaved text (a dot marks a modified tab, and the Formats list marks open and modified specs), and you can switch between them and the file, or keep using the Structure side bar, while a preview runs. Close a tab with its **×**, a middle click or <kbd>Delete</kbd> on the focused tab (it asks first if the spec has unsaved changes).
 6. Drag the dividers (or focus one and press the arrow keys) to resize the side bar, the inspector and the Problems panel; double-click a divider to reset it. Click the active activity bar item to hide the side bar. The theme button at the right of the status bar cycles System, Light and Dark.
 
 ### Keyboard shortcuts

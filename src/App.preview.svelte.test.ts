@@ -6,6 +6,7 @@ import type { SaveHandle } from './core/save';
 import { SpecLibrary } from './core/spec-library';
 import { createMemoryStore } from './core/spec-store';
 import { builtins, specText } from './test/spec-fixtures';
+import { createClient } from './worker/engine-client';
 import { createInlineClient } from './worker/inline-client';
 
 beforeAll(() => {
@@ -44,11 +45,15 @@ async function mkLib(seed: Array<[string, string]> = []) {
 
 function counting() {
   const client = createInlineClient();
-  const calls = { drafts: [] as string[], parses: [] as Array<string | null> };
+  const calls = { drafts: [] as string[], parses: [] as Array<string | null>, opens: [] as Blob[], disposed: 0 };
   const parseDraft = client.parseDraft.bind(client);
   const parse = client.parse.bind(client);
+  const open = client.open.bind(client);
+  const dispose = client.dispose.bind(client);
   client.parseDraft = (t) => (calls.drafts.push(t), parseDraft(t));
   client.parse = (id) => (calls.parses.push(id), parse(id));
+  client.open = (f, n) => (f && calls.opens.push(f), open(f, n));
+  client.dispose = () => (calls.disposed++, dispose());
   return { client, calls };
 }
 
@@ -67,10 +72,15 @@ const names = (root: Element) => [...root.querySelectorAll('[role="treeitem"] .n
 const preview = (c: HTMLElement) => c.querySelector('section[aria-label="Preview on open file"]') as HTMLElement | null;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// The viewer and the spec previews run on separate engine clients (two workers in the app).
 async function setup(seed: Array<[string, string]> = [['mine', mine], ['other', other]]) {
   const lib = await mkLib(seed);
-  const c = counting();
-  const r = render(App, { createClient: () => c.client, createLibrary: () => lib });
+  const v = counting();
+  const p = counting();
+  const made = { preview: 0 };
+  const r = render(App, { createClient: () => v.client, createPreviewClient: () => (made.preview++ === 0 ? p.client : counting().client), createLibrary: () => lib });
+  // `calls.drafts` are the preview client's parseDraft calls, `calls.parses` the viewer client's parse calls.
+  const c = { client: v.client, calls: { ...v.calls, drafts: p.calls.drafts }, viewer: v.calls, pclient: p.client, preview: p.calls, made };
   await pick(r.container, file());
   const select = (await r.findByLabelText('Format')) as HTMLSelectElement;
   if (seed.length > 0) {
@@ -102,17 +112,28 @@ describe('Preview on open file', () => {
     expect(calls.drafts).toHaveLength(2);
   });
 
-  it('the side-bar tree is inert while a draft preview owns the worker, and live again on the file tab', async () => {
-    const { container, toFormats, calls } = await setup();
+  it('the side-bar tree stays live while a spec preview runs on its own engine: the viewer worker gets no parseDraft', async () => {
+    const { container, toFormats, calls, viewer, preview: pcalls, made, client, pclient } = await setup();
     const wrap = () => container.querySelector('.tree-wrap')!;
     expect(wrap().hasAttribute('inert')).toBe(false);
+    expect(made.preview).toBe(0); // created lazily, with the first preview
+    const parsesBefore = viewer.parses.length;
+    const rootRow = viewerTree(container).querySelector('[role="treeitem"]');
     await toFormats('other');
     await waitFor(() => expect(calls.drafts).toHaveLength(1), T);
-    await waitFor(() => expect(wrap().hasAttribute('inert')).toBe(true), T);
-    expect(container.querySelector('.views .quiet')!.textContent).toContain('Paused while a format preview is running');
-    await fireEvent.click(fileTab(container));
-    await waitFor(() => expect(wrap().hasAttribute('inert')).toBe(false), T);
-    expect(container.querySelector('.views .quiet')).toBeNull();
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    expect(made.preview).toBe(1);
+    expect(client).not.toBe(pclient);
+    expect(wrap().hasAttribute('inert')).toBe(false);
+    expect(container.querySelector('.views .quiet')).toBeNull(); // no "paused" note any more
+    // The viewer's tree is the very same DOM and still shows the viewer's format, never the draft's.
+    expect(viewerTree(container).querySelector('[role="treeitem"]')).toBe(rootRow);
+    expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest']));
+    expect(names(viewerTree(container))).not.toContain('zzz');
+    expect(viewer.parses.length).toBe(parsesBefore);
+    expect(viewer.drafts).toHaveLength(0); // the viewer's worker never saw a draft
+    expect(pcalls.opens).toHaveLength(1); // the preview worker opened the document itself
+    expect(await pcalls.opens[0]!.arrayBuffer()).toEqual(await (await file().arrayBuffer()));
   });
 
   it('shows validation errors for an invalid draft and makes no parseDraft call', async () => {
@@ -177,34 +198,94 @@ describe('Preview on open file', () => {
     expect(fileTab(container).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('switching back to the Viewer re-parses the viewer format: FormatBar and tree agree', async () => {
-    const { container, toFormats, select, calls, getByRole } = await setup();
+  it('switching back to the Viewer does not re-parse it: the viewer tree was never touched', async () => {
+    const { container, toFormats, select, viewer, getByRole } = await setup();
+    const rootRow = viewerTree(container).querySelector('[role="treeitem"]');
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
-    const parsesBefore = calls.parses.length;
+    const parsesBefore = viewer.parses.length;
+    const opensBefore = viewer.opens.length;
     await fireEvent.click(fileTab(container));
-    await waitFor(() => expect(calls.parses.length).toBe(parsesBefore + 1), T);
-    expect(calls.parses[calls.parses.length - 1]).toBe('mine');
-    await waitFor(() => expect(names(viewerTree(container))).toContain('rest'), T);
+    await sleep(100);
+    expect(viewer.parses.length).toBe(parsesBefore);
+    expect(viewer.opens.length).toBe(opensBefore);
+    expect(viewerTree(container).querySelector('[role="treeitem"]')).toBe(rootRow); // same DOM: no refresh happened
+    expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest']));
     expect(names(viewerTree(container))).not.toContain('zzz');
     expect(select.value).toBe('mine');
-    // Without a preview in between there is nothing to restore.
-    const n = calls.parses.length;
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await fireEvent.click(fileTab(container));
     await sleep(50);
-    expect(calls.parses.length).toBe(n);
+    expect(viewer.parses.length).toBe(parsesBefore);
   });
 
-  it('a viewer tree expand after the round trip is served from the viewer parse, not the draft', async () => {
-    const { container, toFormats, getByRole } = await setup();
+  it('a viewer tree expand while and after a preview is served from the viewer parse, not the draft', async () => {
+    const { container, toFormats } = await setup();
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
-    await fireEvent.click(fileTab(container));
-    await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
     const row = [...viewerTree(container).querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === 'rest')!;
-    await fireEvent.click(row);
+    await fireEvent.click(row); // the side bar is live even though the spec tab is showing
     await waitFor(() => expect(container.querySelector('.b.sel[data-o="4"]')).not.toBeNull(), T);
+    expect(names(preview(container)!)).toContain('zzz');
+  });
+
+  it('the preview worker opens the current document again after an edit, and previews the edited bytes', async () => {
+    const { container, toFormats, preview: pcalls, viewer, calls } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    expect(pcalls.opens).toHaveLength(1);
+    await fireEvent.click(fileTab(container));
+    await editByte(container, 5, 'aa');
+    await waitFor(() => expect(viewer.opens.length).toBeGreaterThan(1), T); // the viewer's debounced re-open
+    expect(pcalls.opens).toHaveLength(1);
+    await fireEvent.click(container.querySelector<HTMLElement>('#editor-tab-spec_other')!);
+    await waitFor(() => expect(pcalls.opens).toHaveLength(2), T);
+    await waitFor(() => expect(calls.drafts.length).toBeGreaterThan(1), T);
+    const bytes = new Uint8Array(await pcalls.opens[1]!.arrayBuffer());
+    expect(bytes[5]).toBe(0xaa);
+    expect(bytes.length).toBe(8);
+  });
+
+  it('opening a different document re-opens it on the preview worker', async () => {
+    const { container, toFormats, preview: pcalls } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    await pick(container, new File([Uint8Array.from([1, 2, 3, 4, 5, 6])], 'y.bin'));
+    await fireEvent.click(container.querySelector<HTMLElement>('#editor-tab-spec_other')!);
+    await waitFor(() => expect(pcalls.opens).toHaveLength(2), T);
+    expect((await pcalls.opens[1]!.arrayBuffer()).byteLength).toBe(6);
+  });
+
+  it('with several spec tabs only the active one previews; switching supersedes and re-runs for the new tab', async () => {
+    const { container, toFormats, calls, preview: pcalls } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    await toFormats('mine');
+    expect(container.querySelectorAll('section[aria-label="Preview on open file"]')).toHaveLength(1);
+    await waitFor(() => expect(names(preview(container)!)).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
+    expect(names(preview(container)!)).not.toContain('zzz');
+    await fireEvent.click(container.querySelector<HTMLElement>('#editor-tab-spec_other')!);
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    expect(names(preview(container)!)).not.toContain('sig');
+    expect(calls.drafts).toHaveLength(3);
+    expect(pcalls.opens).toHaveLength(1); // same document: the worker keeps it
+    // on the file tab no preview parse is requested
+    await fireEvent.click(fileTab(container));
+    await sleep(700);
+    expect(calls.drafts).toHaveLength(3);
+  });
+
+  it('releases the preview worker when the last spec tab closes and starts a new one for the next preview', async () => {
+    const { container, toFormats, preview: pcalls, made, getByRole } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    expect(pcalls.disposed).toBe(0);
+    await fireEvent.click(getByRole('button', { name: 'Close Other' }));
+    expect(pcalls.disposed).toBe(1);
+    expect(made.preview).toBe(1);
+    await toFormats('other');
+    await waitFor(() => expect(made.preview).toBe(2), T);
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
   });
 
   it('never parses a draft while a save is in progress, then previews once it finished', async () => {
@@ -330,7 +411,7 @@ describe('Preview: races and stale state', () => {
   it('a worker error that arrives after a save started is dropped and the stale tree is cleared', async () => {
     const g = gatedHandle();
     (window as unknown as Record<string, unknown>).showSaveFilePicker = async () => g.handle;
-    const { container, toFormats, client, json } = await setup();
+    const { container, toFormats, pclient: client, json } = await setup();
     await editByte(container, 5, 'aa');
     await waitFor(() => expect(container.querySelector('[aria-label="Modified"]')).not.toBeNull(), T);
     await toFormats('other');
@@ -368,7 +449,7 @@ describe('Preview: races and stale state', () => {
     expect(container.querySelector('.b[data-o="5"]')!.textContent!.toLowerCase()).toBe('aa');
   });
 
-  it('viewer tree loads, locate and diagnostic jumps never reach the worker while a draft owns its slot', async () => {
+  it('viewer tree loads, locate and tints keep reaching the viewer worker while a preview is active, and never the preview worker', async () => {
     const big = specText('mine', {
       name: 'Mine',
       detect: [{ at: 0, bytes: 'DE AD BE EF' }],
@@ -376,30 +457,225 @@ describe('Preview: races and stale state', () => {
     });
     const lib = await mkLib([['mine', big], ['other', other]]);
     const c = counting();
-    const counts = { expand: 0, nodeAt: 0, nodeById: 0, ranges: 0 };
-    for (const k of Object.keys(counts) as Array<keyof typeof counts>) {
-      const orig = (c.client[k] as (...a: never[]) => Promise<unknown>).bind(c.client);
-      (c.client as unknown as Record<string, unknown>)[k] = (...a: never[]) => (counts[k]++, orig(...a));
-    }
-    const r = render(App, { createClient: () => c.client, createLibrary: () => lib });
+    const p = counting();
+    const watch = (cl: typeof c.client) => {
+      const counts = { expand: 0, nodeAt: 0, nodeById: 0, ranges: 0 };
+      for (const k of Object.keys(counts) as Array<keyof typeof counts>) {
+        const orig = (cl[k] as (...a: never[]) => Promise<unknown>).bind(cl);
+        (cl as unknown as Record<string, unknown>)[k] = (...a: never[]) => (counts[k]++, orig(...a));
+      }
+      return counts;
+    };
+    const viewerCounts = watch(c.client);
+    const r = render(App, { createClient: () => c.client, createPreviewClient: () => p.client, createLibrary: () => lib });
     await pick(r.container, new File([Uint8Array.from([0xde, 0xad, 0xbe, 0xef, ...new Array<number>(3000).fill(1)])], 'big.bin'));
     await waitFor(() => expect(names(viewerTree(r.container))).toContain('arr'), T);
     await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
     const entry = [...r.container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'other')!;
     await fireEvent.click(entry);
     await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
-    const before = { ...counts };
+    expect(c.calls.drafts).toHaveLength(0);
+    const previewCounts = watch(p.client);
+    const before = { ...viewerCounts };
 
     const viewer = viewerTree(r.container);
-    const filePanel = panels(r.container)[0]!;
     const byte = r.container.querySelector('.b[data-o="1"]')!;
     await fireEvent.mouseDown(byte); // locate
     await fireEvent.mouseUp(byte);
+    await waitFor(() => expect(viewerCounts.nodeAt).toBeGreaterThan(before.nodeAt), T);
     const arrRow = [...viewer.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((x) => x.querySelector('.nm')?.textContent === 'arr')!;
     await fireEvent.click(arrRow.querySelector('[data-twisty]')!); // loadPage
-    const item = filePanel.querySelector<HTMLButtonElement>('.diag .item'); // the Problems panel is always open
-    if (item) await fireEvent.click(item); // jumpToDiagnostic
-    await sleep(300);
-    expect(counts).toEqual(before);
+    await waitFor(() => expect(viewerCounts.expand).toBeGreaterThan(before.expand), T);
+    expect(previewCounts).toEqual({ expand: 0, nodeAt: 0, nodeById: 0, ranges: 0 });
+    expect(c.calls.drafts).toHaveLength(0);
+  });
+
+  it('a preview worker that fails fatally shows the error in the preview; the viewer is unaffected', async () => {
+    const lib = await mkLib([['mine', mine], ['other', other]]);
+    const c = counting();
+    let fail: (m: string) => void = () => {};
+    const dead = createClient({
+      post: () => fail('preview worker crashed'),
+      onMessage: () => {},
+      onError: (cb) => (fail = cb),
+      close: () => {},
+    });
+    const r = render(App, { createClient: () => c.client, createPreviewClient: () => dead, createLibrary: () => lib });
+    await pick(r.container, file());
+    await waitFor(() => expect(names(viewerTree(r.container))).toContain('sig'), T);
+    await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
+    await fireEvent.click([...r.container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'other')!);
+    await waitFor(() => expect(within(preview(r.container)!).getByRole('alert').textContent).toContain('preview worker crashed'), T);
+    // The viewer still has its tree, format and no error, and keeps working.
+    expect(names(viewerTree(r.container))).toEqual(expect.arrayContaining(['sig', 'rest']));
+    expect(r.container.textContent).not.toContain('Format engine unavailable');
+    await fireEvent.click(fileTab(r.container));
+    const row = [...viewerTree(r.container).querySelectorAll<HTMLElement>('[role="treeitem"]')].find((x) => x.querySelector('.nm')?.textContent === 'rest')!;
+    await fireEvent.click(row);
+    await waitFor(() => expect(r.container.querySelector('.b.sel[data-o="4"]')).not.toBeNull(), T);
+    await editByte(r.container, 5, 'aa');
+    await waitFor(() => expect(c.calls.parses.length).toBeGreaterThan(1), T);
+    expect(r.container.textContent).not.toContain('Format engine unavailable');
+  });
+
+  it('a viewer worker that fails fatally does not stop the previews', async () => {
+    const lib = await mkLib([['mine', mine], ['other', other]]);
+    const p = counting();
+    let fail: (m: string) => void = () => {};
+    const dead = createClient({
+      post: () => fail('viewer worker crashed'),
+      onMessage: () => {},
+      onError: (cb) => (fail = cb),
+      close: () => {},
+    });
+    const r = render(App, { createClient: () => dead, createPreviewClient: () => p.client, createLibrary: () => lib });
+    await pick(r.container, file());
+    await waitFor(() => expect(r.container.textContent).toContain('Format engine unavailable: viewer worker crashed'), T);
+    await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
+    await fireEvent.click([...r.container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === 'other')!);
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
+  });
+
+  it('disposes both engine clients when the app is destroyed', async () => {
+    const { toFormats, container, unmount, viewer, preview: pcalls } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    expect(viewer.disposed).toBe(0);
+    expect(pcalls.disposed).toBe(0);
+    unmount();
+    expect(viewer.disposed).toBe(1);
+    expect(pcalls.disposed).toBe(1);
+  });
+
+  it('never creates a preview worker if no spec tab is ever opened', async () => {
+    const { made, unmount, preview: pcalls } = await setup();
+    expect(made.preview).toBe(0);
+    unmount();
+    expect(pcalls.disposed).toBe(0);
+  });
+});
+
+describe('Preview worker: recovery, slow opens, saves', () => {
+  const openSpec = async (r: { container: HTMLElement; getByRole: (role: string, o?: { name: string }) => HTMLElement }, id: string) => {
+    await fireEvent.click(r.getByRole('button', { name: 'Formats' }));
+    await fireEvent.click([...r.container.querySelectorAll<HTMLButtonElement>('button.entry')].find((b) => b.querySelector('.id')?.textContent === id)!);
+  };
+  const fieldSpec = (name: string) => specText('other', { name: 'Other', types: { root: { fields: [{ name, type: 'u4' }] } } });
+
+  it('a preview worker that died is replaced on the next preview request, once per request', async () => {
+    const lib = await mkLib([['mine', mine], ['other', other]]);
+    const c = counting();
+    let made = 0;
+    let fail: (m: string) => void = () => {};
+    const factory = () => {
+      if (++made > 1) return counting().client;
+      return createClient({ post: () => fail('preview worker crashed'), onMessage: () => {}, onError: (cb) => (fail = cb), close: () => {} });
+    };
+    const r = render(App, { createClient: () => c.client, createPreviewClient: factory, createLibrary: () => lib });
+    await pick(r.container, file());
+    await waitFor(() => expect(names(viewerTree(r.container))).toContain('sig'), T);
+    await openSpec(r, 'other');
+    await waitFor(() => expect(within(preview(r.container)!).getByRole('alert').textContent).toContain('preview worker crashed'), T);
+    expect(made).toBe(1); // no respawn loop: nothing re-triggers the pane by itself
+    await sleep(700);
+    expect(made).toBe(1);
+    const area = r.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Spec JSON"]')!;
+    await fireEvent.input(area, { target: { value: fieldSpec('fresh') } }); // the user edits: a new request
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('fresh'), T);
+    expect(made).toBe(2);
+    expect(within(preview(r.container)!).queryByRole('alert')).toBeNull();
+  });
+
+  it('a late fatal report from a client that was already released does not poison the next one', async () => {
+    const lib = await mkLib([['mine', mine], ['other', other]]);
+    const fatalCbs: Array<(m: string) => void> = [];
+    const factory = () => {
+      const cl = createInlineClient();
+      cl.onFatal = (cb) => void fatalCbs.push(cb);
+      return cl;
+    };
+    const r = render(App, { createClient: () => createInlineClient(), createPreviewClient: factory, createLibrary: () => lib });
+    await pick(r.container, file());
+    await openSpec(r, 'other');
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
+    await fireEvent.click(r.getByRole('button', { name: 'Close Other' }));
+    await openSpec(r, 'other');
+    await waitFor(() => expect(fatalCbs).toHaveLength(2), T);
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
+    fatalCbs[0]!('late crash of the old worker');
+    const area = r.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Spec JSON"]')!;
+    await fireEvent.input(area, { target: { value: fieldSpec('after') } });
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('after'), T);
+    expect(within(preview(r.container)!).queryByRole('alert')).toBeNull();
+  });
+
+  it('requests that arrive while open() is still running wait for it instead of restarting it', async () => {
+    const lib = await mkLib([['mine', mine], ['other', other]]);
+    const p = counting();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => (release = res));
+    const realOpen = p.client.open.bind(p.client);
+    let opens = 0;
+    p.client.open = (f, n) => (opens++, gate.then(() => realOpen(f, n)));
+    const r = render(App, { createClient: () => createInlineClient(), createPreviewClient: () => p.client, createLibrary: () => lib });
+    await pick(r.container, file());
+    await openSpec(r, 'other');
+    await waitFor(() => expect(opens).toBe(1), T);
+    const area = r.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Spec JSON"]')!;
+    for (const n of ['t1', 't2', 't3']) {
+      await fireEvent.input(area, { target: { value: fieldSpec(n) } });
+      await sleep(650); // each edit becomes a preview request while the open is pending
+    }
+    expect(opens).toBe(1);
+    expect(p.calls.drafts).toHaveLength(0);
+    release();
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('t3'), T);
+    expect(opens).toBe(1);
+  });
+
+  it('the preview worker re-opens the file after a successful in-place save replaced the base', async () => {
+    const g = gatedHandle();
+    (window as unknown as Record<string, unknown>).showSaveFilePicker = async () => g.handle;
+    const { container, toFormats, preview: pcalls } = await setup();
+    await toFormats('other');
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+    await fireEvent.click(fileTab(container));
+    await editByte(container, 5, 'aa');
+    await fireEvent.click(container.querySelector<HTMLElement>('#editor-tab-spec_other')!);
+    await waitFor(() => expect(pcalls.opens).toHaveLength(2), T); // the edit
+    await fireEvent.click(fileTab(container));
+    await fireEvent.click([...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!);
+    g.release();
+    await waitFor(() => expect(container.querySelector('[aria-label="Modified"]')).toBeNull(), T);
+    await fireEvent.click(container.querySelector<HTMLElement>('#editor-tab-spec_other')!);
+    await waitFor(() => expect(pcalls.opens).toHaveLength(3), T); // same bytes, but a new base file
+    expect(new Uint8Array(await pcalls.opens[2]!.arrayBuffer())[5]).toBe(0xaa);
+    await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
+  });
+
+  it('a Problems-panel jump keeps working through the viewer worker while a spec tab is active', async () => {
+    const bad = specText('mine', {
+      name: 'Mine',
+      detect: [{ at: 0, bytes: 'DE AD BE EF' }],
+      types: { root: { fields: [{ name: 'sig', type: 'u4', expect: 1 }, { name: 'rest', type: 'u1' }] } },
+    });
+    const lib = await mkLib([['mine', bad], ['other', other]]);
+    const v = counting();
+    const p = counting();
+    let located = 0;
+    for (const k of ['nodeAt', 'nodeById'] as const) {
+      const orig = v.client[k].bind(v.client);
+      v.client[k] = (n: number) => (located++, orig(n));
+    }
+    const r = render(App, { createClient: () => v.client, createPreviewClient: () => p.client, createLibrary: () => lib });
+    await pick(r.container, file());
+    await waitFor(() => expect(r.container.querySelector('.diag .item')).not.toBeNull(), T);
+    await openSpec(r, 'other');
+    await waitFor(() => expect(names(preview(r.container)!)).toContain('zzz'), T);
+    const before = located;
+    await fireEvent.click(r.container.querySelector('.diag .item')!);
+    await waitFor(() => expect(located).toBeGreaterThan(before), T);
+    expect(p.calls.drafts.length).toBeGreaterThan(0);
+    expect(v.calls.drafts).toHaveLength(0);
   });
 });

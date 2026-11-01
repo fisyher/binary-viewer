@@ -45,7 +45,7 @@
   } from './ui/prefs';
   import ActivityBar from './ui/shell/ActivityBar.svelte';
   import BottomPanel from './ui/shell/BottomPanel.svelte';
-  import EditorTabs, { type EditorTab } from './ui/shell/EditorTabs.svelte';
+  import EditorTabs, { tabDomId, type EditorTab } from './ui/shell/EditorTabs.svelte';
   import GoTo from './ui/shell/GoTo.svelte';
   import Resizer from './ui/shell/Resizer.svelte';
   import SideBar from './ui/shell/SideBar.svelte';
@@ -60,11 +60,17 @@
 
   let {
     createClient = createWorkerClient,
+    createPreviewClient = undefined,
     createLibrary = createAppLibrary,
-  }: { createClient?: () => EngineClient; createLibrary?: () => SpecLibrary } = $props();
+  }: {
+    createClient?: () => EngineClient;
+    /** Engine for the spec previews (a second worker); defaults to `createClient`, called a second time. */
+    createPreviewClient?: () => EngineClient;
+    createLibrary?: () => SpecLibrary;
+  } = $props();
 
-  // The active editor tab: the binary file or the spec being edited. Both panels stay mounted (the inactive one is
-  // hidden), so the open document, its scroll position and any unsaved spec draft survive switching.
+  // The shown editor tab: the binary file or the active spec tab. Both panels stay mounted (the hidden one is inert),
+  // so the open document, its scroll position and the active spec's editors survive switching between them.
   let activeTab = $state<'file' | 'spec'>('file');
   // About dialog; the opener button gets focus back when it closes.
   let aboutOpen = $state(false);
@@ -84,15 +90,14 @@
   }
   // The user's format library (IndexedDB + optional folder). Its valid specs are mirrored into the engine worker.
   const library: SpecLibrary = untrack(() => createLibrary());
-  // The format library UI state (open spec, unsaved draft, actions), shared by the side bar list and the spec tab.
+  // The format library UI state (open spec tabs, their unsaved drafts, actions), shared by the side bar list and the spec tabs.
   const formats = new FormatsState(library);
   formats.onOpened = () => (activeTab = 'spec');
-  formats.onClosed = () => showFileTab();
   $effect(() => formats.connect());
-  // A spec tab is open while a spec is selected; it is the active editor exactly when it was last picked. The Formats
-  // preview (parseDraft) and the draft-on-worker blocking below key off this.
-  const specOpen = $derived(formats.selected !== undefined);
+  // The active spec tab is mounted (its editors and preview); it is the shown editor exactly when it was last picked.
+  const specOpen = $derived(formats.activeSpecId !== null && formats.selected !== undefined);
   const specActive = $derived(activeTab === 'spec' && specOpen);
+  // When the last spec tab goes away (closed, deleted, removed by a folder sync) `specActive` turns false: the file shows.
   let rawChosen = false; // the user explicitly picked "None (raw)": library changes must not auto-select a format
   // What the worker already has: `id:rev` of the custom specs last sent (rev changes whenever a spec's text does).
   let sentSpecsKey = '';
@@ -155,7 +160,7 @@
   let nodeRange = $state.raw<{ start: number; end: number } | null>(null);
   let tints = $state.raw<RangeSegment[]>([]);
   let viewWindow: { start: number; end: number } | null = null;
-  let engineToken = 0; // bumped by every open/parse; results from older ones are ignored
+  let engineToken = 0; // bumped by every viewer open/parse; results from older ones are ignored
   let needsDetect = false; // startEngine was started but its detection result has not been applied yet
   let locateToken = 0;
   // ---- Shell layout and theme (remembered in local storage) ----
@@ -243,27 +248,11 @@
     problemsHeight = Math.max(PROBLEMS.min, px);
     saveSize('problemsHeight', problemsHeight);
   }
-  // Live preview of a format draft (Formats view). parseDraft REPLACES the worker's single result slot, so the viewer's
-  // own tree is no longer backed by the worker while `draftOnWorker` is true: every viewer call that needs the slot
-  // is blocked until the viewer re-parses (on switching back to it, or after any viewer engine operation).
-  let draftOnWorker = false;
-  let draftActive = $state(false); // reactive mirror of draftOnWorker, for the "paused" note
-  let viewerOps = 0; // viewer engine operations (open/parse) in flight; a draft parse never starts while > 0
-  let previewEpoch = $state(0); // bumped when the last viewer operation finishes: the preview then re-parses
-  const opStart = () => {
-    viewerOps++;
-    draftOnWorker = false;
-    draftActive = false;
-  };
-  const opEnd = () => {
-    if (--viewerOps === 0) previewEpoch++;
-  };
-
   $effect(() => saveLittleEndian(littleEndian));
 
   // Warn before leaving the page with unsaved edits; the listener exists only while dirty.
   $effect(() => {
-    if (!dirty && !formats.editorDirty) return;
+    if (!dirty && !formats.anyDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = true;
@@ -296,6 +285,7 @@
     requestTints.cancel();
     locate.cancel();
     client?.dispose();
+    previewClient?.dispose();
   });
 
   function resetStructure() {
@@ -314,15 +304,6 @@
   }
 
   async function startEngine(file: Blob, name: string) {
-    opStart();
-    try {
-      await startEngineInner(file, name);
-    } finally {
-      opEnd();
-    }
-  }
-
-  async function startEngineInner(file: Blob, name: string) {
     resetStructure();
     needsDetect = true;
     const token = engineToken;
@@ -353,15 +334,6 @@
 
   /** `keepView`: a re-parse of edited bytes; the old tree stays up until the new one arrives and keeps its view state. */
   async function runParse(specId: string | null, keepView = false) {
-    opStart();
-    try {
-      await runParseInner(specId, keepView);
-    } finally {
-      opEnd();
-    }
-  }
-
-  async function runParseInner(specId: string | null, keepView: boolean) {
     const token = ++engineToken;
     selectedSpec = specId;
     if (!keepView || specId === null) {
@@ -411,15 +383,6 @@
 
   /** `redetect`: the file was just saved under a (possibly new) name, so format detection may now apply. */
   async function reparse(redetect = false) {
-    opStart();
-    try {
-      await reparseInner(redetect);
-    } finally {
-      opEnd();
-    }
-  }
-
-  async function reparseInner(redetect: boolean) {
     clearTimeout(reparseTimer);
     const ed = editor;
     const base = baseBlob;
@@ -501,65 +464,131 @@
     }
   }
 
-  // ---- Format preview (see draftOnWorker above) ----
+  // ---- Format preview ----
+  // Spec previews run on their OWN engine worker (ADR-0012). parseDraft replaces a worker's single result slot, so on the
+  // viewer's worker it would blank the viewer's tree, tints and hex-to-tree lookups. The preview client is created on
+  // first use, opens the same document Blob as the viewer (shared, not copied), reopens it when the document changed,
+  // and is released when the last spec tab closes. It never gets the library's specs: a draft carries its own types.
+  let previewClient: EngineClient | null = null;
+  let previewFatal: string | null = null; // the preview worker died (or could not start); the viewer's worker is unaffected
+  type PreviewDoc = { ed: EditBuffer; base: Blob; version: number };
+  let previewOpened: (PreviewDoc & { client: EngineClient }) | null = null; // the document the preview worker has open
+  let previewOpening: (PreviewDoc & { client: EngineClient; done: Promise<void> }) | null = null; // an open() in flight, shared by later requests
+  let previewToken = 0; // bumped by every preview parse and by anything that invalidates a running one
+  let docEpoch = $state(0); // bumped when the open document changed: the preview parses it again
+
   /**
-   * Parse the open document with an unsaved draft. Goes through the same engineToken machinery as the viewer: it bumps
-   * the token (so a viewer result arriving later is ignored) and its own result is dropped if anything newer started.
-   * Refused (the pane waits for the next trigger) while there is no document, a save is running, or the viewer's own
-   * engine work is in flight, so a preview and a viewer parse can never interleave into a wrong tree.
+   * The preview worker. After a fatal failure the dead client is replaced by a fresh one on the next preview request;
+   * requests only come from user actions and edits (the pane never retries by itself), so this cannot respawn in a loop.
+   */
+  function getPreviewClient(): EngineClient {
+    if (previewFatal !== null) dropPreviewClient();
+    if (previewClient) return previewClient;
+    try {
+      const c = (createPreviewClient ?? createClient)();
+      c.onFatal((m) => {
+        if (previewClient === c) previewFatal = m; // a late report of a client that was already replaced is ignored
+      });
+      previewClient = c;
+    } catch (e) {
+      previewFatal = e instanceof Error ? e.message : String(e);
+      throw new EngineFatalError(previewFatal);
+    }
+    return previewClient;
+  }
+
+  function dropPreviewClient() {
+    previewClient?.dispose();
+    previewClient = null;
+    previewOpened = null;
+    previewOpening = null;
+    previewFatal = null;
+  }
+
+  /** Free the preview worker and the parse tree it holds (the last spec tab closed). The next preview starts a fresh one. */
+  function releasePreview() {
+    previewToken++;
+    dropPreviewClient();
+  }
+
+  $effect(() => {
+    if (formats.tabIds.length === 0) untrack(releasePreview);
+  });
+
+  /**
+   * Parse the open document with an unsaved draft on the preview worker. The worker gets the document's current Blob
+   * first (`editor.toBlob(baseBlob)`) unless it already has this exact state. A result is dropped when anything newer
+   * started (another preview parse, a save, another document). Refused while there is no document or a save is running
+   * (the file the worker would read is being replaced); the pane then waits for its next trigger.
    */
   async function parseDraftPreview(text: string): Promise<ParseSnapshot | null> {
-    const c = client;
-    if (!c || !editor || saving || unreadable || viewerOps > 0 || !specActive) throw new PreviewUnavailableError('the viewer is busy');
-    const token = ++engineToken;
-    draftOnWorker = true;
-    draftActive = true;
+    const ed = editor;
+    const base = baseBlob;
+    if (!ed || !base || saving || unreadable || !specActive) throw new PreviewUnavailableError('no document is ready');
+    const token = ++previewToken;
     try {
+      const c = getPreviewClient();
+      const same = (o: PreviewDoc & { client: EngineClient } | null) => o !== null && o.client === c && o.ed === ed && o.base === base && o.version === ed.version;
+      if (!same(previewOpened)) {
+        // Later requests wait for an open() that is already running for this exact state instead of restarting it
+        // (typing must not keep a large file from ever getting a result).
+        let op = previewOpening;
+        if (!same(op)) {
+          previewOpened = null;
+          const mine: PreviewDoc & { client: EngineClient; done: Promise<void> } = { ed, base, version: ed.version, client: c, done: Promise.resolve() };
+          mine.done = c.open(ed.toBlob(base), fileName ?? 'Untitled').then(() => {
+            if (previewOpening === mine) {
+              previewOpening = null;
+              previewOpened = { ed: mine.ed, base: mine.base, version: mine.version, client: c };
+            }
+          });
+          mine.done.catch(() => {
+            if (previewOpening === mine) previewOpening = null;
+          });
+          previewOpening = op = mine;
+        }
+        await op!.done;
+        if (token !== previewToken) throw new SupersededError();
+      }
       const snap = await c.parseDraft(text);
-      if (token !== engineToken) throw new SupersededError();
+      if (token !== previewToken) throw new SupersededError();
       return snap;
     } catch (e) {
-      if (e instanceof EngineFatalError) markFatal(e.message);
-      else if (token !== engineToken) throw new SupersededError(); // overtaken (e.g. a save started): whatever failed is moot
+      if (token !== previewToken) throw new SupersededError(); // overtaken (e.g. a save started): whatever failed is moot
       throw e;
     }
   }
 
   async function loadPreviewRef(nodeId: number) {
-    if (!client || !draftOnWorker || viewerOps > 0) throw new Error('the preview is out of date');
-    return (await client.expandRef(nodeId)).nodes;
+    if (!previewClient) throw new Error('the preview is out of date');
+    return (await previewClient.expandRef(nodeId)).nodes;
   }
 
   async function loadPreviewPage(nodeId: number, start: number, count: number) {
-    if (!client || !draftOnWorker || viewerOps > 0) throw new Error('the preview is out of date');
-    const r = await client.expand(nodeId, start, count);
+    if (!previewClient) throw new Error('the preview is out of date');
+    const r = await previewClient.expand(nodeId, start, count);
     return { nodes: r.nodes, lazy: r.lazy };
   }
 
-  /**
-   * Show the file tab. Returning to it after a draft preview ran re-parses the viewer's own format (or raw bytes), so
-   * the worker, the tree and the FormatBar agree again. The draft's tree is never shown in the viewer.
-   */
   function showFileTab() {
     activeTab = 'file';
-    reparseAfterDraft();
   }
 
-  function reparseAfterDraft() {
-    if (draftOnWorker && !saving && !unreadable && client) void runParse(selectedSpec);
+  function selectEditorTab(id: string) {
+    if (id === 'file') showFileTab();
+    else formats.activate(id.slice(SPEC_TAB.length));
   }
 
-  // Safety net for a spec tab that vanished without going through showFileTab (e.g. the spec was removed by a folder sync).
-  $effect(() => {
-    if (!specActive) untrack(reparseAfterDraft);
-  });
+  function closeEditorTab(id: string) {
+    if (id.startsWith(SPEC_TAB)) formats.close(id.slice(SPEC_TAB.length));
+  }
 
   /**
-   * "Show in viewer" from the preview: the simpler of the two options. The viewer keeps its own format and tree (re-parsed
-   * as above); only the byte range of the previewed node is selected and highlighted.
+   * "Show in viewer" from the preview: the simpler of the two options. The viewer keeps its own format and tree; only the
+   * byte range of the previewed node is selected and highlighted.
    */
   function showInViewer(range: { start: number; end: number } | null, offset: number) {
-    showFileTab(); // clears nodeRange synchronously when it re-parses, so select afterwards
+    showFileTab();
     const size = source?.size ?? 0;
     if (range && range.start < size) {
       const end = Math.min(range.end, size - 1);
@@ -583,7 +612,6 @@
 
   async function loadPage(nodeId: number, start: number, count: number) {
     if (!client) throw new Error('format engine unavailable');
-    if (draftOnWorker) throw new Error('the structure is being refreshed');
     const r = await client.expand(nodeId, start, count);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
     return { nodes: r.nodes, lazy: r.lazy };
@@ -591,7 +619,6 @@
 
   async function loadRef(nodeId: number) {
     if (!client) throw new Error('format engine unavailable');
-    if (draftOnWorker) throw new Error('the structure is being refreshed');
     const r = await client.expandRef(nodeId);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
     return r.nodes;
@@ -628,7 +655,7 @@
   // Hex -> tree: only on a plain click, throttled, latest wins.
   const locate = throttleLatest(async (offset: number) => {
     const c = client;
-    if (!c || !root || draftOnWorker) return;
+    if (!c || !root) return;
     const t = ++locateToken;
     try {
       const loc = await c.nodeAt(offset);
@@ -641,7 +668,7 @@
 
   async function jumpToDiagnostic(d: Diagnostic) {
     const c = client;
-    if (!c || !root || draftOnWorker) return;
+    if (!c || !root) return;
     const t = ++locateToken;
     try {
       if (d.nodeId !== undefined) {
@@ -664,7 +691,7 @@
     const c = client;
     const w = viewWindow;
     const token = engineToken;
-    if (!c || !root || !w || w.end <= w.start || draftOnWorker) return;
+    if (!c || !root || !w || w.end <= w.start) return;
     try {
       const segs = await c.ranges(w.start, w.end);
       if (token === engineToken) tints = segs;
@@ -719,6 +746,7 @@
     offEditor = ed.onChange(() => {
       editVersion = ed.version;
       dirty = ed.isDirty;
+      docEpoch++;
       scheduleReparse();
     });
     editor = ed;
@@ -736,6 +764,8 @@
     treeKeep = null;
     rawChosen = false;
     activeTab = 'file';
+    previewToken++; // a preview of the previous document must not land
+    docEpoch++;
   }
 
   /** Run `action` now, or after the user agrees to discard unsaved edits. Never while a save is running. */
@@ -803,6 +833,7 @@
     saving = true; // HexView ignores input from here on
     clearTimeout(reparseTimer); // never re-parse against a base that is about to be replaced
     engineToken++;
+    previewToken++; // the preview worker reads the same file; its running parse is dropped, the pane waits for the save
     if (status.state === 'parsing') status = { state: 'idle' }; // that parse's result will now be ignored
     notice = null;
     info = null;
@@ -984,14 +1015,13 @@
   );
   const errorCount = $derived(diagnostics.filter((d) => d.severity === 'error').length);
   const warningCount = $derived(diagnostics.length - errorCount);
+  const SPEC_TAB = 'spec:'; // spec tab ids in the tab bar: SPEC_TAB + the spec id
   const tabs: EditorTab[] = $derived([
-    ...(source !== null
-      ? [{ id: 'file' as const, label: fileName ?? 'Untitled', modified: dirty, modifiedLabel: 'Modified', closable: false }]
-      : []),
-    ...(formats.selected
-      ? [{ id: 'spec' as const, label: sanitizeText(formats.selected.name, 60), modified: formats.editorDirty, modifiedLabel: 'Unsaved changes', closable: true }]
-      : []),
+    ...(source !== null ? [{ id: 'file', label: fileName ?? 'Untitled', modified: dirty, modifiedLabel: 'Modified', closable: false }] : []),
+    ...formats.openTabs.map((t) => ({ id: SPEC_TAB + t.id, label: sanitizeText(t.name, 60), modified: t.dirty, modifiedLabel: 'Modified', closable: true })),
   ]);
+  const activeEditorId = $derived(specActive ? SPEC_TAB + formats.activeSpecId : 'file');
+  const editorPanelId = (id: string) => (id === 'file' ? 'editor-panel-file' : 'editor-panel-spec');
   const hiddenAttrs = (hide: boolean) => (hide ? { inert: true, 'aria-hidden': 'true' as const } : {});
 </script>
 
@@ -1035,8 +1065,7 @@
           <div class="views">
             <div class="view" class:hidden={sideView !== 'structure'} {...hiddenAttrs(sideView !== 'structure')}>
               {#if source}
-                {#if specActive && draftActive}<p class="quiet" role="status">Paused while a format preview is running</p>{/if}
-                <div class="tree-wrap" {...(specActive && draftActive ? { inert: true } : {})}>
+                <div class="tree-wrap">
                   <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onJump={onTreeJump} preserveFor={treeKeep} />
                 </div>
               {:else}
@@ -1065,7 +1094,7 @@
     {/if}
 
     <main class="editor" bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
-      <EditorTabs {tabs} activeId={specActive ? 'spec' : 'file'} onSelect={(id) => (id === 'spec' ? (activeTab = 'spec') : showFileTab())} onClose={() => formats.close()} />
+      <EditorTabs {tabs} activeId={activeEditorId} panelId={editorPanelId} onSelect={selectEditorTab} onClose={closeEditorTab} />
       <div class="panels">
         <div
           class="panel"
@@ -1141,7 +1170,7 @@
           {...hiddenAttrs(!specActive)}
           id="editor-panel-spec"
           role="tabpanel"
-          aria-labelledby="editor-tab-spec"
+          aria-labelledby={specOpen ? tabDomId(SPEC_TAB + formats.activeSpecId) : undefined}
         >
           {#if specOpen}
             <FormatDetail
@@ -1149,7 +1178,7 @@
               previewDoc={editor ? (fileName ?? 'Untitled') : null}
               previewActive={specActive}
               previewBusy={saving}
-              previewEpoch={previewEpoch}
+              previewEpoch={docEpoch}
               parseDraft={parseDraftPreview}
               loadPreviewPage={loadPreviewPage}
               loadPreviewRef={loadPreviewRef}

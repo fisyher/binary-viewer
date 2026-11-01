@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The single spec tab and the rule that a draft preview blocks the viewer's tree were replaced by [ADR-0012](0012-preview-engine-worker.md) (several spec tabs, previews on their own worker); the rest stands.
 
 ## Date
 

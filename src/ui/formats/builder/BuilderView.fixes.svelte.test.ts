@@ -180,16 +180,16 @@ describe('Builder: canonical rewrite confirmation and semantic dirty', () => {
 });
 
 describe('New format', () => {
-  it('a failing create keeps the dirty flag and the prompt', async () => {
-    const { container, getByRole, getByLabelText, findByRole, json, onDirtyChange, lib, entry } = await open([['two', two], ['taken', specText('taken')]], 'two');
+  it('a failing create shows the error and leaves the edited spec as it was', async () => {
+    const { container, getByRole, getByLabelText, queryByRole, json, onDirtyChange, lib, entry } = await open([['two', two], ['taken', specText('taken')]], 'two');
     await fireEvent.click(entry());
     await fireEvent.input(json(), { target: { value: json().value.replace('Fmt two', 'Fmt two edited') } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     await fireEvent.click(getByRole('button', { name: 'New' }));
     await fireEvent.input(getByLabelText('New format id'), { target: { value: 'taken' } });
     await fireEvent.click(getByRole('button', { name: 'Create' }));
-    await fireEvent.click(await findByRole('button', { name: 'Discard changes' }));
     await waitFor(() => expect(container.querySelector('form[aria-label="New format"] [role="alert"]')).not.toBeNull());
+    expect(queryByRole('alertdialog')).toBeNull(); // a new spec opens in its own tab: nothing is replaced, nothing to confirm
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     expect(container.querySelector('form[aria-label="New format"]')).not.toBeNull();
     expect(lib.get('taken')!.text).toContain('Fmt taken');

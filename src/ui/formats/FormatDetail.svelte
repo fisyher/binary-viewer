@@ -25,7 +25,7 @@
     previewActive?: boolean;
     /** A save of the document is in progress. */
     previewBusy?: boolean;
-    /** Changes when the viewer finished an engine operation. */
+    /** Changes when the open document changed (new file, edits, save), so the preview parses it again. */
     previewEpoch?: number;
     parseDraft?: (text: string) => Promise<ParseSnapshot | null>;
     loadPreviewPage?: (nodeId: number, start: number, count: number) => Promise<{ nodes: Node[]; lazy: LazyArray | null }>;
@@ -79,7 +79,7 @@
             onResult={(r) => (ctl.saveStatus = r)}
             onSave={(text) => ctl.save(text)}
             onDuplicate={() => void ctl.duplicate()}
-            onDirtyChange={(d) => (ctl.editorDirty = d)}
+            initialResult={ctl.saveStatus}
           />
         </div>
         <div class="editor-wrap" style:display={ctl.tab === 'builder' ? 'block' : 'none'}>
@@ -102,17 +102,19 @@
         </div>
       {/if}
     </div>
-    <PreviewPane
-      text={ctl.draftText}
-      docName={previewDoc}
-      active={previewActive}
-      busy={previewBusy}
-      epoch={previewEpoch}
-      {parseDraft}
-      loadPage={loadPreviewPage}
-      loadRef={loadPreviewRef}
-      {onShowInViewer}
-    />
+    {#key ctl.editorKey}
+      <PreviewPane
+        text={ctl.draftText}
+        docName={previewDoc}
+        active={previewActive}
+        busy={previewBusy}
+        epoch={previewEpoch}
+        {parseDraft}
+        loadPage={loadPreviewPage}
+        loadRef={loadPreviewRef}
+        {onShowInViewer}
+      />
+    {/key}
   {:else}
     <div class="placeholder"><p>Select a format, or create a new one.</p></div>
   {/if}
