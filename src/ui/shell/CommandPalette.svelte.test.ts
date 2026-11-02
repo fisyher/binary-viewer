@@ -6,7 +6,7 @@ import CommandPalette from './CommandPalette.svelte';
 
 afterEach(cleanup);
 
-function setup(over: { commands?: Command[]; recent?: string[] } = {}) {
+function setup(over: { commands?: Command[]; recent?: string[]; initial?: string } = {}) {
   const run = vi.fn();
   const onUse = vi.fn();
   const onClose = vi.fn((then?: () => void) => then?.()); // a closed palette runs the command right away
@@ -47,7 +47,7 @@ function setup(over: { commands?: Command[]; recent?: string[] } = {}) {
     },
     { id: 'spec.x', label: 'Open spec Windows Bitmap', group: 'Tabs', searchOnly: true, run: () => run('spec') },
   ];
-  const r = render(CommandPalette, { commands, recent: over.recent ?? [], onUse, onClose });
+  const r = render(CommandPalette, { commands, recent: over.recent ?? [], onUse, onClose, initial: over.initial });
   const input = r.getByRole('combobox') as HTMLInputElement;
   const options = () => r.queryAllByRole('option');
   const names = () => options().map((o) => o.querySelector('.label')!.textContent);
@@ -55,6 +55,41 @@ function setup(over: { commands?: Command[]; recent?: string[] } = {}) {
   const key = (k: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(input, { key: k, ...init });
   return { ...r, run, onUse, onClose, input, options, names, type, key };
 }
+
+describe('CommandPalette: initial command', () => {
+  it('opens straight into the sub-mode of the given command', async () => {
+    const { getByRole, names, run, key, onUse } = setup({ initial: 'format.choose' });
+    await waitFor(() => expect(getByRole('dialog', { name: 'Choose format' })).toBeTruthy());
+    expect(names()).toEqual(['None (raw)', 'Windows Bitmap (magic)', 'ZIP']);
+    await key('ArrowDown');
+    await key('Enter');
+    expect(run).toHaveBeenCalledWith('format', 'bmp');
+    expect(onUse).not.toHaveBeenCalled(); // opened by a button: not a recent command
+  });
+
+  it('does not record a command opened this way as a recent one, but does when it is picked from the list', async () => {
+    const a = setup({ initial: 'format.choose' });
+    await waitFor(() => expect(a.getByRole('dialog', { name: 'Choose format' })).toBeTruthy());
+    await a.key('Enter');
+    expect(a.run).toHaveBeenCalledWith('format', '');
+    expect(a.onUse).not.toHaveBeenCalled();
+    cleanup();
+    const b = setup();
+    await b.type('choose');
+    await b.key('Enter');
+    await waitFor(() => expect(b.getByRole('dialog', { name: 'Choose format' })).toBeTruthy());
+    await b.key('Enter');
+    expect(b.onUse).toHaveBeenCalledWith('format.choose');
+  });
+
+  it('stays on the plain list for an unknown or disabled command', async () => {
+    const unknown = setup({ initial: 'nope' });
+    expect(unknown.getByRole('dialog', { name: 'Command palette' })).toBeTruthy();
+    cleanup();
+    const disabled = setup({ initial: 'file.save' });
+    expect(disabled.getByRole('dialog', { name: 'Command palette' })).toBeTruthy();
+  });
+});
 
 describe('CommandPalette: structure and ARIA', () => {
   it('is a modal dialog with a focused combobox that controls a listbox of options', () => {

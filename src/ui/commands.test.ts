@@ -12,7 +12,7 @@ function ctx(over: Partial<Omit<CommandContext, 'actions'>> = {}) {
   const actions = Object.fromEntries(
     [
       'newFile', 'openFile', 'save', 'saveAs', 'goToOffset', 'chooseFormat', 'cancelParse', 'toggleSide', 'showView', 'toggleInspector',
-      'toggleProblems', 'toggleMinimap', 'setTheme', 'setLittleEndian', 'selectTab', 'closeSpecTab', 'openSpec', 'openAbout',
+      'toggleProblems', 'toggleMinimap', 'focusSide', 'focusEditor', 'focusProblems', 'focusInspector', 'setTheme', 'setLittleEndian', 'selectTab', 'closeSpecTab', 'openSpec', 'openAbout',
     ].map((n) => [n, log(n)]),
   ) as unknown as CommandContext['actions'];
   const c: CommandContext = {
@@ -67,7 +67,7 @@ describe('buildCommands', () => {
     for (const l of [
       'Open file…', 'New file', 'Save', 'Save as…', 'Go to offset…', 'Choose format…', 'Cancel parsing', 'Hide side bar', 'Show Structure', 'Show Formats',
       'Hide data inspector', 'Hide Problems panel', 'Hide minimap', 'Theme: System', 'Theme: Light', 'Theme: Dark', 'Byte order: little-endian',
-      'Byte order: big-endian', 'Close spec tab', 'Open format spec…', 'About Binary Viewer', 'Keyboard shortcuts',
+      'Byte order: big-endian', 'Focus side bar', 'Focus editor', 'Focus Problems', 'Focus inspector', 'Close spec tab', 'Open format spec…', 'About Binary Viewer', 'Keyboard shortcuts',
     ]) expect(labels).toContain(l);
   });
 
@@ -97,6 +97,17 @@ describe('buildCommands', () => {
       'openFile', 'newFile', 'save', 'saveAs', 'toggleSide', 'toggleMinimap', 'toggleInspector', 'toggleProblems', 'openAbout',
       'showView:structure', 'showView:formats', 'setTheme:light', 'setLittleEndian:false',
     ]);
+  });
+
+  it('the Focus commands are in the View group and run their actions', () => {
+    const { commands, calls } = ctx();
+    for (const id of ['view.focus.side', 'view.focus.editor', 'view.focus.problems', 'view.focus.inspector']) {
+      expect(find(commands, id).group, id).toBe('View');
+      find(commands, id).run!();
+    }
+    expect(calls).toEqual(['focusSide', 'focusEditor', 'focusProblems', 'focusInspector']);
+    expect(reason(ctx({ hasFile: false, fileSize: 0 }).commands, 'view.focus.problems')).toBe('Open a file first');
+    expect(reason(ctx({ hasFile: false, fileSize: 0 }).commands, 'view.focus.side')).toBeNull();
   });
 
   describe('enabled / disabled', () => {

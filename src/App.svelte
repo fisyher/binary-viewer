@@ -5,7 +5,7 @@
   import type { Diagnostic, Node } from './core/engine';
   import { createAppLibrary } from './core/app-library';
   import { EditBuffer } from './core/edit-buffer';
-  import type { ParseStatus } from './core/format-status';
+  import { suggestionHint, type ParseStatus } from './core/format-status';
   import { parseOffset, type OffsetMode } from './core/parse-offset';
   import {
     SavePermissionError,
@@ -22,7 +22,6 @@
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import { buildCommands, type CommandContext } from './ui/commands';
   import Diagnostics from './ui/Diagnostics.svelte';
-  import FormatBar from './ui/FormatBar.svelte';
   import FormatDetail from './ui/formats/FormatDetail.svelte';
   import FormatList from './ui/formats/FormatList.svelte';
   import { FormatsState } from './ui/formats/formats-state.svelte';
@@ -52,10 +51,13 @@
   } from './ui/prefs';
   import ActivityBar from './ui/shell/ActivityBar.svelte';
   import BottomPanel from './ui/shell/BottomPanel.svelte';
+  import Breadcrumb from './ui/shell/Breadcrumb.svelte';
+  import { crumbsFromChain, crumbsFromLocation, keepDeeperCrumbs, type Crumb } from './ui/shell/breadcrumb';
   import CommandPalette from './ui/shell/CommandPalette.svelte';
   import EditorTabs, { tabDomId, type EditorTab } from './ui/shell/EditorTabs.svelte';
   import GoTo from './ui/shell/GoTo.svelte';
   import { globalKey } from './ui/shell/keys';
+  import { firstFocusable, nextRegion, regionOf, visibleRegions, type RegionId } from './ui/shell/regions';
   import Resizer from './ui/shell/Resizer.svelte';
   import SideBar from './ui/shell/SideBar.svelte';
   import TitleBar from './ui/shell/TitleBar.svelte';
@@ -102,12 +104,14 @@
   // Command palette; the element that had focus gets it back when the palette closes (see closePalette).
   let paletteOpen = $state(false);
   let paletteOpener: HTMLElement | null = null;
+  let paletteInitial = $state<string | undefined>(undefined); // a command to enter at once (the status bar's format and offset buttons)
   let recentCommands = $state.raw(loadRecentCommands());
 
-  function openPalette(opener?: HTMLElement) {
+  function openPalette(opener?: HTMLElement, initial?: string) {
     if (paletteOpen) return;
     const el = opener ?? document.activeElement;
     paletteOpener = el instanceof HTMLElement && el !== document.body ? el : null;
+    paletteInitial = initial;
     paletteOpen = true;
   }
 
@@ -218,6 +222,12 @@
   let engineToken = 0; // bumped by every viewer open/parse; results from older ones are ignored
   let needsDetect = false; // startEngine was started but its detection result has not been applied yet
   let locateToken = 0;
+  // ---- Breadcrumb: the path to the node under the caret, or the one selected in the tree ----
+  let crumbs = $state.raw<Crumb[]>([]); // snapshots (lazy loads mutate the tree in place); empty: nothing located yet
+  let crumbToken = 0; // bumped by every breadcrumb update and by anything that clears it: a late nodeAt answer is dropped
+  let caretTimer: ReturnType<typeof setTimeout> | undefined;
+  let appSelection: Selection | null = null; // the selection this component set itself (tree select): not a caret move to look up
+  const CARET_LOOKUP_MS = 150;
   // ---- Shell layout and theme (remembered in local storage) ----
   const SIDE_RANGE = { min: 200, max: 600, def: 300 };
   const INSPECTOR_RANGE = { min: 240, max: 520, def: 320 };
@@ -300,11 +310,83 @@
       if (specActive) return; // a spec tab: its editors own Ctrl+S
       e.preventDefault(); // the viewer owns Ctrl+S: no "Save page" dialog
       if (canSave && !e.repeat) void save();
+    } else if (key === 'region-next' || key === 'region-prev') {
+      e.preventDefault(); // F6 would otherwise move focus to the browser's own chrome
+      if (e.repeat) return;
+      const next = nextRegion(visibleRegions(shownRegions()), regionOf(document.activeElement), key === 'region-prev');
+      if (next) focusRegion(next);
     } else if (e.key === 'Escape' && drawerOpen) {
       e.preventDefault();
       closeDrawers();
     }
   }
+  // ---- Region navigation (F6 / Shift+F6, and the Focus commands) ----
+  /** Which regions are on screen and can take focus now: collapsed panels, closed drawers and the hidden file panel are not. */
+  function shownRegions(): Record<RegionId, boolean> {
+    return {
+      activity: true,
+      side: sideOpen,
+      editor: !drawerOpen, // a drawer makes the editor inert
+      bottom: !drawerOpen && !specActive && source !== null,
+      inspector: inspectorOpen,
+      status: true,
+    };
+  }
+
+  const regionEl = (id: RegionId) => document.querySelector<HTMLElement>(`[data-region="${id}"]`);
+
+  /** Move keyboard focus into a region: its main control (the tree, the hex grid, the active tab) or its first control. */
+  function focusRegion(id: RegionId): boolean {
+    let el: HTMLElement | null = null;
+    switch (id) {
+      case 'activity':
+        el = regionEl('activity')?.querySelector<HTMLElement>('button.active') ?? firstFocusable(regionEl('activity'));
+        break;
+      case 'side':
+        if (sideView === 'structure' && source && tree) {
+          tree.focus();
+          return true;
+        }
+        el = firstFocusable(regionEl('side')?.querySelector('.view:not(.hidden)') ?? null) ?? firstFocusable(regionEl('side'));
+        break;
+      case 'editor':
+        if (!specActive && source && hexView) {
+          hexView.focus();
+          return true;
+        }
+        focusEditor();
+        return true;
+      case 'bottom':
+        el = regionEl('bottom')?.querySelector<HTMLElement>('.title') ?? null;
+        break;
+      case 'inspector':
+        el = firstFocusable(regionEl('inspector'));
+        break;
+      case 'status':
+        el = firstFocusable(regionEl('status'));
+        break;
+    }
+    el?.focus();
+    return el !== null;
+  }
+
+  /** Open a collapsed region, wait for it to show, then focus it. */
+  async function openAndFocus(id: RegionId) {
+    if (id === 'side') {
+      if (!sideOpen) setSideOpen(true);
+    } else if (id === 'inspector') {
+      if (!inspectorOpen) setInspectorOpen(true);
+    } else if (id === 'bottom') {
+      showFileTab();
+      if (!problemsOpen) setProblemsOpen(true);
+      if (drawerOpen) closeDrawers();
+    } else if (id === 'editor') {
+      if (drawerOpen) closeDrawers();
+    }
+    await tick();
+    focusRegion(id);
+  }
+
   function setInspectorWidth(px: number) {
     inspectorWidth = clampTo(INSPECTOR_RANGE, px);
     saveSize('inspectorWidth', inspectorWidth);
@@ -354,6 +436,7 @@
     requestTints.cancel();
     requestOverview.cancel();
     locate.cancel();
+    clearTimeout(caretTimer);
     client?.dispose();
     previewClient?.dispose();
   });
@@ -361,6 +444,7 @@
   function resetStructure() {
     engineToken++;
     locateToken++;
+    clearCrumbs();
     root = null;
     diagnostics = [];
     nodeRange = null;
@@ -408,6 +492,7 @@
     const token = ++engineToken;
     selectedSpec = specId;
     if (!keepView || specId === null) {
+      clearCrumbs();
       root = null;
       diagnostics = [];
       nodeRange = null;
@@ -430,6 +515,7 @@
         return;
       }
       treeKeep = keepView ? snap.root : null;
+      clearCrumbs(); // node ids belong to the tree that was replaced
       root = snap.root;
       diagnostics = snap.errors;
       status = summarize(snap);
@@ -666,14 +752,17 @@
     if (range && range.start < size) {
       const end = Math.min(range.end, size - 1);
       selection = { anchor: range.start, caret: end };
+      appSelection = selection;
       nodeRange = { start: range.start, end };
       nodeInspectOffset = null;
       hexView?.reveal(range.start);
+      void lookupCrumbs(range.start);
     } else if (Number.isSafeInteger(offset) && offset >= 0 && offset < size) {
       selection = null;
       nodeRange = null;
       nodeInspectOffset = offset;
       hexView?.reveal(offset);
+      void lookupCrumbs(offset);
     }
   }
 
@@ -705,6 +794,7 @@
     if (range && range.start < size) {
       const end = Math.min(range.end, size - 1);
       selection = { anchor: range.start, caret: end };
+      appSelection = selection;
       nodeRange = { start: range.start, end };
       nodeInspectOffset = null;
       hexView?.reveal(range.start);
@@ -722,19 +812,90 @@
     selectBytes(range, node.offset);
   }
 
+  function clearCrumbs() {
+    crumbToken++;
+    clearTimeout(caretTimer);
+    crumbs = [];
+  }
+
+  /** The tree selected a node (click, key, reveal): its chain from the root is the breadcrumb. */
+  function onTreePath(chain: Node[]) {
+    clearTimeout(caretTimer);
+    crumbToken++;
+    crumbs = crumbsFromChain(chain);
+  }
+
+  /** A breadcrumb segment was chosen: select that node in the tree (and so in the hex view). */
+  function onCrumb(c: Crumb) {
+    void tree?.reveal(c.reveal.path, c.reveal.lazyIndex, c.reveal.offset);
+  }
+
+  /** The caret moved by the keyboard: look up its node (the latest lookup wins; a click or a tree selection supersedes it). */
+  async function lookupCrumbs(offset: number) {
+    const c = client;
+    const r = root;
+    if (!c || !r) return;
+    const t = ++crumbToken;
+    try {
+      const loc = await c.nodeAt(offset);
+      if (t !== crumbToken || root !== r) return;
+      const next = loc.path ? crumbsFromLocation(r, loc.path, loc.lazyIndex, offset) : [];
+      if (!keepDeeperCrumbs(crumbs, next, offset)) crumbs = next;
+    } catch {
+      /* superseded, or the engine is gone: the path shown stays */
+    }
+  }
+
+  // A failed parse that has an engine error beside it is shown once: the status bar's alert item carries the error, so the parse item stays quiet (see the `parse` prop below).
+  // While a mouse button is held (a click or a drag) the selection changes are not caret moves: a click answers for itself
+  // (onByteClick), and a drag is looked up once it ends.
+  let pointerHeld = false;
+  let clickHandled = false;
+
+  function armCaretLookup() {
+    clearTimeout(caretTimer);
+    const sel = selection;
+    const caret = sel?.caret;
+    if (pointerHeld || caret === undefined || sel === appSelection || !root || !client) return;
+    caretTimer = setTimeout(() => void lookupCrumbs(caret), CARET_LOOKUP_MS);
+  }
+
+  $effect(() => {
+    void selection;
+    void selection?.caret;
+    untrack(armCaretLookup);
+  });
+
+  function onWindowMouseDown() {
+    pointerHeld = true;
+    clickHandled = false;
+  }
+
+  function onWindowMouseUp() {
+    pointerHeld = false;
+    // After the hex view's own mouseup handling: a plain click was answered by locate, a drag-select was not.
+    setTimeout(() => {
+      if (!clickHandled) armCaretLookup();
+    }, 0);
+  }
+
   /** A structure-tree `link` button: select `size` bytes at `offset` (size 0: just show the position). */
   function onTreeJump(offset: number, size: number) {
     selectBytes(size > 0 ? { start: offset, end: offset + size - 1 } : null, offset);
+    void lookupCrumbs(offset); // the tree did not select a node: the breadcrumb follows the jump target
   }
 
   // Hex -> tree: only on a plain click, throttled, latest wins.
   const locate = throttleLatest(async (offset: number) => {
     const c = client;
     if (!c || !root) return;
+    const r = root;
     const t = ++locateToken;
     try {
       const loc = await c.nodeAt(offset);
-      if (t !== locateToken || !loc.path) return;
+      if (t !== locateToken || !loc.path || root !== r) return;
+      crumbToken++;
+      crumbs = crumbsFromLocation(r, loc.path, loc.lazyIndex, offset); // the tree's own selection refines it below
       await tree?.reveal(loc.path, loc.lazyIndex, offset);
     } catch {
       /* superseded or engine gone: nothing to reveal */
@@ -1106,6 +1267,8 @@
   const formatName = $derived(
     selectedSpec === null ? null : sanitizeText(specs.find((s) => s.id === selectedSpec)?.name ?? selectedSpec, 80),
   );
+  // The breadcrumb: the located path, or just the root once there is a parse and nothing is located.
+  const shownCrumbs = $derived(root ? (crumbs.length > 0 ? crumbs : crumbsFromChain([root])) : []);
   const errorCount = $derived(diagnostics.filter((d) => d.severity === 'error').length);
   const warningCount = $derived(diagnostics.length - errorCount);
   const SPEC_TAB = 'spec:'; // spec tab ids in the tab bar: SPEC_TAB + the spec id
@@ -1204,6 +1367,10 @@
       toggleInspector: () => setInspectorOpen(!inspectorOpen),
       toggleProblems: () => setProblemsOpen(!problemsOpen),
       toggleMinimap,
+      focusSide: () => void openAndFocus('side'),
+      focusEditor: () => void openAndFocus('editor'),
+      focusProblems: () => void openAndFocus('bottom'),
+      focusInspector: () => void openAndFocus('inspector'),
       setTheme: (t) => {
         theme = t;
         saveTheme(t);
@@ -1222,7 +1389,7 @@
   <title>{(dirty ? '• ' : '') + (fileName !== null ? `${fileName} — Binary Viewer` : 'Binary Viewer')}</title>
 </svelte:head>
 
-<svelte:window onkeydown={onWindowKeyDown} ondragenter={onDragEnter} ondragleave={onDragLeave} ondragover={onDragOver} ondrop={onDrop} />
+<svelte:window onkeydown={onWindowKeyDown} onmousedown={onWindowMouseDown} onmouseup={onWindowMouseUp} ondragenter={onDragEnter} ondragleave={onDragLeave} ondragover={onDragOver} ondrop={onDrop} />
 
 <input type="file" hidden bind:this={fileInput} onchange={onInputChange} />
 
@@ -1252,6 +1419,7 @@
       class:overlay={narrow && sideOpen}
       class:closed={!sideOpen}
       class:hidden={!sideOpen}
+      data-region="side"
       {...hiddenAttrs(!sideOpen)}
       style:width={narrow ? `min(${sideWidth}px, calc(100vw - 44px - 24px))` : !sideOpen ? `${sideWidth}px` : undefined}
     >
@@ -1260,7 +1428,7 @@
             <div class="view" class:hidden={sideView !== 'structure'} {...hiddenAttrs(sideView !== 'structure')}>
               {#if source}
                 <div class="tree-wrap">
-                  <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onJump={onTreeJump} preserveFor={treeKeep} />
+                  <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onPath={onTreePath} onJump={onTreeJump} preserveFor={treeKeep} />
                 </div>
               {:else}
                 <p class="quiet">Open a file to see its structure.</p>
@@ -1287,7 +1455,7 @@
       <button type="button" class="scrim" aria-label="Close panel" onclick={closeDrawers}></button>
     {/if}
 
-    <main class="editor" tabindex="-1" bind:this={editorMain} bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
+    <main class="editor" data-region="editor" tabindex="-1" bind:this={editorMain} bind:clientHeight={editorColumnHeight} {...(drawerOpen ? { inert: true } : {})}>
       <EditorTabs {tabs} activeId={activeEditorId} panelId={editorPanelId} onSelect={selectEditorTab} onClose={closeEditorTab} />
       <div class="panels">
         <div
@@ -1301,19 +1469,8 @@
         >
           {#if source && editor}
             <div class="editor-head">
-              <FormatBar
-                {specs}
-                {detections}
-                selected={selectedSpec}
-                {status}
-                errorText={engineError ?? specRejected}
-                onSelect={(id) => {
-                  rawChosen = id === null;
-                  void runParse(id);
-                }}
-                onCancel={() => client?.cancel()}
-              />
-              <GoTo disabled={size === 0} error={gotoError} onGoTo={goTo} />
+              <Breadcrumb crumbs={shownCrumbs} hasStructure={root !== null} onSelect={onCrumb} />
+              <div class="goto-slot"><GoTo disabled={size === 0} error={gotoError} onGoTo={goTo} /></div>
             </div>
             <div class="hexcol">
               {#if size === 0}<div class="empty-note"><p>Empty file (0 bytes)</p></div>{/if}
@@ -1332,7 +1489,11 @@
                   {tints}
                   {onViewChange}
                   onViewport={(start, end) => (viewportBytes = { start, end })}
-                  onByteClick={locate}
+                  onByteClick={(offset) => {
+                    clearTimeout(caretTimer); // the click's own lookup (below) answers for this caret
+                    clickHandled = true;
+                    locate(offset);
+                  }}
                   id="hex-grid"
                 />
                 {#if showMinimap}
@@ -1408,7 +1569,7 @@
           onReset={() => setInspectorWidth(INSPECTOR_RANGE.def)}
         />
       {/if}
-      <div class="inspector-slot" class:overlay={narrow} style:width={narrow ? `min(${inspectorWidth}px, calc(100vw - 44px - 24px))` : undefined}>
+      <div class="inspector-slot" data-region="inspector" class:overlay={narrow} style:width={narrow ? `min(${inspectorWidth}px, calc(100vw - 44px - 24px))` : undefined}>
         <Inspector source={source && size > 0 ? source : null} offset={inspectOffset} version={editVersion} bind:littleEndian onCollapse={() => setInspectorOpen(false)} />
       </div>
     {:else}
@@ -1421,11 +1582,20 @@
   <StatusBar
     {selection}
     error={readError}
+    engineError={source && (engineError ?? specRejected) ? sanitizeText(engineError ?? specRejected ?? '', 400) : null}
     {notice}
     {info}
     insertMode={source ? insertMode : null}
+    onToggleInsert={() => hexView?.toggleInsert()}
     onRetry={() => hexView?.retry()}
     formatName={source ? formatName : null}
+    formatHint={source ? suggestionHint(detections, selectedSpec) : null}
+    onChooseFormat={(opener) => openPalette(opener, 'format.choose')}
+    parse={source && !(status.state === 'error' && (engineError ?? specRejected)) ? status : { state: 'idle' }}
+    onCancelParse={() => client?.cancel()}
+    onShowProblems={() => void openAndFocus('bottom')}
+    canGoTo={source !== null && size > 0}
+    onGoTo={(opener) => openPalette(opener, 'file.goTo')}
     {littleEndian}
     onToggleEndian={() => (littleEndian = !littleEndian)}
     size={source ? size : null}
@@ -1463,7 +1633,7 @@
   <AboutDialog onClose={() => void closeAbout()} />
 {/if}
 {#if paletteOpen}
-  <CommandPalette {commands} recent={recentCommands} onUse={useCommand} onClose={(then) => void closePalette(then)} />
+  <CommandPalette {commands} recent={recentCommands} initial={paletteInitial} onUse={useCommand} onClose={(then) => void closePalette(then)} />
 {/if}
 
 <style>
@@ -1581,16 +1751,19 @@
     min-height: 0;
     min-width: 0;
   }
+  /* One row: the breadcrumb takes what Go to offset leaves. */
   .editor-head {
     flex: none;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 4px 16px;
-    padding: 4px 12px;
+    gap: 16px;
+    padding: 2px 12px;
     background: var(--ground);
     border-bottom: 1px solid var(--rule);
+  }
+  .goto-slot {
+    flex: none;
   }
   .hexcol {
     flex: 1;

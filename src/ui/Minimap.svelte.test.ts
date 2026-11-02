@@ -213,6 +213,66 @@ describe('Minimap', () => {
     await vi.waitFor(() => expect(container.querySelector('.tip')).toBeNull());
   });
 
+  it('names the region under the pointer in the tooltip, with its offset', async () => {
+    const regions = [
+      { start: 0, end: 800, group: 0, name: 'header' },
+      { start: 800, end: 1600, group: 1, name: 'body' },
+    ];
+    const buckets = Uint8Array.from([...Array(8).fill(1), ...Array(8).fill(2)]);
+    const { strip, container } = mount({ size: 1600, overview: { size: 1600, buckets, regions } });
+    strip.dispatchEvent(ptr('pointermove', 100 + 120)); // 3/4 down: offset 1200
+    await vi.waitFor(() => expect(container.querySelector('.tip')?.textContent).toBe('body · 0x000004B0'));
+    strip.dispatchEvent(ptr('pointermove', 100 + 10));
+    await vi.waitFor(() => expect(container.querySelector('.tip')?.textContent).toBe('header · 0x00000064'));
+  });
+
+  it('shows the tooltip for the region at the view centre while focused from the keyboard', async () => {
+    const regions = [
+      { start: 0, end: 800, group: 0, name: 'header' },
+      { start: 800, end: 1600, group: 1, name: 'body' },
+    ];
+    const buckets = Uint8Array.from([...Array(8).fill(1), ...Array(8).fill(2)]);
+    const { strip, container } = mount({ size: 1600, viewport: { start: 1000, end: 1400 }, overview: { size: 1600, buckets, regions } });
+    expect(container.querySelector('.tip')).toBeNull();
+    const matches = strip.matches.bind(strip);
+    strip.matches = ((q: string) => q === ':focus-visible' || matches(q)) as typeof strip.matches; // jsdom does not know which focus came from the keyboard
+    strip.focus();
+    await vi.waitFor(() => expect(container.querySelector('.tip')?.textContent).toBe('body · 0x000004B0'));
+    strip.blur();
+    await vi.waitFor(() => expect(container.querySelector('.tip')).toBeNull());
+  });
+
+  it('separates neighbouring regions with a 1px ground line, but only for regions at least 4px tall', () => {
+    const GROUND = '#1a1e26';
+    const buckets = Uint8Array.from([...Array(8).fill(1), ...Array(8).fill(2)]);
+    mount({
+      size: 1600,
+      overview: {
+        size: 1600,
+        buckets,
+        regions: [
+          { start: 0, end: 800, group: 0, name: 'a' },
+          { start: 800, end: 1600, group: 1, name: 'b' },
+        ],
+      },
+    });
+    expect(draws.filter((d) => d.style === GROUND && d.alpha === 1 && d.rect[3] === 1).map((d) => d.rect)).toEqual([[0, 80, 64, 1]]);
+    cleanup();
+    draws = [];
+    mount({
+      size: 1600,
+      overview: {
+        size: 1600,
+        buckets,
+        regions: [
+          { start: 0, end: 20, group: 0, name: 'a' },
+          { start: 20, end: 1600, group: 1, name: 'b' },
+        ],
+      },
+    });
+    expect(draws.filter((d) => d.style === GROUND && d.alpha === 1 && d.rect[3] === 1)).toEqual([]);
+  });
+
   it('PageUp/PageDown/Arrow/Home/End scroll the hex view from the top row, clamped to the file', async () => {
     const { strip, onSeek } = mount({ viewport: { start: 320, end: 640 } });
     const press = async (key: string) => {

@@ -105,6 +105,11 @@ export interface CommandContext {
     toggleInspector(): void;
     toggleProblems(): void;
     toggleMinimap(): void;
+    /** Open the region if it is collapsed, then move keyboard focus into it. */
+    focusSide(): void;
+    focusEditor(): void;
+    focusProblems(): void;
+    focusInspector(): void;
     setTheme(theme: ThemePref): void;
     setLittleEndian(le: boolean): void;
     selectTab(id: string): void;
@@ -188,6 +193,10 @@ export function buildCommands(c: CommandContext): Command[] {
     { id: 'view.inspector', label: onOff(c.inspectorOpen, 'data inspector'), group: 'View', keywords: 'toggle panel values', run: a.toggleInspector },
     { id: 'view.problems', label: onOff(c.problemsOpen, 'Problems panel'), group: 'View', keywords: 'toggle diagnostics errors warnings', ...needsFile, run: a.toggleProblems },
     { id: 'view.minimap', label: onOff(c.showMinimap, 'minimap'), group: 'View', keywords: 'toggle overview', run: a.toggleMinimap },
+    { id: 'view.focus.side', label: 'Focus side bar', group: 'View', keywords: 'region navigate tree structure formats', run: a.focusSide },
+    { id: 'view.focus.editor', label: 'Focus editor', group: 'View', keywords: 'region navigate hex bytes', run: a.focusEditor },
+    { id: 'view.focus.problems', label: 'Focus Problems', group: 'View', keywords: 'region navigate panel diagnostics errors warnings', ...needsFile, run: a.focusProblems },
+    { id: 'view.focus.inspector', label: 'Focus inspector', group: 'View', keywords: 'region navigate data values', run: a.focusInspector },
     ...(['system', 'light', 'dark'] as const).map(
       (t): Command => ({
         id: `view.theme.${t}`,

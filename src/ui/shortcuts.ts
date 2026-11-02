@@ -6,6 +6,7 @@ export interface Shortcut {
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { keys: 'Ctrl+K / F1', action: 'Open the command palette (Cmd+K on macOS)' },
+  { keys: 'F6 / Shift+F6', action: 'Move focus to the next / previous region (activity bar, side bar, editor, Problems, inspector, status bar)' },
   { keys: 'Insert', action: 'Toggle insert / overwrite while editing' },
   { keys: 'Ctrl+Z / Ctrl+Y', action: 'Undo / redo (Ctrl+Shift+Z also redoes)' },
   { keys: 'Ctrl+C', action: 'Copy the selected bytes' },
@@ -14,4 +15,4 @@ export const SHORTCUTS: readonly Shortcut[] = [
 ];
 
 /** The few shown on the start screen (the palette has its own line there). */
-export const START_SHORTCUTS: readonly Shortcut[] = SHORTCUTS.slice(1, 4);
+export const START_SHORTCUTS: readonly Shortcut[] = SHORTCUTS.slice(2, 5);

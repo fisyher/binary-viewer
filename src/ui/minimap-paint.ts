@@ -19,6 +19,8 @@ export interface PaintInput {
   bands: readonly Band[] | null;
   /** Small top-level regions at their minimum height (see smallRegionRows): drawn over the bands. */
   marks: readonly Band[] | null;
+  /** Device rows where a 1 CSS px line in the ground colour separates neighbouring regions (see regionBoundaryRows). */
+  boundaries?: readonly number[] | null;
   /** Viewport and selection rows [y0, y1). */
   view: { y0: number; y1: number } | null;
   selection: { y0: number; y1: number } | null;
@@ -76,6 +78,7 @@ export function paintMinimap(ctx: CanvasRenderingContext2D, p: PaintInput): void
       }
     }
   }
+  for (const y of p.boundaries ?? []) rect(pal.ground, 1, 0, y, w, px);
   for (const m of p.marks ?? []) {
     const g = (m.v - 1) % 4;
     rect(pal.ground, 1, 0, m.y0, w, m.y1 - m.y0); // an opaque base, so a neighbouring band's tint does not mix in

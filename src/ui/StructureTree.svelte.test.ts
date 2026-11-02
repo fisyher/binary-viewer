@@ -14,6 +14,8 @@ beforeAll(() => {
 });
 afterEach(cleanup);
 
+const ROW = 24; // StructureTree's row height in px
+
 let nextId = 1;
 const n = (name: string, offset: number, size: number, extra: Partial<Node> = {}): Node => ({ id: nextId++, name, typeName: 'u1', offset, size, ...extra });
 
@@ -29,6 +31,72 @@ function sample() {
 const noLoad = async () => ({ nodes: [], lazy: null });
 const rowsOf = (c: HTMLElement) => [...c.querySelectorAll('[role="treeitem"]')] as HTMLElement[];
 const row = (c: HTMLElement, name: string) => rowsOf(c).find((r) => r.querySelector('.nm')?.textContent === name)!;
+
+describe('StructureTree colour groups and breadcrumb path', () => {
+  const groupOf = (c: HTMLElement, name: string) => {
+    const r = row(c, name);
+    return { swatch: r.querySelector<HTMLElement>('.swatch')?.dataset.group ?? null, rule: r.querySelector<HTMLElement>('.grp-rule')?.dataset.group ?? null, r };
+  };
+
+  it('puts an 8x8 swatch before each top-level group node and a rule inside it, both hidden from assistive technology', async () => {
+    const { root } = sample();
+    const { container, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {} });
+    await findByText('magic');
+    expect(groupOf(container, 'file')).toMatchObject({ swatch: null, rule: null }); // the root
+    expect(groupOf(container, 'file_header')).toMatchObject({ swatch: '0', rule: null });
+    expect(groupOf(container, 'dib')).toMatchObject({ swatch: '1', rule: null });
+    expect(groupOf(container, 'magic')).toMatchObject({ swatch: null, rule: '0' });
+    expect(groupOf(container, 'size')).toMatchObject({ swatch: null, rule: '0' });
+    expect(groupOf(container, 'w')).toMatchObject({ swatch: null, rule: '1' });
+    for (const el of container.querySelectorAll('.swatch, .grp-rule')) expect(el.getAttribute('aria-hidden')).toBe('true');
+    expect(container.querySelectorAll('.swatch')).toHaveLength(2);
+  });
+
+  it('groups by the children of the only child of the root, like the hex view and the minimap', async () => {
+    const x = n('x', 0, 4, { children: [n('x1', 0, 4)] });
+    const y = n('y', 4, 4, { children: [n('y1', 4, 4)] });
+    const wrap = n('wrap', 0, 8, { children: [x, y] });
+    const root = n('file', 0, 8, { children: [wrap] });
+    const { container, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {} });
+    await findByText('x'); // the wrapper is open by default
+    expect(groupOf(container, 'wrap')).toMatchObject({ swatch: null, rule: null });
+    expect(groupOf(container, 'x')).toMatchObject({ swatch: '0', rule: null });
+    expect(groupOf(container, 'y')).toMatchObject({ swatch: '1', rule: null });
+  });
+
+  it('reports the chain from the root with every selection', async () => {
+    const { root, dib } = sample();
+    const onPath = vi.fn();
+    const { container, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {}, onPath });
+    await findByText('w');
+    await fireEvent.click(row(container, 'w'));
+    expect(onPath).toHaveBeenLastCalledWith([root, dib, dib.children![0]]);
+    await fireEvent.click(row(container, 'file'));
+    expect(onPath).toHaveBeenLastCalledWith([root]);
+  });
+
+  it('reports the chain through the elements of a fixed-size lazy array', async () => {
+    const elems = [n('t[0]', 6, 4, { children: [n('a', 6, 2)] }), n('t[1]', 10, 4, { children: [n('a', 10, 2)] })];
+    const arr = n('t', 6, 8, { lazy: { start: 6, count: 2, elemType: 'rec', elemSize: 4, loaded: 0, resumeOffset: null } });
+    const root = n('file', 0, 14, { children: [arr] });
+    const loadPage = vi.fn(async () => ({ nodes: elems, lazy: arr.lazy ?? null }));
+    const onPath = vi.fn();
+    const { container, component } = render(StructureTree, { root, loadPage, onSelect: () => {}, onPath });
+    await component.reveal([root.id, arr.id], 1, 11);
+    await waitFor(() => expect(onPath).toHaveBeenCalled());
+    const chain = onPath.mock.calls.at(-1)![0] as Node[];
+    expect(chain.map((x) => x.name)).toEqual(['file', 't', 't[1]', 'a']);
+    expect(container).toBeTruthy();
+  });
+
+  it('focus() moves keyboard focus to the tree', async () => {
+    const { root } = sample();
+    const { container, component, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {} });
+    await findByText('magic');
+    component.focus();
+    expect(document.activeElement).toBe(container.querySelector('[role="tree"]'));
+  });
+});
 
 describe('StructureTree', () => {
   it('shows root and top-level fields expanded by default with columns', async () => {
@@ -121,7 +189,7 @@ describe('StructureTree', () => {
     await waitFor(() => expect(rowsOf(container).length).toBeGreaterThan(5));
     expect(rowsOf(container).length).toBeLessThan(40);
     const scroller = container.querySelector('.scroller') as HTMLElement;
-    scroller.scrollTop = 22 * 50_000;
+    scroller.scrollTop = ROW * 50_000;
     await fireEvent.scroll(scroller);
     await waitFor(() => expect(row(container, 'k50000')).toBeTruthy());
     expect(rowsOf(container).length).toBeLessThan(40);
@@ -147,7 +215,7 @@ describe('StructureTree', () => {
       // the "load more" row sits below 200 elements, so it only exists once scrolled into the window
       expect(container.querySelector('.more')).toBeNull();
       const scroller = container.querySelector('.scroller') as HTMLElement;
-      scroller.scrollTop = 22 * 195;
+      scroller.scrollTop = ROW * 195;
       await fireEvent.scroll(scroller);
       await findByText(/Load more/);
 
@@ -231,11 +299,11 @@ describe('StructureTree pointer interaction', () => {
 
   it('clicking a partly clipped row selects it without scrolling', async () => {
     const { container, scroller, onSelect } = await renderFlat();
-    scroller.scrollTop = 22 * 5 + 11;
+    scroller.scrollTop = ROW * 5 + 11;
     await fireEvent.scroll(scroller);
     await waitFor(() => row(container, 'c2')); // rows: r, k0, c0, k1, k2, c2 (index 5, half clipped at the top), ...
     await fireEvent.click(row(container, 'c2'), { detail: 1 });
-    expect(scroller.scrollTop).toBe(22 * 5 + 11);
+    expect(scroller.scrollTop).toBe(ROW * 5 + 11);
     expect(row(container, 'c2').getAttribute('aria-selected')).toBe('true');
     expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'c2' }), expect.anything());
   });
@@ -325,7 +393,7 @@ describe('StructureTree pointer interaction', () => {
     const ids = rowsOf(container).map((r) => r.id);
     expect(ids.every((i) => i !== '')).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    scroller.scrollTop = 22 * 40; // the active row leaves the rendered window
+    scroller.scrollTop = ROW * 40; // the active row leaves the rendered window
     await fireEvent.scroll(scroller);
     await waitFor(() => expect(row(container, 'k2')).toBeUndefined());
     expect(tree.hasAttribute('aria-activedescendant')).toBe(false);

@@ -48,8 +48,12 @@
   }
   .collapse {
     border-color: transparent;
+    min-width: 24px;
+    min-height: 24px;
     padding: 4px 6px;
     display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--ink-quiet);
   }
   .body {

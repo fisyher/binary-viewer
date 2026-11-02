@@ -5,6 +5,7 @@ import App from './App.svelte';
 import type { EngineClient } from './worker/engine-client';
 import type { SaveHandle } from './core/save';
 import type { DetectionInfo } from './worker/protocol';
+import { chooseFormat, closePalette, formatShown, openFormatPicker } from './test/format-ui';
 
 beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 400 });
@@ -192,21 +193,20 @@ describe('App editing', () => {
 
   it('New creates an empty "Untitled" document; typing appends; no format is detected', async () => {
     const m = mockClient();
-    const { container, findByLabelText, getByText } = render(App, { createClient: () => m.client });
+    const { container, getByText } = render(App, { createClient: () => m.client });
     await fireEvent.click(button(container, 'New'));
     getByText('Untitled');
     getByText('Empty file (0 bytes)');
     await waitFor(() => expect(m.opens).toHaveLength(1));
     expect(m.opens[0]!.name).toBe('Untitled');
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    expect(select.value).toBe('');
+    expect(formatShown(container)).toBe('No format');
 
     await type(container, 'de');
     await type(container, 'ad');
     await waitFor(() => expect(hexCells(container).slice(0, 2)).toEqual(['DE', 'AD']));
     expect(dirtyMark(container)).not.toBeNull();
     expect(container.querySelector('.size')?.textContent).toContain('2 bytes');
-    expect(select.value).toBe(''); // still None after editing
+    expect(formatShown(container)).toBe('No format'); // still None after editing
   });
 
   it('asks before discarding unsaved edits when opening another file or starting a new one', async () => {
@@ -249,11 +249,10 @@ describe('App editing', () => {
 
   it('re-parses after edits with the chosen format, debounced (no pile-up while typing)', async () => {
     const m = mockClient();
-    const { container, findByLabelText } = render(App, { createClient: () => m.client });
+    const { container } = render(App, { createClient: () => m.client });
     await pick(container, new File([new Uint8Array(32)], 'a.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(m.opens).toHaveLength(1));
-    await fireEvent.change(select, { target: { value: 'x' } });
+    await chooseFormat(container, 'Format X');
     await waitFor(() => expect(m.parses.at(-1)).toBe('x'));
     const parsesBefore = m.parses.length;
 
@@ -556,16 +555,16 @@ describe('App saving: engine and load follow-ups', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const m = mockClient({ openGate: gate, detections: [{ specId: 'x', name: 'Format X', score: 1, reasons: ['extension'], magicMatched: true }] });
-    const { container, findByLabelText } = render(App, { createClient: () => m.client });
+    const { container } = render(App, { createClient: () => m.client });
     await pick(container, new File([new Uint8Array(4)], 'a.x'));
     await waitFor(() => expect(container.querySelector('.b[data-o="0"]')).not.toBeNull());
     await fireEvent.click(button(container, 'Save')); // the first open() is still pending
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('x'));
-    expect([...select.options].map((o) => o.value)).toContain('x');
+    await waitFor(() => expect(formatShown(container)).toBe('Format X'));
+    expect(await openFormatPicker(container)).toContain('Format X (magic)');
+    await closePalette();
     release(); // the superseded first open finishes late and must not clobber anything
     await tick(30);
-    expect(select.value).toBe('x');
+    expect(formatShown(container)).toBe('Format X');
   });
 
   it('a clipboard write that never settles does not block Save', async () => {
@@ -632,17 +631,16 @@ describe('App saving: engine and load follow-ups', () => {
 });
 
 describe('App: engine status and detection follow-ups', () => {
-  const formatBar = (c: HTMLElement) => c.querySelector('.formatbar')?.textContent ?? '';
+  const formatBar = (c: HTMLElement) => c.querySelector('footer.status')?.textContent ?? ''; // the parse state is in the status bar
 
   it('a parse in flight when a save ends unreadable does not leave "Parsing" behind', async () => {
     let release!: () => void;
     const parseGate = new Promise<void>((r) => (release = r));
     const m = mockClient({ parseGate });
     const disk = fakeFile([0, 1, 2, 3], 'disk.bin', { getFileFailsAfterClose: true });
-    const { container, findByLabelText } = render(App, { createClient: () => m.client });
+    const { container } = render(App, { createClient: () => m.client });
     await openViaPicker(container, disk.handle);
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: 'x' } });
+    await chooseFormat(container, 'Format X');
     await waitFor(() => expect(formatBar(container)).toMatch(/Parsing/i));
     await clickByte(container, 0);
     await type(container, 'aa');
@@ -658,11 +656,10 @@ describe('App: engine status and detection follow-ups', () => {
     let release!: () => void;
     const parseGate = new Promise<void>((r) => (release = r));
     const m = mockClient({ parseGate, failOpenAt: 2 });
-    const { container, findByLabelText } = render(App, { createClient: () => m.client });
+    const { container } = render(App, { createClient: () => m.client });
     await pick(container, new File([new Uint8Array(8)], 'a.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(m.opens).toHaveLength(1));
-    await fireEvent.change(select, { target: { value: 'x' } });
+    await chooseFormat(container, 'Format X');
     await waitFor(() => expect(formatBar(container)).toMatch(/Parsing/i));
     await clickByte(container, 0);
     await type(container, 'aa');
@@ -676,16 +673,15 @@ describe('App: engine status and detection follow-ups', () => {
     let release!: () => void;
     const openGate = new Promise<void>((r) => (release = r));
     const m = mockClient({ openGate, detections: [{ specId: 'x', name: 'Format X', score: 1, reasons: ['extension'], magicMatched: true }] });
-    const { container, findByLabelText } = render(App, { createClient: () => m.client });
+    const { container } = render(App, { createClient: () => m.client });
     await pick(container, new File([new Uint8Array(4)], 'a.x'));
     await waitFor(() => expect(container.querySelector('.b[data-o="0"]')).not.toBeNull());
     await clickByte(container, 0);
     await type(container, 'aa'); // the first open() is still pending
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(m.opens).toHaveLength(2), { timeout: 1500 });
-    await waitFor(() => expect(select.value).toBe('x'));
+    await waitFor(() => expect(formatShown(container)).toBe('Format X'));
     release();
     await tick(30);
-    expect(select.value).toBe('x');
+    expect(formatShown(container)).toBe('Format X');
   });
 });

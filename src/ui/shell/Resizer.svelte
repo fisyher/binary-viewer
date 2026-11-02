@@ -100,16 +100,16 @@
     height: 1px;
     cursor: row-resize;
   }
-  /* a wider hit area than the 1px rule */
+  /* a wider hit area than the 1px rule: 8px on each side, 17px in all */
   .resizer::after {
     content: '';
     position: absolute;
   }
   .vertical::after {
-    inset: 0 -4px;
+    inset: 0 -8px;
   }
   .horizontal::after {
-    inset: -4px 0;
+    inset: -8px 0;
   }
   .resizer:hover,
   .resizer.dragging {
@@ -119,7 +119,7 @@
     background: var(--signal);
     outline: none;
   }
-  /* hovering, dragging or focusing thickens the bar to 3px */
+  /* hovering, dragging or focusing draws a 2px line in the signal colour */
   .resizer::before {
     content: none;
     position: absolute;
@@ -131,9 +131,9 @@
     content: '';
   }
   .vertical::before {
-    inset: 0 -1px;
+    inset: 0 -1px 0 0;
   }
   .horizontal::before {
-    inset: -1px 0;
+    inset: 0 0 -1px 0;
   }
 </style>

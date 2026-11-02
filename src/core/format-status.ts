@@ -1,4 +1,4 @@
-/** Pure text helpers for the format bar. */
+/** Pure text helpers for the status bar's format and parse items. */
 import type { DetectionInfo } from '../worker/protocol';
 
 /** "magic + extension", "magic" or "extension" (extension-only is only a suggestion). */
@@ -39,4 +39,34 @@ export function describeStatus(s: ParseStatus): string {
     case 'error':
       return s.message ?? 'Parse failed';
   }
+}
+
+/**
+ * "Suggested from extension only" when the chosen format is the top detection and no magic matched (the file name was
+ * the only evidence); null otherwise.
+ */
+export function suggestionHint(detections: readonly DetectionInfo[], selected: string | null): string | null {
+  const top = detections[0];
+  return top && selected === top.specId && !top.magicMatched ? `Suggested from ${detectionBasis(top)} only` : null;
+}
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** The compact parts of a finished parse for the status bar ("22 nodes", "0 errors", "1 warning"); null while there is no tree summary. */
+export interface StatusParts {
+  /** "Truncated" / "Aborted" for a partial tree, else null. */
+  lead: string | null;
+  nodes: string;
+  errors: string;
+  warnings: string;
+}
+
+export function statusParts(s: ParseStatus): StatusParts | null {
+  if (s.state !== 'done' && s.state !== 'truncated' && s.state !== 'aborted') return null;
+  return {
+    lead: s.state === 'truncated' ? 'Truncated' : s.state === 'aborted' ? 'Aborted' : null,
+    nodes: count(s.nodes ?? 0, 'node'),
+    errors: count(s.errors ?? 0, 'error'),
+    warnings: count(s.warnings ?? 0, 'warning'),
+  };
 }

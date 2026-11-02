@@ -53,7 +53,7 @@ test.describe('viewer', () => {
     ]);
     await openBytes(page, 'a.zip', bytes);
     await expectParsed(page);
-    await expect(page.getByLabel('Format', { exact: true })).toHaveValue('zip');
+    await expect(statusBar(page).getByRole('button', { name: /^Format: ZIP Archive/ })).toBeVisible();
 
     // The tree is virtualized: walk it with the keyboard so the target rows are selected and therefore rendered.
     await revealRow(page, 'entries');
@@ -81,22 +81,22 @@ test.describe('viewer', () => {
       await revealRow(page, 'entries');
       await page.keyboard.press('ArrowRight'); // expand entries: many expandable entries[i] rows
       const tree = page.getByRole('tree', { name: 'Structure' });
-      await tree.evaluate((el) => (el.scrollTop += 330)); // bring the entries[i] rows into the window
+      await tree.evaluate((el) => (el.scrollTop += 15 * 24)); // bring the entries[i] rows into the window (rows are 24px)
       await expect(treeRow(page, 'entries[3]')).toBeVisible();
 
-      // Scroll so that the entry is cut by 11 px (half a row) at the ${clip} edge of the tree; row positions come from the layout.
+      // Scroll so that the entry is cut by 12 px (half a row) at the ${clip} edge of the tree; row positions come from the layout.
       const key = await tree.evaluate((el, edge) => {
         const rows = [...el.querySelectorAll<HTMLElement>('[role="treeitem"][aria-expanded="false"]')];
         const box = el.getBoundingClientRect();
         const pick = rows.filter((r) => (r.querySelector('.nm')?.textContent ?? '').startsWith('entries[')).find((r) => {
           const b = r.getBoundingClientRect();
-          return edge === 'top' ? b.top > box.top + 66 && b.bottom < box.bottom - 66 : b.top > box.top + 66 && b.bottom < box.bottom - 22;
+          return edge === 'top' ? b.top > box.top + 72 && b.bottom < box.bottom - 72 : b.top > box.top + 72 && b.bottom < box.bottom - 24;
         });
         if (!pick) throw new Error('no suitable entries[i] row in the window');
         const b = pick.getBoundingClientRect();
-        // content offset of the row's top edge, then shift so that 11 px of it are outside the viewport
+        // content offset of the row's top edge, then shift so that 12 px of it are outside the viewport
         const contentTop = b.top - box.top + el.scrollTop;
-        el.scrollTop = edge === 'top' ? contentTop + 11 : contentTop + 11 - el.clientHeight;
+        el.scrollTop = edge === 'top' ? contentTop + 12 : contentTop + 12 - el.clientHeight;
         return pick.getAttribute('data-key')!;
       }, clip);
       const target = page.locator(`[role="treeitem"][data-key="${key}"]`);
@@ -108,9 +108,9 @@ test.describe('viewer', () => {
         const b = el.querySelector(`[data-key="${k}"]`)!.getBoundingClientRect();
         const box = el.getBoundingClientRect();
         const clipped = edge === 'top' ? box.top - b.top : b.bottom - box.bottom;
-        return { x: b.left + 60, y: edge === 'top' ? b.bottom - 4 : b.top + 4, clipped };
+        return { x: b.left + 95, y: edge === 'top' ? b.bottom - 4 : b.top + 4, clipped }; // in the name column, right of the 24px twisty
       }, [key, clip] as const);
-      expect(Math.round(pt.clipped)).toBe(11);
+      expect(Math.round(pt.clipped)).toBe(12);
       await page.mouse.dblclick(pt.x, pt.y);
 
       await expect(target).toHaveAttribute('aria-expanded', 'true');
@@ -724,7 +724,7 @@ test.describe('command palette', () => {
     await page.keyboard.press('Enter');
     await expect(dialog(page).getByRole('option', { name: /None \(raw\)/ })).toBeVisible();
     await dialog(page).getByRole('option', { name: /None \(raw\)/ }).click();
-    await expect(page.getByLabel('Format', { exact: true })).toHaveValue('');
+    await expect(statusBar(page).getByRole('button', { name: 'Format: No format. Choose format' })).toBeVisible();
   });
 });
 
@@ -747,5 +747,208 @@ test.describe('command palette: held keys', () => {
     await page.keyboard.up('k');
     await page.keyboard.up('Control');
     await expect(dialog).toBeVisible();
+  });
+});
+
+test.describe('UX refinement', () => {
+  const box = async (locator: import('@playwright/test').Locator) => {
+    await expect(locator).toBeVisible();
+    const b = await locator.boundingBox();
+    expect(b, 'bounding box').not.toBeNull();
+    return b!;
+  };
+
+  test('the tree twisty and the jump button are at least 24 x 24 CSS px, and the rows are as tall', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const twisty = treeRow(page, 'file_header').locator('[data-twisty]');
+    const t = await box(twisty);
+    expect(t.width).toBeGreaterThanOrEqual(23.99); // fractional layout (Firefox) may land a hair under
+    expect(t.height).toBeGreaterThanOrEqual(23.99);
+    const jump = treeRow(page, 'off_bits').getByRole('button', { name: /Go to pixel data/ });
+    const j = await box(jump);
+    expect(j.width).toBeGreaterThanOrEqual(23.99);
+    expect(j.height).toBeGreaterThanOrEqual(23.99);
+    // the hit area of the twisty does not reach into the neighbouring row's
+    const rows = await page.getByRole('treeitem').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).slice(0, 4));
+    for (let i = 1; i < rows.length; i++) expect(rows[i]!.top).toBeGreaterThanOrEqual(rows[i - 1]!.bottom - 0.5);
+    expect(rows[0]!.height).toBeGreaterThanOrEqual(24);
+  });
+
+  test('buttons in the panels, the title bar and the status bar are at least 24px each way', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const buttons = [
+      page.getByRole('button', { name: /^Byte order: / }), // the inspector
+      page.getByRole('button', { name: 'Hide data inspector' }),
+      page.getByRole('button', { name: 'Hide side bar' }),
+      page.getByRole('button', { name: 'Hide problems panel' }),
+      page.getByRole('button', { name: 'Problems', exact: true }),
+      page.getByRole('button', { name: 'New', exact: true }),
+      page.getByRole('button', { name: 'Open…' }),
+      page.getByRole('button', { name: 'Commands' }),
+      page.getByRole('button', { name: 'About', exact: true }),
+    ];
+    for (const b of buttons) {
+      const r = await box(b);
+      expect(r.width, String(b)).toBeGreaterThanOrEqual(23.99);
+      expect(r.height, String(b)).toBeGreaterThanOrEqual(23.99);
+    }
+    // every button in the status bar fills the bar and is at least 24px wide
+    const bar = statusBar(page);
+    const barBox = await box(bar);
+    const heights = await bar.locator('button').evaluateAll((els) => els.filter((e) => (e as HTMLButtonElement).offsetParent !== null).map((e) => e.getBoundingClientRect()));
+    expect(heights.length).toBeGreaterThanOrEqual(5);
+    for (const r of heights) {
+      expect(r.width).toBeGreaterThanOrEqual(23.99);
+      expect(r.height).toBeGreaterThanOrEqual(22);
+      expect(r.height).toBeGreaterThanOrEqual(barBox.height - 2);
+    }
+  });
+
+  test('the resizer has a 17px hit area around its 1px line', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const sep = page.getByRole('separator', { name: 'Resize side bar' });
+    const line = await box(sep);
+    expect(line.width).toBeLessThanOrEqual(1.5);
+    const hit = await sep.evaluate((el) => {
+      const r = getComputedStyle(el, '::after');
+      return { left: parseFloat(r.left), width: parseFloat(r.width) };
+    });
+    expect(hit.width).toBeGreaterThanOrEqual(16.5);
+    // a press 7px from the line still grabs it
+    const before = await page.getByRole('separator', { name: 'Resize side bar' }).getAttribute('aria-valuenow');
+    await page.mouse.move(line.x + 0.5 + 7, line.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(line.x + 0.5 + 47, line.y + 100);
+    await page.mouse.up();
+    expect(Number(await sep.getAttribute('aria-valuenow'))).toBeGreaterThan(Number(before));
+  });
+
+  test('F6 and Shift+F6 move through the regions in visual order', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const region = () => page.evaluate(() => document.activeElement?.closest('[data-region]')?.getAttribute('data-region') ?? null);
+    await hexView(page).focus();
+    const seen: Array<string | null> = [];
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('F6');
+      seen.push(await region());
+    }
+    expect(seen).toEqual(['bottom', 'inspector', 'status', 'activity', 'side', 'editor']);
+    await page.keyboard.press('Shift+F6');
+    expect(await region()).toBe('side');
+    await page.keyboard.press('Shift+F6');
+    expect(await region()).toBe('activity');
+    // collapsed regions are skipped
+    await page.getByRole('button', { name: 'Hide data inspector' }).click();
+    await hexView(page).focus();
+    await page.keyboard.press('F6');
+    expect(await region()).toBe('bottom');
+    await page.keyboard.press('F6');
+    expect(await region()).toBe('status');
+  });
+
+  test('the breadcrumb follows hex clicks and keyboard moves, and a segment selects its node', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const nav = page.getByRole('navigation', { name: 'Structure path' });
+    await expect(nav.getByRole('button')).toHaveText(['file']);
+    await hexByte(page, 10).click(); // off_bits
+    await expect(nav.getByRole('button')).toHaveText(['file', 'file_header', 'off_bits']);
+    await expect(nav.getByRole('button', { name: 'off_bits' })).toHaveAttribute('aria-current', 'location');
+    await expect(nav.getByRole('button', { name: 'off_bits' })).toHaveAttribute('title', /^off_bits : .+ @ 0xA \(size 4\)$/);
+    await nav.getByRole('button', { name: 'file_header' }).click();
+    await expectSelection(page, 0, 14);
+    await expect(treeRow(page, 'file_header')).toHaveAttribute('aria-selected', 'true');
+    await hexView(page).focus();
+    for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowDown'); // 16 bytes each: into the DIB header
+    await expect(nav.getByRole('button').nth(1)).toHaveText('dib', { timeout: 3000 });
+  });
+
+  test('the status bar holds the format, the parse summary and the actions', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const bar = statusBar(page);
+    await expect(page.getByLabel('Format', { exact: true })).toHaveCount(0); // the old selector is gone
+    await expect(bar.getByRole('button', { name: 'Format: Windows Bitmap. Choose format' })).toBeVisible();
+    await expect(bar.getByRole('button', { name: /^Show problems: 0 errors/ })).toContainText(/\d+ nodes\s*·\s*0 errors\s*·\s*0 warnings/);
+    // the summary opens and focuses Problems
+    await page.getByRole('button', { name: 'Hide problems panel' }).click();
+    await bar.getByRole('button', { name: /^Show problems/ }).click();
+    await expect(page.getByRole('button', { name: 'Problems', exact: true })).toBeFocused();
+    // the format button opens Choose format
+    await bar.getByRole('button', { name: /^Format: / }).click();
+    await expect(page.getByRole('dialog', { name: 'Choose format' })).toBeVisible();
+    await page.getByRole('option', { name: /None \(raw\)/ }).click();
+    await expect(bar.getByRole('button', { name: 'Format: No format. Choose format' })).toBeVisible();
+    // the edit mode and the selection are actions
+    await bar.getByRole('button', { name: 'Edit mode: Overwrite. Switch to insert' }).click();
+    await expect(bar.getByRole('button', { name: 'Edit mode: Insert. Switch to overwrite' })).toBeVisible();
+    await bar.getByRole('button', { name: /No selection/ }).click();
+    await expect(page.getByRole('dialog', { name: 'Go to offset' })).toBeVisible();
+  });
+
+  test('the activity bar label shows on keyboard focus, and is not clipped by the side bar', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const item = page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Formats' });
+    const tip = item.locator('.tip');
+    await expect(tip).toBeHidden();
+    await page.keyboard.press('Tab'); // some control gets focus; walk to the activity bar with F6
+    await page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(item).toBeFocused();
+    await expect(tip).toBeVisible();
+    await expect(tip).toHaveText('Formats');
+    // it sits to the right of the bar, over the side bar; the bar clips nothing and stacks above the side bar
+    const tb = await box(tip);
+    const nav = page.getByRole('navigation', { name: 'Activity bar' });
+    const nb = await box(nav);
+    expect(tb.x).toBeGreaterThanOrEqual(nb.x + nb.width);
+    const style = await nav.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { overflow: cs.overflow, z: Number(cs.zIndex), side: Number(getComputedStyle(document.querySelector('.side-slot')!).zIndex) || 0 };
+    });
+    expect(style.overflow).toBe('visible');
+    expect(style.z).toBeGreaterThan(style.side);
+  });
+
+  test('the focus ring colour reaches 3:1 on the ground and chrome backgrounds in the light theme', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await gotoApp(page);
+    const ratio = await page.evaluate(() => {
+      const css = getComputedStyle(document.documentElement);
+      const lum = (hexColor: string) => {
+        const n = parseInt(hexColor.trim().slice(1), 16);
+        const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+          const v = c / 255;
+          return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+        }) as [number, number, number];
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const s = lum(css.getPropertyValue('--signal'));
+      return ['--ground', '--chrome', '--chrome-deep'].map((n) => {
+        const o = lum(css.getPropertyValue(n));
+        return (Math.max(s, o) + 0.05) / (Math.min(s, o) + 0.05);
+      });
+    });
+    for (const r of ratio) expect(r).toBeGreaterThanOrEqual(3);
+  });
+
+  test('the minimap tooltip names the region under the pointer', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(4000));
+    await expectParsed(page);
+    const strip = minimap(page);
+    const b = await box(strip);
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); // the middle of the file: the pixel data
+    await expect(strip.locator('.tip')).toContainText(/^pixels · 0x[0-9A-F]{8}$/);
   });
 });

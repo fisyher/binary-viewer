@@ -173,6 +173,13 @@
     scroller?.focus();
   }
 
+  /** Switch between insert and overwrite (what the Insert key does); nothing while the document is locked or read-only. */
+  export function toggleInsert() {
+    if (locked || !editor) return;
+    insertMode = !insertMode;
+    half = null;
+  }
+
   /** Re-attempt a failed read now. */
   export function retry() {
     clearTimeout(retryTimer);

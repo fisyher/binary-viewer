@@ -10,6 +10,7 @@
     recent,
     onUse,
     onClose,
+    initial = undefined,
   }: {
     commands: Command[];
     /** Ids of the most recently used commands, newest first (listed first while the query is empty). */
@@ -18,6 +19,8 @@
     onUse: (id: string) => void;
     /** Close the palette; `then` runs once the background is live again and focus is back where it was. */
     onClose: (then?: () => void) => void;
+    /** Id of a command to enter at once (its sub-mode opens instead of the list), e.g. the status bar's format button opens "Choose format". */
+    initial?: string;
   } = $props();
 
   const uid = $props.id();
@@ -157,7 +160,14 @@
     offsetMode ? '' : rows.length === 0 ? emptyText : `${rows.length} ${rows.length === 1 ? 'result' : 'results'}. ${moreText}`.trim(),
   );
 
-  onMount(() => input?.focus());
+  onMount(() => {
+    input?.focus();
+    const first = initial === undefined ? undefined : commands.find((c) => c.id === initial);
+    if (first) {
+      chooseCommand(first); // a disabled or sub-less command just leaves the plain palette open
+      modeCommand = null; // opened by a button, not picked from the list: not a "recent" command
+    }
+  });
 
   $effect(() => {
     // Keep the active option in view (jsdom has no scrollIntoView).

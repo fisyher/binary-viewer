@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
+import { formatShown } from './test/format-ui';
 import type { SaveHandle } from './core/save';
 import { SpecLibrary } from './core/spec-library';
 import { createMemoryStore } from './core/spec-store';
@@ -82,9 +83,9 @@ async function setup(seed: Array<[string, string]> = [['mine', mine], ['other', 
   // `calls.drafts` are the preview client's parseDraft calls, `calls.parses` the viewer client's parse calls.
   const c = { client: v.client, calls: { ...v.calls, drafts: p.calls.drafts }, viewer: v.calls, pclient: p.client, preview: p.calls, made };
   await pick(r.container, file());
-  const select = (await r.findByLabelText('Format')) as HTMLSelectElement;
+  await r.findByRole('button', { name: /^Format: / });
   if (seed.length > 0) {
-    await waitFor(() => expect(select.value).toBe('mine'), T);
+    await waitFor(() => expect(formatShown(r.container)).toBe('Mine'), T);
     await waitFor(() => expect(names(viewerTree(r.container))).toContain('sig'), T);
   }
   const toFormats = async (id: string, tab?: string) => {
@@ -94,7 +95,7 @@ async function setup(seed: Array<[string, string]> = [['mine', mine], ['other', 
     if (tab) await fireEvent.click(r.getByRole('tab', { name: tab }));
   };
   const json = () => r.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Spec JSON"]')!;
-  return { ...r, lib, ...c, select, toFormats, json };
+  return { ...r, lib, ...c, toFormats, json };
 }
 
 describe('Preview on open file', () => {
@@ -165,7 +166,7 @@ describe('Preview on open file', () => {
   });
 
   it('Show in viewer selects and highlights the node range and leaves the viewer on its own format', async () => {
-    const { container, toFormats, select } = await setup();
+    const { container, toFormats } = await setup();
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
     const row = [...preview(container)!.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === 'zzz')!;
@@ -176,8 +177,10 @@ describe('Preview on open file', () => {
       for (const o of [0, 1, 2, 3]) expect(container.querySelector(`.b.sel[data-o="${o}"]`)).not.toBeNull();
     }, T);
     expect(container.querySelector('.b.sel[data-o="4"]')).toBeNull();
+    // The breadcrumb follows the shown bytes: the node at the target, not whatever was located before
+    await waitFor(() => expect([...container.querySelectorAll('nav[aria-label="Structure path"] button')].map((b) => b.textContent).at(-1)).toBe('sig'), T);
     // The viewer still names and shows its own format, never the draft's tree.
-    expect(select.value).toBe('mine');
+    expect(formatShown(container)).toBe('Mine');
     await waitFor(() => expect(names(viewerTree(container))).toContain('sig'), T);
     expect(names(viewerTree(container))).not.toContain('zzz');
   });
@@ -199,7 +202,7 @@ describe('Preview on open file', () => {
   });
 
   it('switching back to the Viewer does not re-parse it: the viewer tree was never touched', async () => {
-    const { container, toFormats, select, viewer, getByRole } = await setup();
+    const { container, toFormats, viewer, getByRole } = await setup();
     const rootRow = viewerTree(container).querySelector('[role="treeitem"]');
     await toFormats('other');
     await waitFor(() => expect(names(preview(container)!)).toContain('zzz'), T);
@@ -212,7 +215,7 @@ describe('Preview on open file', () => {
     expect(viewerTree(container).querySelector('[role="treeitem"]')).toBe(rootRow); // same DOM: no refresh happened
     expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest']));
     expect(names(viewerTree(container))).not.toContain('zzz');
-    expect(select.value).toBe('mine');
+    expect(formatShown(container)).toBe('Mine');
     await fireEvent.click(getByRole('button', { name: 'Formats' }));
     await fireEvent.click(fileTab(container));
     await sleep(50);
@@ -356,8 +359,7 @@ describe('New format flow', () => {
     // Open a file with the magic: the viewer detects the new format.
     await fireEvent.click(fileTab(container));
     await pick(container, new File([Uint8Array.from([0xca, 0xfe, 1, 2, 3, 4])], 'y.caf'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('cafe'), T);
+    await waitFor(() => expect(formatShown(container)).toBe('Cafe'), T);
     await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['magic', 'value'])), T);
   });
 
@@ -435,7 +437,7 @@ describe('Preview: races and stale state', () => {
   });
 
   it('a viewer edit whose debounced reparse lands while the preview is open ends with both views right', async () => {
-    const { container, toFormats, calls, select, getByRole } = await setup();
+    const { container, toFormats, calls, getByRole } = await setup();
     const parsesBefore = calls.parses.length;
     await editByte(container, 5, 'aa');
     await toFormats('other'); // the 300 ms reparse is still pending
@@ -445,7 +447,7 @@ describe('Preview: races and stale state', () => {
     await fireEvent.click(fileTab(container));
     await waitFor(() => expect(names(viewerTree(container))).toEqual(expect.arrayContaining(['sig', 'rest'])), T);
     expect(names(viewerTree(container))).not.toContain('zzz');
-    expect(select.value).toBe('mine');
+    expect(formatShown(container)).toBe('Mine');
     expect(container.querySelector('.b[data-o="5"]')!.textContent!.toLowerCase()).toBe('aa');
   });
 

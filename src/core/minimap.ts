@@ -97,3 +97,35 @@ export function smallRegionRows(
   }
   return out;
 }
+
+/** The region of [start, end) that contains `offset`, or null (regions are in file order; the first match wins). */
+export function regionAt<R extends { start: number; end: number }>(regions: ReadonlyArray<R>, offset: number): R | null {
+  for (const r of regions) if (offset >= r.start && offset < r.end) return r;
+  return null;
+}
+
+/**
+ * Device rows where a 1 CSS px boundary line is painted between neighbouring regions, so that regions that share a
+ * colour (or sit side by side in a similar one) can be told apart. One line at the top of every region that touches the
+ * one before it (it starts where the previous one ends, or earlier). Only between regions that are both at least
+ * 4 CSS px tall: a thin region would be erased by its own boundary. `px` is one CSS pixel in device pixels.
+ */
+export function regionBoundaryRows(
+  regions: ReadonlyArray<{ start: number; end: number }>,
+  size: number,
+  heightPx: number,
+  px: number,
+): number[] {
+  const out: number[] = [];
+  if (!(size > 0) || !(heightPx > 0)) return out;
+  const min = Math.max(1, px) * 4;
+  const tall = (r: { start: number; end: number }) => ((Math.min(size, r.end) - Math.max(0, r.start)) / size) * heightPx >= min;
+  for (let i = 1; i < regions.length; i++) {
+    const prev = regions[i - 1]!;
+    const r = regions[i]!;
+    if (r.start > prev.end || !tall(prev) || !tall(r)) continue;
+    const y = rangeToRows(r.start, r.end, size, heightPx).y0;
+    if (y > 0 && out[out.length - 1] !== y) out.push(y);
+  }
+  return out;
+}

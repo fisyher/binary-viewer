@@ -3,11 +3,14 @@
  * Structure-only (it never reads file bytes) and O(nodes + buckets) in time and memory, whatever the file size.
  */
 import type { Node } from '../core/engine';
+import { GROUP_COUNT, groupOfIndex, topGroupNodes } from '../core/groups';
 
 export const MIN_OVERVIEW_BUCKETS = 16;
 export const MAX_OVERVIEW_BUCKETS = 4096;
-/** Colour groups, as in the hex view's tints (the root child's index modulo this). */
-const GROUPS = 4;
+/** Colour groups, as in the hex view's tints (the index of the top-level group node modulo this; see core/groups). */
+const GROUPS = GROUP_COUNT;
+/** Longest region name kept (the name is the grouping node's, which comes from the file's spec). */
+export const MAX_REGION_NAME = 64;
 
 export const clampBuckets = (n: number): number => Math.min(MAX_OVERVIEW_BUCKETS, Math.max(MIN_OVERVIEW_BUCKETS, n));
 
@@ -23,7 +26,7 @@ export function bucketStarts(size: number, n: number): Float64Array {
 /**
  * Bucket b holds 0 (no parsed node touches [starts[b], starts[b+1])) or the dominant group + 1. Leaves are taken as the
  * hex view's `ranges` takes them: nodes without children (an unexpanded lazy array is one leaf), `bits` nodes skipped,
- * the group being the index of the root child modulo 4. Dominance is by covered bytes in the bucket (overlapping leaves
+ * the group being the index of the top-level group node (core/groups) modulo 4. Dominance is by covered bytes in the bucket (overlapping leaves
  * count twice); a tie goes to the lower group, and any covered byte makes the bucket non-empty.
  */
 export function computeOverview(root: Node, size: number, n: number): Uint8Array {
@@ -59,8 +62,8 @@ export function computeOverview(root: Node, size: number, n: number): Uint8Array
     diff[(bf + 1) * GROUPS + v]!++;
     diff[bl * GROUPS + v]!--;
   };
-  (root.children ?? []).forEach((top, g) => {
-    const v = g % GROUPS;
+  topGroupNodes(root).forEach((top, g) => {
+    const v = groupOfIndex(g);
     const stack: Node[] = [top];
     while (stack.length > 0) {
       const nd = stack.pop()!;
@@ -87,24 +90,33 @@ export function computeOverview(root: Node, size: number, n: number): Uint8Array
   return out;
 }
 
-/** A top-level region of the tree: the byte range [start, end) of one node and its colour group (0..3). */
+/** A top-level region of the tree: the byte range [start, end) of one node, its colour group (0..3) and the node's name. */
 export interface OverviewRegion {
   start: number;
   end: number;
   group: number;
+  /** The grouping node's name, at most MAX_REGION_NAME characters (shown as the minimap's tooltip). */
+  name: string;
 }
 
 export const MAX_OVERVIEW_REGIONS = 1024;
 
+/** At most MAX_REGION_NAME code points: a surrogate pair is never cut in half. */
+function truncateName(s: string): string {
+  return Array.from(s.slice(0, MAX_REGION_NAME * 2))
+    .slice(0, MAX_REGION_NAME)
+    .join('');
+}
+
 /**
  * The root's children as regions, in file order, so that small ones (a 14-byte header in a 64 MiB file) can be drawn
- * even where no bucket is dominated by them. Zero-size, `bits` and out-of-file nodes are skipped. A root with a single
- * child shows that child's children instead (one level only). The group is the index among the nodes listed (modulo 4),
- * which for a normal root is the group `ranges` uses. At most MAX_OVERVIEW_REGIONS are kept (`truncated` says if more existed).
+ * even where no bucket is dominated by them. Zero-size, `bits` and out-of-file nodes are skipped. The nodes are
+ * `topGroupNodes(root)` (a root with a single child shows that child's children, one level only), and the group is the
+ * index among them (modulo 4): the group `ranges` and the bucket colours use too. At most MAX_OVERVIEW_REGIONS are
+ * kept (`truncated` says if more existed).
  */
 export function computeRegions(root: Node, size: number): { regions: OverviewRegion[]; truncated: boolean } {
-  let top = root.children ?? [];
-  if (top.length === 1 && top[0]!.children && top[0]!.children.length > 0) top = top[0]!.children;
+  const top = topGroupNodes(root);
   const regions: OverviewRegion[] = [];
   let truncated = false;
   top.forEach((nd, i) => {
@@ -116,7 +128,7 @@ export function computeRegions(root: Node, size: number): { regions: OverviewReg
       truncated = true;
       return;
     }
-    regions.push({ start, end, group: i % GROUPS });
+    regions.push({ start, end, group: groupOfIndex(i), name: truncateName(String(nd.name)) });
   });
   regions.sort((x, y) => x.start - y.start);
   return { regions, truncated };

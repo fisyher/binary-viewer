@@ -257,12 +257,12 @@ describe('inspector panel', () => {
 
 describe('status bar', () => {
   it('shows the format and toggles the byte order like the inspector does', async () => {
-    const { container, getByRole, findByLabelText } = await mount();
+    const { container, getByRole, findByRole } = await mount();
     const status = container.querySelector('footer.status') as HTMLElement;
-    expect(within(status).queryByTitle('Format used to parse the file')).toBeNull(); // no file yet
+    expect(within(status).queryByRole('button', { name: /^Format: / })).toBeNull(); // no file yet
     await pick(container, new File([Uint8Array.from([0x42, 0x4d, 1, 2, 3, 4])], 'x.bmp'));
-    await findByLabelText('Format');
-    await waitFor(() => expect(within(status).getByTitle('Format used to parse the file').textContent).toBe('Windows Bitmap'));
+    await findByRole('button', { name: /^Format: / });
+    await waitFor(() => expect(within(status).getByRole('button', { name: /^Format: / }).textContent?.trim()).toBe('Windows Bitmap'));
 
     const inspectorBtn = () => getByRole('button', { name: /^Byte order: / });
     const statusBtn = () => within(status).getByRole('button', { name: /^Value byte order: / });
@@ -286,12 +286,12 @@ describe('status bar', () => {
 
 describe('problems panel', () => {
   it('lists the diagnostics, always expanded, and counts them in its header', async () => {
-    const { container, getByRole, findByLabelText, queryByRole } = await mount();
+    const { container, getByRole, findByRole, queryByRole } = await mount();
     expect(queryByRole('button', { name: 'Problems' })).toBeNull(); // nothing open
     const bmp = new Uint8Array(30);
     bmp.set([0x42, 0x4d]);
     await pick(container, new File([bmp], 'cut.bmp')); // truncated inside the DIB header
-    await findByLabelText('Format');
+    await findByRole('button', { name: /^Format: / });
     await waitFor(() => expect(container.querySelectorAll('.diag .item').length).toBeGreaterThan(0));
     const title = getByRole('button', { name: 'Problems' });
     expect(title.getAttribute('aria-expanded')).toBe('true');
@@ -317,9 +317,9 @@ describe('side bar stays mounted while collapsed', () => {
   const row = (c: HTMLElement, name: string) => [...c.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.querySelector('.nm')?.textContent === name);
 
   it('keeps the tree (same DOM, expansion state) across collapse and reopen', async () => {
-    const { container, getByRole, findByLabelText } = await mount();
+    const { container, getByRole, findByRole } = await mount();
     await pick(container, new File([bmp()], 'a.bmp'));
-    await findByLabelText('Format');
+    await findByRole('button', { name: /^Format: / });
     await waitFor(() => expect(row(container, 'file')).toBeTruthy());
     const tree = container.querySelector('[role="tree"]')!;
     expect(row(container, 'file')!.getAttribute('aria-expanded')).toBe('true');
@@ -333,9 +333,9 @@ describe('side bar stays mounted while collapsed', () => {
   });
 
   it('a hex click while collapsed still reveals the node in the tree (seen after reopening)', async () => {
-    const { container, getByRole, findByLabelText } = await mount();
+    const { container, getByRole, findByRole } = await mount();
     await pick(container, new File([bmp()], 'a.bmp'));
-    await findByLabelText('Format');
+    await findByRole('button', { name: /^Format: / });
     await waitFor(() => expect(row(container, 'file')).toBeTruthy());
     await fireEvent.click(getByRole('button', { name: 'Hide side bar' }));
     const byte = container.querySelector('.b[data-o="1"]')!;

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { formatOffset, offsetWidth } from '../core/hex-format';
-  import { bandsFromBuckets, offsetAtY, rangeToRows, smallRegionRows } from '../core/minimap';
+  import { bandsFromBuckets, offsetAtY, rangeToRows, regionAt, regionBoundaryRows, smallRegionRows } from '../core/minimap';
+  import { sanitizeText } from '../core/tree-model';
   import { paintMinimap, readPalette } from './minimap-paint';
 
   let {
@@ -17,7 +18,7 @@
     /** Length of the open document in bytes. */
     size: number;
     /** The worker's structure summary; ignored when it was computed for another size (edited since). */
-    overview?: { size: number; buckets: Uint8Array; regions?: ReadonlyArray<{ start: number; end: number; group: number }> } | null;
+    overview?: { size: number; buckets: Uint8Array; regions?: ReadonlyArray<{ start: number; end: number; group: number; name?: string }> } | null;
     /** Bytes on screen in the hex view, [start, end). */
     viewport?: { start: number; end: number } | null;
     /** Selected bytes, end inclusive. */
@@ -43,6 +44,7 @@
   let themeTick = $state(0);
   let hover = $state<{ y: number; offset: number } | null>(null);
   let dragging = false;
+  let kbFocus = $state(false); // focused from the keyboard (not by a pointer press): the tooltip then follows the view centre
 
   const wPx = $derived(Math.round(cssW * dpr));
   const hPx = $derived(Math.round(cssH * dpr));
@@ -50,6 +52,8 @@
   const bands = $derived(shown ? bandsFromBuckets(shown.buckets, hPx) : null);
   // Regions too small for the bands (a header in a big file) are drawn at a 2 CSS px minimum, over them.
   const marks = $derived(shown ? smallRegionRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(dpr))) : null);
+  // A 1 CSS px ground line between neighbouring regions, so same-coloured neighbours stay distinguishable.
+  const boundaries = $derived(shown ? regionBoundaryRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(dpr))) : null);
   const view = $derived(viewport && size > 0 ? rangeToRows(viewport.start, viewport.end, size, hPx, Math.round(4 * dpr)) : null);
   const selRows = $derived(selection && size > 0 ? rangeToRows(selection.start, selection.end + 1, size, hPx, Math.round(2 * dpr)) : null);
   const structured = $derived((bands ?? []).filter((b) => b.v > 0));
@@ -59,6 +63,20 @@
   const top = $derived(Math.min(maxTop, Math.max(0, viewport?.start ?? 0)));
   const width = $derived(offsetWidth(size));
 
+  // The tooltip: under the pointer while hovering, else (keyboard focus) at the centre of the bytes on screen.
+  const tipAt = $derived.by(() => {
+    if (hover) return hover;
+    if (!kbFocus || !viewport || size <= 0 || !(cssH > 0)) return null;
+    const offset = Math.min(size - 1, Math.max(0, Math.floor((viewport.start + viewport.end) / 2)));
+    return { y: (offset / size) * cssH, offset };
+  });
+  const tipText = $derived.by(() => {
+    if (!tipAt) return '';
+    const hex = formatOffset(tipAt.offset, width);
+    const region = regionAt(shown?.regions ?? [], tipAt.offset);
+    return region?.name ? `${sanitizeText(region.name, 64)} · 0x${hex}` : hex;
+  });
+
   // Repaint on any change of what is drawn, of the canvas size, or of the theme colours.
   $effect(() => {
     void themeTick;
@@ -67,7 +85,7 @@
     if (canvas.height !== hPx) canvas.height = hPx;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    paintMinimap(ctx, { width: wPx, height: hPx, dpr, bands, marks, view, selection: selRows, palette: readPalette(canvas) });
+    paintMinimap(ctx, { width: wPx, height: hPx, dpr, bands, marks, boundaries, view, selection: selRows, palette: readPalette(canvas) });
   });
 
   // Theme: data-theme on <html> or the system colour scheme.
@@ -116,6 +134,15 @@
     if (!(r.height > 0)) return null;
     const y = e.clientY - r.top;
     return { y: Math.min(r.height, Math.max(0, y)), offset: offsetAtY(y, r.height, size) };
+  }
+
+  function onFocus() {
+    // Only a keyboard focus shows the tooltip by itself (a click focuses the strip too, and the pointer has its own).
+    try {
+      kbFocus = el?.matches(':focus-visible') ?? false;
+    } catch {
+      kbFocus = true; // no :focus-visible support: assume the keyboard
+    }
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -203,12 +230,14 @@
   onpointerup={endDrag}
   onpointercancel={endDrag}
   onpointerleave={() => (hover = null)}
+  onfocus={onFocus}
+  onblur={() => (kbFocus = false)}
   onwheel={onWheel}
   onkeydown={onKeyDown}
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
-  {#if hover}
-    <div class="tip" aria-hidden="true" style:top="{hover.y}px">{formatOffset(hover.offset, width)}</div>
+  {#if tipAt}
+    <div class="tip" aria-hidden="true" style:top="{tipAt.y}px">{tipText}</div>
   {/if}
 </div>
 
@@ -250,6 +279,9 @@
     line-height: 1.4;
     pointer-events: none;
     white-space: nowrap;
+    max-width: 36ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
     z-index: 2;
   }
   @media (max-width: 599px) {

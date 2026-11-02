@@ -5,6 +5,7 @@ import App from './App.svelte';
 import { SpecLibrary } from './core/spec-library';
 import { createMemoryStore } from './core/spec-store';
 import { builtins, specText } from './test/spec-fixtures';
+import { chooseFormat, formatOptions, formatShown } from './test/format-ui';
 import { createInlineClient } from './worker/inline-client';
 
 beforeAll(() => {
@@ -107,7 +108,7 @@ describe('App: file tab / spec tab', () => {
     const lib = await mkLib();
     const { container, getByRole, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([1, 2, 3, 4, 5, 6])], 'data.bin'));
-    await findByLabelText('Format');
+    await waitFor(() => expect(formatShown(container)).toBe('No format'));
     await waitFor(() => expect(container.querySelector('.b[data-o="3"]')).not.toBeNull());
     const byte = container.querySelector('.b[data-o="3"]')!;
     await fireEvent.mouseDown(byte);
@@ -341,61 +342,57 @@ describe('App: file tab / spec tab', () => {
 describe('App: custom formats reach the engine', () => {
   it('detects with a custom spec, marks it (custom), and parses with it', async () => {
     const lib = await mkLib([['mine', customSpec()]]);
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect([...select.options].map((o) => o.textContent)).toContain('Mine (magic) (custom)'));
-    await waitFor(() => expect(select.value).toBe('mine'));
+    await waitFor(() => expect(formatShown(container)).toBe('Mine'));
+    expect(await formatOptions(container)).toContain('Mine (magic) (custom)');
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
   });
 
   it('a spec added while a file is open appears in the list but never switches or reparses the open file', async () => {
     const lib = await mkLib();
     const c = counting();
-    const { container, findByLabelText } = render(App, { createClient: () => c.client, createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => c.client, createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(container.querySelector('.b[data-o="0"]')).not.toBeNull());
     await waitFor(() => expect(c.opens).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 20));
     const before = { opens: c.opens, parses: c.parses };
-    expect(select.value).toBe('');
+    expect(formatShown(container)).toBe('No format');
     await lib.create('mine');
     await lib.save('mine', customSpec());
-    await waitFor(() => expect([...select.options].some((o) => o.value === 'mine')).toBe(true));
-    expect(select.value).toBe(''); // never auto-selected because of a library change
+    await waitFor(async () => expect(await formatOptions(container)).toContain('Mine (custom)'));
+    expect(formatShown(container)).toBe('No format'); // never auto-selected because of a library change
     expect(c.opens).toBe(before.opens);
     expect(c.parses).toBe(before.parses);
-    await fireEvent.change(select, { target: { value: 'mine' } });
+    await chooseFormat(container, 'Mine (custom)');
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
   });
 
   it('saving an unrelated spec does not reparse or change the selected format', async () => {
     const lib = await mkLib([['mine', customSpec()], ['other', specText('other')]]);
     const c = counting();
-    const { container, findByLabelText } = render(App, { createClient: () => c.client, createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => c.client, createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('mine'));
+    await waitFor(() => expect(formatShown(container)).toBe('Mine'));
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
     await new Promise((r) => setTimeout(r, 20));
     const before = { opens: c.opens, parses: c.parses };
     await lib.save('other', specText('other', { name: 'Other renamed' }));
-    await waitFor(() => expect([...select.options].some((o) => o.textContent === 'Other renamed (custom)')).toBe(true));
-    expect(select.value).toBe('mine');
+    await waitFor(async () => expect(await formatOptions(container)).toContain('Other renamed (custom)'));
+    expect(formatShown(container)).toBe('Mine');
     expect(c.opens).toBe(before.opens);
     expect(c.parses).toBe(before.parses);
   });
 
   it('deleting the selected custom spec falls back to raw bytes with a notice', async () => {
     const lib = await mkLib([['mine', customSpec()]]);
-    const { container, findByLabelText, findByText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container, findByText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('mine'));
+    await waitFor(() => expect(formatShown(container)).toBe('Mine'));
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
     await lib.delete('mine');
-    await waitFor(() => expect(select.value).toBe(''));
+    await waitFor(() => expect(formatShown(container)).toBe('No format'));
     expect(await findByText('Format "Mine" was removed; showing raw bytes.')).toBeTruthy();
     expect(rowOf(container, 'sig')).toBeUndefined();
   });
@@ -403,10 +400,9 @@ describe('App: custom formats reach the engine', () => {
   it('a library change during a save is picked up once the save finishes', async () => {
     const lib = await mkLib([['mine', customSpec()]]);
     const c = counting();
-    const { container, findByLabelText, getByRole } = render(App, { createClient: () => c.client, createLibrary: () => lib });
+    const { container, getByRole } = render(App, { createClient: () => c.client, createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('mine'));
+    await waitFor(() => expect(formatShown(container)).toBe('Mine'));
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
 
     let release!: () => void;
@@ -430,7 +426,7 @@ describe('App: custom formats reach the engine', () => {
       expect(rowOf(container, 'sig')).toBeTruthy();
       release();
       await waitFor(() => expect(rowOf(container, 'signature')).toBeTruthy());
-      expect(select.value).toBe('mine');
+      expect(formatShown(container)).toBe('Mine');
     } finally {
       delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
     }
@@ -438,42 +434,39 @@ describe('App: custom formats reach the engine', () => {
 
   it('an explicit "None (raw)" choice is respected when specs change', async () => {
     const lib = await mkLib();
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(container.querySelector('.b[data-o="0"]')).not.toBeNull());
-    await fireEvent.change(select, { target: { value: '' } });
+    await chooseFormat(container, 'None (raw)');
     await lib.create('mine');
     await lib.save('mine', customSpec());
-    await waitFor(() => expect([...select.options].some((o) => o.value === 'mine')).toBe(true));
-    expect(select.value).toBe('');
+    await waitFor(async () => expect(await formatOptions(container)).toContain('Mine (custom)'));
+    expect(formatShown(container)).toBe('No format');
     expect(rowOf(container, 'sig')).toBeUndefined();
   });
 
   it('editing the selected custom spec re-parses the open file; invalidating it drops the selection', async () => {
     const lib = await mkLib([['mine', customSpec()]]);
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
     await waitFor(() => expect(rowOf(container, 'sig')).toBeTruthy());
 
     await lib.save('mine', customSpec({ types: { root: { fields: [{ name: 'signature', type: 'u4' }] } } }));
     await waitFor(() => expect(rowOf(container, 'signature')).toBeTruthy());
-    expect(select.value).toBe('mine'); // selection kept
+    expect(formatShown(container)).toBe('Mine'); // selection kept
 
     await lib.save('mine', '{"id":"mine"'); // now an invalid draft: excluded from the engine
-    await waitFor(() => expect([...select.options].some((o) => o.value === 'mine')).toBe(false));
-    expect(select.value).toBe('');
+    await waitFor(async () => expect((await formatOptions(container)).some((l) => l.startsWith('Mine'))).toBe(false));
+    expect(formatShown(container)).toBe('No format');
     await waitFor(() => expect(rowOf(container, 'signature')).toBeUndefined());
   });
 
   it('deleting a custom spec removes it from the format list', async () => {
     const lib = await mkLib([['mine', customSpec()]]);
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
+    const { container } = render(App, { createClient: () => createInlineClient(), createLibrary: () => lib });
     await pick(container, new File([Uint8Array.from([...magic, 9])], 'x.bin'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('mine'));
+    await waitFor(() => expect(formatShown(container)).toBe('Mine'));
     await lib.delete('mine');
-    await waitFor(() => expect([...select.options].some((o) => o.value === 'mine')).toBe(false));
+    await waitFor(async () => expect((await formatOptions(container)).some((l) => l.startsWith('Mine'))).toBe(false));
   });
 });

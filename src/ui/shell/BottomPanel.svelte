@@ -16,7 +16,7 @@
   } = $props();
 </script>
 
-<section class="panel" aria-label="Bottom panel">
+<section class="panel" aria-label="Bottom panel" data-region="bottom">
   <header>
     <button type="button" class="title" aria-expanded={open} aria-controls={open ? 'panel-problems' : undefined} onclick={onToggle}>Problems</button>
     <span class="count" class:has-errors={errors > 0}>{errors} errors, {warnings} warnings</span>
@@ -60,6 +60,8 @@
     border: none;
     border-radius: 0;
     border-bottom: 2px solid var(--signal);
+    min-height: 24px;
+    min-width: 24px;
     padding: 4px 8px 2px;
     font-weight: 600;
     font-size: var(--fs-sm);
@@ -73,8 +75,12 @@
   .toggle {
     margin-left: auto;
     border-color: transparent;
+    min-width: 24px;
+    min-height: 24px;
     padding: 3px 6px;
     display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--ink-quiet);
   }
   .body {

@@ -61,7 +61,7 @@ describe('computeOverview', () => {
   });
 
   it('skips bits nodes and zero-size leaves, and clamps leaves to the file', () => {
-    const root = rootOf(group(leaf(0, 4, 'bits'), leaf(4, 0), leaf(90, 50)));
+    const root = rootOf(group(leaf(0, 4, 'bits'), leaf(4, 0), leaf(90, 50)), group()); // a second root child: no single-child unwrapping
     const b = computeOverview(root, 100, 20);
     expect([...b]).toEqual([...Array(18).fill(0), 1, 1]);
     expect([...computeOverview(rootOf(group(leaf(-20, 25))), 100, 20)]).toEqual([1, ...Array(19).fill(0)]);
@@ -69,9 +69,15 @@ describe('computeOverview', () => {
 
   it('descends into children; a node with children is not itself painted', () => {
     const parent: Node = { id: 500, name: 'p', typeName: 's', offset: 0, size: 100, children: [leaf(0, 10), leaf(90, 10)] };
-    const b = computeOverview(rootOf(parent), 100, 20);
+    const b = computeOverview(rootOf(parent, group()), 100, 20);
     expect(b.filter((v) => v === 1)).toHaveLength(4);
     expect(b[5]).toBe(0);
+  });
+
+  it('a root with a single child is grouped by that child\'s children, as in computeRegions', () => {
+    const inner = [leaf(0, 20), leaf(20, 20), leaf(40, 20)];
+    const root = rootOf({ id: 99, name: 'file', typeName: 'file', offset: 0, size: 60, children: inner });
+    expect([...computeOverview(root, 60, 60)].filter((_, i) => i % 20 === 0)).toEqual([1, 2, 3]);
   });
 
   it('is all zeros for an empty file or an empty tree', () => {
@@ -90,7 +96,7 @@ describe('computeOverview', () => {
     const size = 2 ** 40;
     const leaves = Array.from({ length: 20_000 }, (_, i) => leaf(i * 1000, size - i * 1000));
     const t = performance.now();
-    const b = computeOverview(rootOf(group(...leaves)), size, 4096);
+    const b = computeOverview(rootOf(group(...leaves), group()), size, 4096);
     expect(performance.now() - t).toBeLessThan(2000);
     expect(b.every((v) => v === 1)).toBe(true);
   });
@@ -98,7 +104,7 @@ describe('computeOverview', () => {
 
 describe('computeOverview with hostile numbers', () => {
   it('fractional offsets and sizes never produce negative coverage', () => {
-    const root = rootOf(group(leaf(0.4, 0.3), leaf(3.5, 0.2), leaf(10.2, 30.6), leaf(99.5, 5.2), leaf(-0.5, 1.2)));
+    const root = rootOf(group(leaf(0.4, 0.3), leaf(3.5, 0.2), leaf(10.2, 30.6), leaf(99.5, 5.2), leaf(-0.5, 1.2)), group());
     const b = computeOverview(root, 100, 16);
     expect(b).toHaveLength(16);
     expect([...b].every((v) => v >= 0 && v <= 4)).toBe(true);
@@ -119,11 +125,12 @@ describe('computeRegions', () => {
     root.children![4]!.offset = 60;
     const r = computeRegions(root, 100);
     // group = index among the root's children modulo 4: the last one is child 4
-    expect(r.regions).toEqual([
+    expect(r.regions.map(({ start, end, group }) => ({ start, end, group }))).toEqual([
       { start: 0, end: 14, group: 1 },
       { start: 50, end: 60, group: 0 },
       { start: 60, end: 100, group: 0 },
     ]);
+    expect(r.regions.map((x) => x.name)).toEqual(root.children!.filter((c) => c.size > 0 && c.typeName !== 'bits').sort((a, b) => a.offset - b.offset).map((c) => c.name));
     expect(r.truncated).toBe(false);
   });
 
@@ -132,11 +139,26 @@ describe('computeRegions', () => {
     const root = rootOf({ id: 99, name: 'file', typeName: 'file', offset: 0, size: 74, children: inner });
     expect(computeRegions(root, 74).regions.map((r) => [r.start, r.end, r.group])).toEqual([[0, 14, 0], [14, 54, 1], [54, 74, 2]]);
     const single = rootOf(leaf(0, 10));
-    expect(computeRegions(single, 10).regions).toEqual([{ start: 0, end: 10, group: 0 }]);
+    expect(computeRegions(single, 10).regions).toEqual([{ start: 0, end: 10, group: 0, name: single.children![0]!.name }]);
+  });
+
+  it('never cuts a surrogate pair when truncating a name', () => {
+    const emoji = '\u{1F600}';
+    const named = { ...leaf(0, 10), name: 'a'.repeat(63) + emoji + 'b' };
+    const out = computeRegions(rootOf(named), 10).regions[0]!.name;
+    expect(out).toBe('a'.repeat(63) + emoji);
+    expect(Array.from(out)).toHaveLength(64);
+    const over = { ...leaf(0, 10), name: emoji.repeat(100) };
+    expect(Array.from(computeRegions(rootOf(over), 10).regions[0]!.name)).toHaveLength(64);
+  });
+
+  it('keeps the grouping node\'s name, at most 64 characters', () => {
+    const named = { ...leaf(0, 10), name: 'é'.repeat(100) };
+    expect(computeRegions(rootOf(named), 10).regions[0]!.name).toHaveLength(64);
   });
 
   it('clamps to the file, skips fractional slivers and caps the list', () => {
-    expect(computeRegions(rootOf(leaf(90, 50), leaf(500, 5), leaf(1.2, 0.5)), 100).regions).toEqual([{ start: 90, end: 100, group: 0 }]);
+    expect(computeRegions(rootOf(leaf(90, 50), leaf(500, 5), leaf(1.2, 0.5)), 100).regions.map(({ start, end, group }) => ({ start, end, group }))).toEqual([{ start: 90, end: 100, group: 0 }]);
     const many = rootOf(...Array.from({ length: MAX_OVERVIEW_REGIONS + 5 }, (_, i) => leaf(i, 1)));
     const r = computeRegions(many, 5000);
     expect(r.regions).toHaveLength(MAX_OVERVIEW_REGIONS);

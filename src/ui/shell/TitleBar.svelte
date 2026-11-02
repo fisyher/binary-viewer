@@ -75,6 +75,7 @@
     align-items: center;
     gap: 8px;
     border-color: transparent;
+    min-height: 24px;
     padding: 2px 6px;
     font-weight: 600;
     font-size: var(--fs-lg);
@@ -89,6 +90,8 @@
   }
   .actions button {
     border-color: transparent;
+    min-height: 24px;
+    min-width: 24px;
     padding: 2px 10px;
   }
   .actions button:hover:not(:disabled) {
@@ -98,6 +101,7 @@
   .about {
     border-color: transparent;
     min-width: 28px;
+    min-height: 28px;
     font-weight: 600;
     color: var(--ink-quiet);
   }

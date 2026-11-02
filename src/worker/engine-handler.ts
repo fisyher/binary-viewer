@@ -4,6 +4,7 @@
  */
 import { BlobByteSource, MemoryByteSource, type ByteSource } from '../core/byte-source';
 import * as realEngine from '../core/engine';
+import { groupOfIndex, topGroupNodes } from '../core/groups';
 import type { FormatSpec, Node, ParseResult } from '../core/engine';
 import { clampBuckets, computeOverview, computeRegions, type OverviewRegion } from './overview';
 import type { DetectionInfo, EngineRequest, EngineResponse, RangeSegment, SpecInfo } from './protocol';
@@ -136,7 +137,8 @@ export function createEngineHandler(deps: HandlerDeps) {
       }
       out.push({ start: Math.max(start, n.offset), end: Math.min(end, n.offset + n.size), group });
     };
-    (root.children ?? []).forEach((c, g) => visit(c, g));
+    // The same grouping as the minimap (core/groups), so hex tints and minimap colours agree.
+    topGroupNodes(root).forEach((c, g) => visit(c, groupOfIndex(g)));
     // The cap applies in window order, not traversal order.
     return out.sort((a, b) => a.start - b.start).slice(0, MAX_SEGMENTS);
   }

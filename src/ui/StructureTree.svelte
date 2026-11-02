@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import type { Diagnostic, LazyArray, Node } from '../core/engine';
   import { findNodeAt } from '../core/engine/interpret';
+  import { groupIdMap, rowGroups } from '../core/groups';
   import {
     PAGE_SIZE,
     defaultExpanded,
@@ -26,7 +27,8 @@
     type Row,
   } from '../core/tree-model';
 
-  const ROW_HEIGHT = 22;
+  // 24px: the twisty and the jump buttons are at least 24px tall targets, so a row is too.
+  const ROW_HEIGHT = 24;
   const NAV_KEYS = new Set<string>(['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']);
 
   export interface PageResult {
@@ -40,6 +42,7 @@
     loadPage,
     loadRef,
     onSelect,
+    onPath = undefined,
     onJump,
     preserveFor = null,
   }: {
@@ -51,6 +54,8 @@
     loadRef?: (nodeId: number) => Promise<Node[]>;
     /** `range` is the inclusive byte range of the node, or null for zero-size nodes. */
     onSelect: (node: Node, range: { start: number; end: number } | null) => void;
+    /** The selected node's chain from the root (root first), reported with every selection: the breadcrumb bar's path. */
+    onPath?: (chain: Node[]) => void;
     /** A node's `link` button was used: select `size` bytes at `offset` in the hex view (size 0 = just show the position). Without it no link buttons are shown. */
     onJump?: (offset: number, size: number) => void;
     /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
@@ -124,6 +129,11 @@
     void version;
     return root ? flattenTree(root, { expanded, pages, loading }) : [];
   });
+  // Colour groups, as the hex view and the minimap colour them: group nodes get a swatch, what is inside them a rule.
+  const marks = $derived.by(() => {
+    void version;
+    return root ? rowGroups(rows.map((r) => ({ depth: r.depth, id: r.kind === 'node' ? r.node.id : null })), groupIdMap(root)) : [];
+  });
   const win = $derived(virtualWindow(rows.length, scrollTop, viewportHeight, ROW_HEIGHT));
   const visible = $derived(rows.slice(win.start, win.end));
   // Only an active row that is rendered can be named; when it has scrolled out of the window the attribute is omitted.
@@ -159,6 +169,26 @@
     const i = scroll ? rows.findIndex((r) => r.key === key) : -1;
     if (i >= 0) scrollToIndex(i, center);
     onSelect(node, nodeByteRange(node));
+    onPath?.(chainTo(node));
+  }
+
+  /** The nodes from the root to `node`: through the visible rows (which include the unattached elements of fixed-size lazy arrays), else through the tree. */
+  function chainTo(node: Node): Node[] {
+    const at = new Map(rows.map((r, i) => [r.key, i] as const));
+    const chain: Node[] = [];
+    let i = at.get(nodeKey(node.id));
+    for (let guard = 0; i !== undefined && guard < 10_000; guard++) {
+      const r = rows[i]!;
+      if (r.kind === 'node') chain.push(r.node);
+      i = r.parentKey === null ? undefined : at.get(r.parentKey);
+    }
+    if (chain.length > 0) return chain.reverse();
+    return (root && pathById(root, node.id)) || [node];
+  }
+
+  /** Move keyboard focus to the tree. */
+  export function focus() {
+    scroller?.focus();
   }
 
   async function load(array: Node, start: number): Promise<void> {
@@ -415,7 +445,8 @@
     {:else}
       <div class="spacer" style:height="{rows.length * ROW_HEIGHT}px">
         <div class="window" style:transform="translateY({win.start * ROW_HEIGHT}px)">
-          {#each visible as row (row.key)}
+          {#each visible as row, vi (row.key)}
+            {@const mark = marks[win.start + vi]}
             {#if row.kind === 'node'}
               {@const node = row.node}
               {@const problems = problemMessages(node)}
@@ -435,7 +466,8 @@
                 onkeydown={() => {}}
                 ondblclick={(e) => onRowDblClick(row, e)}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   <span
                     class="twisty"
                     role="presentation"
@@ -449,6 +481,7 @@
                       if (row.expandable) setExpanded(node, !row.expanded);
                     }}>{row.expandable ? (row.expanded ? '▾' : '▸') : ''}</span
                   >
+                  {#if mark?.kind === 'self'}<span class="swatch" data-group={mark.group} aria-hidden="true"></span>{/if}
                   <span class="nm" title={sanitizeText(node.name, 500)}>{sanitizeText(node.name)}</span>
                   {#if node.ref}<span class="refmark" title="Points to {sanitizeText(node.ref.typeName, 64)} at {hex(node.ref.offset)}" aria-hidden="true">↗</span>{/if}
                   {#each node.ref?.jumps ?? [] as jump, ji (ji)}
@@ -514,7 +547,8 @@
                 onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14 + 24}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   {row.loading || !row.node.ref ? 'Opening…' : `▸ open ${sanitizeText(row.node.ref.typeName, 64)} @ ${hex(row.node.ref.offset)}`}
                 </span>
               </div>
@@ -532,7 +566,8 @@
                 onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14 + 24}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   {row.loading ? 'Loading…' : `Load more…${row.remaining !== null ? ` (${row.remaining} items)` : ''}`}
                 </span>
               </div>
@@ -586,7 +621,7 @@
     gap: 6px;
   }
   .head > span:first-child {
-    padding-left: 22px;
+    padding-left: 26px;
   }
   .scroller {
     flex: 1;
@@ -635,17 +670,51 @@
     text-overflow: ellipsis;
   }
   .name {
+    position: relative;
     display: flex;
     align-items: center;
+  }
+  /* Colour groups (the same colours as the hex view and the minimap): a swatch on a group node, a rule inside it. */
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+  }
+  .grp-rule {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+  }
+  .swatch[data-group='0'],
+  .grp-rule[data-group='0'] {
+    background: var(--struct-1);
+  }
+  .swatch[data-group='1'],
+  .grp-rule[data-group='1'] {
+    background: var(--struct-2);
+  }
+  .swatch[data-group='2'],
+  .grp-rule[data-group='2'] {
+    background: var(--struct-3);
+  }
+  .swatch[data-group='3'],
+  .grp-rule[data-group='3'] {
+    background: var(--struct-4);
   }
   .nm {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* A 24 x 24 target (the whole row height); the glyph keeps its size. */
   .twisty {
     flex: none;
-    width: 14px;
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
     color: var(--ink-quiet);
     cursor: pointer;
   }
@@ -664,32 +733,52 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The button is 24px tall (a full row); only a 17px pill is drawn, by ::before, so it looks as before. */
   .jump {
+    position: relative;
+    isolation: isolate;
     flex: none;
     margin-left: 6px;
     padding: 0 5px;
-    height: 17px;
-    line-height: 15px;
+    height: 24px;
+    min-width: 24px;
+    line-height: 24px;
     font-size: 11px;
     font-family: inherit;
     color: var(--ink);
     background: transparent;
+    border: none;
+    border-radius: 0;
+    cursor: pointer;
+  }
+  .jump::before {
+    content: '';
+    position: absolute;
+    inset: 3px 0;
+    z-index: -1;
     border: 1px solid var(--ink-quiet);
     border-radius: var(--radius);
-    cursor: pointer;
   }
   .val .jump {
     margin-left: 0;
   }
-  .jump:hover {
+  .jump:hover:not(:disabled) {
+    background: transparent;
+  }
+  .jump:hover::before {
     background: var(--hover);
   }
   .jump:focus-visible {
+    outline: none;
+  }
+  .jump:focus-visible::before {
     outline: 2px solid var(--signal);
     outline-offset: 1px;
   }
   .row.selected .jump {
     color: var(--sel-fg);
+  }
+  .row.selected .jump::before {
     border-color: var(--sel-fg);
   }
   .type {

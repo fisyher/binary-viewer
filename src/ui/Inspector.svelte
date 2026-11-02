@@ -144,15 +144,20 @@
     flex: none;
   }
   .endian {
-    min-width: 4ch;
+    min-width: max(4ch, 24px);
+    min-height: 24px;
     font-family: var(--mono);
     font-size: var(--fs-xs);
     padding: 1px 6px;
   }
   .collapse {
     border-color: transparent;
+    min-width: 24px;
+    min-height: 24px;
     padding: 4px 6px;
     display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--ink-quiet);
   }
   .at {

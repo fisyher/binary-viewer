@@ -61,8 +61,8 @@ describe('engine client', () => {
     const ov = c.overview(300);
     expect(sent.map((r) => r.type)).toEqual(['parse', 'overview']);
     expect(sent[1]).toMatchObject({ type: 'overview', buckets: 300 });
-    deliver({ id: 2, type: 'overview', size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1 }], truncated: false });
-    expect(await ov).toEqual({ size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1 }], truncated: false });
+    deliver({ id: 2, type: 'overview', size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1, name: 'header' }], truncated: false });
+    expect(await ov).toEqual({ size: 99, buckets: Uint8Array.of(0, 1, 2), regions: [{ start: 0, end: 5, group: 1, name: 'header' }], truncated: false });
     deliver({ id: 1, type: 'parse', snapshot: null });
     expect(await parse).toBeNull(); // the overview request did not supersede the parse
     const late = c.overview(16);

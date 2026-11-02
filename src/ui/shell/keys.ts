@@ -4,9 +4,10 @@
  * looks at what is left.
  *
  * Ctrl+K and F1 open the command palette (Cmd+K on macOS). Ctrl+Shift+P is deliberately not used: Firefox reserves
- * it for a private window, and pages cannot override it. Ctrl+S saves the open file.
+ * it for a private window, and pages cannot override it. Ctrl+S saves the open file. F6 / Shift+F6 move focus to the next /
+ * previous region of the shell (activity bar, side bar, editor, Problems, inspector, status bar).
  */
-export type GlobalKey = 'palette' | 'save';
+export type GlobalKey = 'palette' | 'save' | 'region-next' | 'region-prev';
 
 type KeyInfo = Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'isComposing'> & Partial<Pick<KeyboardEvent, 'code'>>;
 
@@ -24,6 +25,7 @@ export function globalKey(e: KeyInfo): GlobalKey | null {
   if (e.isComposing || e.altKey) return null;
   const mod = e.ctrlKey || e.metaKey;
   if (e.key === 'F1') return mod || e.shiftKey ? null : 'palette';
+  if (e.key === 'F6') return mod ? null : e.shiftKey ? 'region-prev' : 'region-next';
   if (!mod || e.shiftKey) return null;
   const k = e.key.toLowerCase();
   if (k === 'k') return 'palette';

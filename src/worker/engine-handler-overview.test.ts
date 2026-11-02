@@ -104,10 +104,45 @@ describe('overview request', () => {
     const r = await s.send<'overview'>({ type: 'overview', buckets: 64 });
     expect(r!.truncated).toBe(false);
     expect(r!.regions).toEqual([
-      { start: 0, end: 14, group: 0 },
-      { start: 14, end: 900, group: 3 },
-      { start: 900, end: 1000, group: 2 },
+      { start: 0, end: 14, group: 0, name: 'head' },
+      { start: 14, end: 900, group: 3, name: 'mid' },
+      { start: 900, end: 1000, group: 2, name: 'tail' },
     ]);
+  });
+
+  it('truncates a region name to 64 characters', async () => {
+    const long = 'x'.repeat(200);
+    const root: Node = { id: 1, name: 'r', typeName: 'r', offset: 0, size: 10, children: [{ id: 2, name: long, typeName: 's', offset: 0, size: 10, children: [leaf(3, 0, 10)] }, { id: 4, name: 'b', typeName: 's', offset: 20, size: 0 }] };
+    const s = setup({ engine: engineWith(root), source: new MemoryByteSource(new Uint8Array(10)) });
+    await openParsed(s);
+    const r = await s.send<'overview'>({ type: 'overview', buckets: 16 });
+    expect(r!.regions[0]!.name).toBe('x'.repeat(64));
+  });
+
+  it('a root with a single child groups by that child\'s children in ranges, buckets and regions alike', async () => {
+    const root: Node = {
+      id: 1, name: 'file', typeName: 'file', offset: 0, size: 90,
+      children: [
+        {
+          id: 2, name: 'wrap', typeName: 's', offset: 0, size: 90,
+          children: [
+            { id: 3, name: 'one', typeName: 's', offset: 0, size: 30, children: [leaf(4, 0, 30)] },
+            { id: 5, name: 'two', typeName: 's', offset: 30, size: 30, children: [leaf(6, 30, 30)] },
+            { id: 7, name: 'three', typeName: 's', offset: 60, size: 30, children: [leaf(8, 60, 30)] },
+          ],
+        },
+      ],
+    };
+    const s = setup({ engine: engineWith(root), source: new MemoryByteSource(new Uint8Array(90)) });
+    await openParsed(s);
+    const ov = await s.send<'overview'>({ type: 'overview', buckets: 18 });
+    const ranges = await s.send<'ranges'>({ type: 'ranges', start: 0, end: 90 });
+    expect(ranges!.segments.map((g) => g.group)).toEqual([0, 1, 2]);
+    expect(ov!.regions.map((r) => r.group)).toEqual([0, 1, 2]);
+    expect(ov!.regions.map((r) => r.name)).toEqual(['one', 'two', 'three']);
+    expect([...new Set(ov!.buckets)]).toEqual([1, 2, 3]); // bucket value = group + 1
+    expect(ov!.buckets[0]).toBe(ranges!.segments[0]!.group + 1);
+    expect(ov!.buckets[17]).toBe(ranges!.segments[2]!.group + 1);
   });
 
 

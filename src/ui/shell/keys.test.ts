@@ -39,6 +39,15 @@ describe('globalKey', () => {
     expect(key('л', { code: 'KeyK' })).toBeNull(); // no modifier
   });
 
+  it('F6 moves to the next region and Shift+F6 to the previous one; with other modifiers it is left to the browser', () => {
+    expect(key('F6')).toBe('region-next');
+    expect(key('F6', { shiftKey: true })).toBe('region-prev');
+    expect(key('F6', { ctrlKey: true })).toBeNull();
+    expect(key('F6', { metaKey: true })).toBeNull();
+    expect(key('F6', { altKey: true })).toBeNull();
+    expect(key('F6', { isComposing: true })).toBeNull();
+  });
+
   it('classifies IME keys', () => {
     expect(isImeKey({ isComposing: false, keyCode: 229 })).toBe(true);
     expect(isImeKey({ isComposing: true, keyCode: 13 })).toBe(true);

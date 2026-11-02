@@ -20,10 +20,10 @@
   ];
 </script>
 
-<nav class="activity" aria-label="Activity bar">
+<nav class="activity" aria-label="Activity bar" data-region="activity">
   {#each items as item (item.id)}
     {@const active = open && view === item.id}
-    <button type="button" class="item" class:active aria-pressed={active} aria-label={item.label} title={item.label} onclick={() => onSelect(item.id)}>
+    <button type="button" class="item" class:active aria-pressed={active} aria-label={item.label} onclick={() => onSelect(item.id)}>
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         {#if item.id === 'structure'}
           <!-- a tree: root, branch, two children -->
@@ -38,12 +38,16 @@
           <path d="M10.5 11c-1 0-1.5.4-1.5 1.2v.6c0 .5-.4.7-.9.7.5 0 .9.2.9.7v.6c0 .8.5 1.2 1.5 1.2M13.5 11c1 0 1.5.4 1.5 1.2v.6c0 .5.4.7.9.7-.5 0-.9.2-.9.7v.6c0 .8-.5 1.2-1.5 1.2" />
         {/if}
       </svg>
+      <span class="tip" aria-hidden="true">{item.label}</span>
     </button>
   {/each}
 </nav>
 
 <style>
+  /* The labels (.tip) reach into the side bar, which paints later: the bar stacks above it (z-index) and does not clip (no overflow). */
   .activity {
+    position: relative;
+    z-index: 6;
     width: 44px;
     box-sizing: border-box;
     background: var(--chrome-deep);
@@ -69,6 +73,43 @@
   }
   .item.active {
     color: var(--ink);
+  }
+  /* The label: at once for the keyboard, after a short delay for the pointer (and at once with reduced motion). */
+  .tip {
+    position: absolute;
+    left: calc(100% + 4px);
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 2px 8px;
+    background: var(--chrome-deep);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 0s 0s,
+      visibility 0s 0s;
+    z-index: 10;
+  }
+  .item:focus-visible .tip {
+    opacity: 1;
+    visibility: visible;
+  }
+  .item:hover .tip {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity 0s 400ms,
+      visibility 0s 400ms;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .item:hover .tip {
+      transition-delay: 0s;
+    }
   }
   .item.active::before {
     content: '';

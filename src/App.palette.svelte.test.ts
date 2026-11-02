@@ -5,6 +5,7 @@ import App from './App.svelte';
 import { le16, le32 } from './core/engine/test-helpers';
 import { SpecLibrary } from './core/spec-library';
 import { createMemoryStore } from './core/spec-store';
+import { formatButton, formatShown } from './test/format-ui';
 import { builtins, specText } from './test/spec-fixtures';
 import { createInlineClient } from './worker/inline-client';
 
@@ -404,8 +405,7 @@ describe('command palette: formats and tabs', () => {
   it('Choose format… changes the parse: None (raw) clears it, a format parses again', async () => {
     const { container } = await mount();
     await pick(container, new File([makeBmp()], 'pic.bmp'));
-    const select = () => container.querySelector<HTMLSelectElement>('select[aria-label="Format"]')!;
-    await waitFor(() => expect(select().value).toBe('bmp'));
+    await waitFor(() => expect(formatShown(container)).toBe('Windows Bitmap'));
     await waitFor(() => expect(container.textContent).toContain('Parsed:'));
 
     await run('choose format');
@@ -414,15 +414,41 @@ describe('command palette: formats and tabs', () => {
     expect(optionNames()).toContain('Windows Bitmap (magic + extension)');
     const input = paletteInput()!;
     await fireEvent.keyDown(input, { key: 'Enter' }); // the first row: None
-    await waitFor(() => expect(select().value).toBe(''));
+    await waitFor(() => expect(formatShown(container)).toBe('No format'));
     await waitFor(() => expect(container.textContent).not.toContain('Parsed:'));
 
     await run('choose format');
     await waitFor(() => expect(palette()?.getAttribute('aria-label')).toBe('Choose format'));
     await fireEvent.input(paletteInput()!, { target: { value: 'bitmap' } });
     await fireEvent.keyDown(paletteInput()!, { key: 'Enter' });
-    await waitFor(() => expect(select().value).toBe('bmp'));
+    await waitFor(() => expect(formatShown(container)).toBe('Windows Bitmap'));
     await waitFor(() => expect(container.textContent).toContain('Parsed:'));
+  });
+
+  it('the status bar format button opens Choose format directly, and the choice is made there', async () => {
+    const { container } = await mount();
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(formatShown(container)).toBe('Windows Bitmap'));
+    const button = formatButton(container)!;
+    button.focus();
+    await fireEvent.click(button);
+    await waitFor(() => expect(palette()?.getAttribute('aria-label')).toBe('Choose format'));
+    expect(optionNames()[0]).toBe('None (raw)');
+    await fireEvent.keyDown(paletteInput()!, { key: 'Enter' }); // None
+    await waitFor(() => expect(formatShown(container)).toBe('No format'));
+    expect(document.activeElement).toBe(button); // focus is back on the button that opened it
+    await waitFor(() => expect(container.querySelector('[role="treeitem"]')).toBeNull());
+  });
+
+  it('the selection item of the status bar opens Go to offset', async () => {
+    const { container } = await mount();
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(container.querySelector('.b[data-o="0"]')).not.toBeNull());
+    await fireEvent.click(within(container.querySelector('footer.status') as HTMLElement).getByRole('button', { name: /No selection/ }));
+    await waitFor(() => expect(palette()?.getAttribute('aria-label')).toBe('Go to offset'));
+    await fireEvent.input(paletteInput()!, { target: { value: '10' } });
+    await fireEvent.keyDown(paletteInput()!, { key: 'Enter' });
+    await waitFor(() => expect(statusBar(container)).toContain('Start: 0x10'));
   });
 
   it('Cancel parsing is disabled when nothing is parsing', async () => {

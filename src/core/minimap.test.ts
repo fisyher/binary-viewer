@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bandsFromBuckets, offsetAtY, rangeToRows, smallRegionRows } from './minimap';
+import { bandsFromBuckets, offsetAtY, rangeToRows, regionAt, regionBoundaryRows, smallRegionRows } from './minimap';
 
 describe('bandsFromBuckets', () => {
   it('merges equal neighbours and tiles the strip exactly', () => {
@@ -99,5 +99,39 @@ describe('smallRegionRows', () => {
     expect(smallRegionRows([{ start: 99990, end: 100000, group: 2 }], 100000, 400, 1)).toEqual([{ y0: 398, y1: 400, v: 3 }]);
     expect(smallRegionRows([{ start: 0, end: 50000, group: 0 }], 100000, 400, 1)).toEqual([]);
     expect(smallRegionRows([{ start: 0, end: 10, group: 0 }], 0, 400, 1)).toEqual([]);
+  });
+});
+
+describe('regionAt', () => {
+  it('finds the region containing an offset (end exclusive)', () => {
+    const regions = [
+      { start: 0, end: 14, name: 'a' },
+      { start: 14, end: 100, name: 'b' },
+    ];
+    expect(regionAt(regions, 0)?.name).toBe('a');
+    expect(regionAt(regions, 13)?.name).toBe('a');
+    expect(regionAt(regions, 14)?.name).toBe('b');
+    expect(regionAt(regions, 100)).toBeNull();
+    expect(regionAt([], 5)).toBeNull();
+  });
+});
+
+describe('regionBoundaryRows', () => {
+  const regions = [
+    { start: 0, end: 100 },
+    { start: 100, end: 200 },
+    { start: 200, end: 1000 },
+  ];
+  it('puts a line at the top of each touching region that is at least 4 CSS px tall', () => {
+    // 1000 bytes on 100 rows: 10 rows, 10 rows, 80 rows
+    expect(regionBoundaryRows(regions, 1000, 100, 1)).toEqual([10, 20]);
+  });
+
+  it('skips regions under 4 CSS px (a device pixel ratio of 2 doubles the minimum), gaps and an empty strip', () => {
+    expect(regionBoundaryRows(regions, 1000, 100, 3)).toEqual([]); // 4 CSS px = 12 device rows: the 10-row regions are too thin
+    expect(regionBoundaryRows([{ start: 0, end: 100 }, { start: 100, end: 120 }, { start: 120, end: 1000 }], 1000, 100, 1)).toEqual([]);
+    expect(regionBoundaryRows([{ start: 0, end: 400 }, { start: 500, end: 1000 }], 1000, 100, 1)).toEqual([]); // a gap between them
+    expect(regionBoundaryRows(regions, 0, 100, 1)).toEqual([]);
+    expect(regionBoundaryRows(regions, 1000, 0, 1)).toEqual([]);
   });
 });
