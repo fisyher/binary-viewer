@@ -27,3 +27,22 @@ describe('StatusBar messages', () => {
     expect(container.querySelector('.seg.info')!.getAttribute('title')).toBe('Download started');
   });
 });
+
+describe('StatusBar zoom', () => {
+  it('shows nothing at 100%', () => {
+    const { container, queryByRole } = render(StatusBar, { selection: null });
+    expect(container.querySelector('.zoom')).toBeNull();
+    expect(queryByRole('button', { name: /^Zoom/ })).toBeNull();
+  });
+
+  it('shows the zoom as a button that resets it when it is not 100%', async () => {
+    const onResetZoom = vi.fn();
+    const { getByRole, rerender } = render(StatusBar, { selection: null, uiScale: 1.15, onResetZoom });
+    const button = getByRole('button', { name: 'Zoom: 115%. Reset to 100%' });
+    expect(button.textContent).toBe('115%');
+    await fireEvent.click(button);
+    expect(onResetZoom).toHaveBeenCalledOnce();
+    await rerender({ uiScale: 0.9 });
+    expect(getByRole('button', { name: 'Zoom: 90%. Reset to 100%' }).textContent).toBe('90%');
+  });
+});

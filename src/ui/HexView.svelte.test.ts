@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ByteSource } from '../core/byte-source';
 import HexHarness from '../test/HexHarness.svelte';
+import HexView from './HexView.svelte';
 
 let viewport = 400; // 20 rows
 type RO = { cb: (entries: Array<{ target: Element }>) => void; els: Element[] };
@@ -231,5 +232,31 @@ describe('HexView', () => {
     expect(st).toBe(120);
     component.scrollBy(NaN);
     expect(st).toBe(120);
+  });
+});
+
+describe('HexView banding', () => {
+  const mountView = async (banding?: boolean) => {
+    const { src, calls } = stubSource(1000, () => 7);
+    const r = render(HexView, { source: src, selection: null, error: null, ...(banding === undefined ? {} : { banding }) } as never);
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    return r;
+  };
+
+  it('marks the hex and ASCII columns as banded by default (CSS paints the bands, nothing per byte)', async () => {
+    const { container } = await mountView();
+    const rows = container.querySelectorAll('.row');
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.querySelector('.hex')!.classList.contains('banded')).toBe(true);
+      expect(row.querySelector('.ascii')!.classList.contains('banded')).toBe(true);
+    }
+    // no byte cell carries a band class or style of its own
+    expect(container.querySelectorAll('.b[class*="band"], .c[class*="band"], .b[style], .c[style]')).toHaveLength(0);
+  });
+
+  it('is plain with banding off', async () => {
+    const { container } = await mountView(false);
+    expect(container.querySelector('.banded')).toBeNull();
   });
 });

@@ -27,6 +27,8 @@
     saving = false,
     theme = 'system',
     onCycleTheme = () => {},
+    uiScale = 1,
+    onResetZoom = () => {},
   }: {
     selection: Selection | null;
     error?: string | null;
@@ -62,6 +64,9 @@
     saving?: boolean;
     theme?: ThemePref;
     onCycleTheme?: () => void;
+    /** The UI zoom factor; shown (as a button that resets it) only when it is not 1. */
+    uiScale?: number;
+    onResetZoom?: () => void;
   } = $props();
 
   const r = $derived(selection ? selectionRange(selection) : null);
@@ -70,6 +75,7 @@
 
   const hex = (n: number) => '0x' + n.toString(16).toUpperCase();
   const themeLabel = $derived(theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark');
+  const zoomPercent = $derived(`${Math.round(uiScale * 100)}%`);
   const shownFormat = $derived(formatName ?? 'No format');
 </script>
 
@@ -136,6 +142,9 @@
   <div class="right">
     {#if size !== null}
       <span class="seg mono size">{size.toLocaleString()} bytes (0x{size.toString(16).toUpperCase()})</span>
+    {/if}
+    {#if uiScale !== 1}
+      <button type="button" class="seg zoom" onclick={onResetZoom} aria-label="Zoom: {zoomPercent}. Reset to 100%" title="Zoom: {zoomPercent}. Click to reset to 100% (Ctrl+0)">{zoomPercent}</button>
     {/if}
     <button type="button" class="seg theme" onclick={onCycleTheme} aria-label="Theme: {themeLabel}" title="Theme: {themeLabel}. Click to change.">
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
@@ -257,6 +266,10 @@
   .size {
     color: var(--ink-quiet);
   }
+  .zoom {
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+  }
   /* The parse summary: status text (read by screen readers) plus the compact button that opens Problems. */
   .parse {
     position: relative;
@@ -311,9 +324,9 @@
     white-space: nowrap;
     border: 0;
   }
-  @media (max-width: 720px) {
+  @container page (max-width: 720px) {
     .size,
-    .nodes {
+    .summary .nodes {
       display: none;
     }
     .format {

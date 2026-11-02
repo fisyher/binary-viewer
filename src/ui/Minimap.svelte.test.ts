@@ -167,6 +167,23 @@ describe('Minimap', () => {
     expect(draws.some((d) => d.alpha === 1 && d.style === SIGNAL && d.rect[3] === 2)).toBe(true); // 1 CSS px = 2 device px
   });
 
+  it('under the UI zoom the canvas has one pixel per screen pixel (pixel ratio times zoom)', () => {
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+    const { container } = mount({ viewport: { start: 0, end: 800 }, scale: 1.15 });
+    const canvas = container.querySelector('canvas')!;
+    expect([canvas.width, canvas.height]).toEqual([Math.round(64 * 2.3), Math.round(160 * 2.3)]);
+  });
+
+  it('under the UI zoom a pointer position is a screen distance: the offset is by ratio, the tooltip is placed in CSS px', async () => {
+    const { strip, container, onSeek } = mount({ scale: 2 });
+    // on screen the strip is twice as tall as its layout height: 320 screen px for 160 CSS px
+    strip.getBoundingClientRect = () => ({ top: 100, left: 0, right: 128, bottom: 420, width: 128, height: 320, x: 0, y: 100, toJSON() {} });
+    await fireEvent(strip, ptr('pointermove', 260)); // half way down the strip
+    await vi.waitFor(() => expect(container.querySelector<HTMLElement>('.tip')?.style.top).toBe('80px')); // 160 screen px = 80 CSS px
+    await fireEvent(strip, ptr('pointerdown', 260));
+    expect(onSeek).toHaveBeenCalledWith(800, true);
+  });
+
   it('a click seeks to the offset under the pointer, centred, and the ends map to the first and last byte', async () => {
     const { strip, onSeek } = mount();
     strip.dispatchEvent(ptr('pointerdown', 100 + 80)); // halfway

@@ -75,8 +75,8 @@
     border-radius: var(--radius);
     box-shadow: 0 8px 28px var(--dialog-shadow);
     padding: 16px 20px;
-    width: min(520px, calc(100vw - 24px));
-    max-height: calc(100vh - 24px);
+    width: min(520px, calc(100vw / var(--ui-scale, 1) - 24px));
+    max-height: calc(100vh / var(--ui-scale, 1) - 24px);
     overflow-y: auto;
     box-sizing: border-box;
   }
@@ -113,7 +113,7 @@
   dd {
     margin: 0;
   }
-  @media (max-width: 480px) {
+  @container page (max-width: 480px) {
     dl {
       grid-template-columns: 1fr;
     }

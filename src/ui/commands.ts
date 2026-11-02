@@ -8,7 +8,7 @@ import { describeDetection } from '../core/format-status';
 import { parseOffset, type OffsetMode } from '../core/parse-offset';
 import { sanitizeText } from '../core/tree-model';
 import type { DetectionInfo, SpecInfo } from '../worker/protocol';
-import type { SideView, ThemePref } from './prefs';
+import { UI_SCALES, type SideView, type ThemePref, type UiScale } from './prefs';
 import { SHORTCUTS } from './shortcuts';
 
 export type CommandGroup = 'File' | 'Format' | 'View' | 'Tabs' | 'Help';
@@ -82,6 +82,10 @@ export interface CommandContext {
   inspectorOpen: boolean;
   problemsOpen: boolean;
   showMinimap: boolean;
+  /** Every other 8-byte group of the hex and ASCII columns is banded. */
+  hexBanding: boolean;
+  /** The UI zoom factor (1 = 100%). */
+  uiScale: UiScale;
   theme: ThemePref;
   littleEndian: boolean;
   /** The formats the engine offers for the open file, and its detections and choice (as the Format selector). */
@@ -105,6 +109,12 @@ export interface CommandContext {
     toggleInspector(): void;
     toggleProblems(): void;
     toggleMinimap(): void;
+    toggleHexBanding(): void;
+    zoomIn(): void;
+    zoomOut(): void;
+    resetZoom(): void;
+    /** Default panel sizes and visibility, tree column widths and minimap; not the theme, the zoom or the recent commands. */
+    resetLayout(): void;
     /** Open the region if it is collapsed, then move keyboard focus into it. */
     focusSide(): void;
     focusEditor(): void;
@@ -193,6 +203,11 @@ export function buildCommands(c: CommandContext): Command[] {
     { id: 'view.inspector', label: onOff(c.inspectorOpen, 'data inspector'), group: 'View', keywords: 'toggle panel values', run: a.toggleInspector },
     { id: 'view.problems', label: onOff(c.problemsOpen, 'Problems panel'), group: 'View', keywords: 'toggle diagnostics errors warnings', ...needsFile, run: a.toggleProblems },
     { id: 'view.minimap', label: onOff(c.showMinimap, 'minimap'), group: 'View', keywords: 'toggle overview', run: a.toggleMinimap },
+    { id: 'view.banding', label: 'Toggle hex row banding', group: 'View', keywords: 'stripes alternate groups columns hex ascii', hint: c.hexBanding ? 'On' : 'Off', run: a.toggleHexBanding },
+    { id: 'view.zoomIn', label: 'Zoom in', group: 'View', keywords: 'larger bigger scale size text', shortcut: 'Ctrl+=', ...when(() => (c.uiScale >= UI_SCALES[UI_SCALES.length - 1]! ? 'Already at the largest size' : null)), run: a.zoomIn },
+    { id: 'view.zoomOut', label: 'Zoom out', group: 'View', keywords: 'smaller scale size text', shortcut: 'Ctrl+-', ...when(() => (c.uiScale <= UI_SCALES[0]! ? 'Already at the smallest size' : null)), run: a.zoomOut },
+    { id: 'view.zoomReset', label: 'Reset zoom', group: 'View', keywords: 'scale size 100%', shortcut: 'Ctrl+0', ...when(() => (c.uiScale === 1 ? 'Already at 100%' : null)), run: a.resetZoom },
+    { id: 'view.resetLayout', label: 'Reset layout', group: 'View', keywords: 'default panels sizes columns restore', run: a.resetLayout },
     { id: 'view.focus.side', label: 'Focus side bar', group: 'View', keywords: 'region navigate tree structure formats', run: a.focusSide },
     { id: 'view.focus.editor', label: 'Focus editor', group: 'View', keywords: 'region navigate hex bytes', run: a.focusEditor },
     { id: 'view.focus.problems', label: 'Focus Problems', group: 'View', keywords: 'region navigate panel diagnostics errors warnings', ...needsFile, run: a.focusProblems },

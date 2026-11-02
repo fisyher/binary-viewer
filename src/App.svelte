@@ -31,23 +31,35 @@
   import { loadBuiltinSpecs } from './formats';
   import {
     applyTheme,
+    applyUiScale,
+    clampTreeColumn,
+    clearSize,
     loadFlag,
+    loadHexBanding,
     loadLittleEndian,
     loadRecentCommands,
     loadShowMinimap,
     loadSideView,
     loadSize,
     loadTheme,
+    loadTreeColumn,
+    loadUiScale,
     saveFlag,
+    saveHexBanding,
     saveLittleEndian,
     saveRecentCommands,
     saveShowMinimap,
     saveSideView,
     saveSize,
     saveTheme,
+    saveTreeColumn,
+    saveUiScale,
+    stepUiScale,
     withRecentCommand,
     type SideView,
     type ThemePref,
+    type TreeColumn,
+    type UiScale,
   } from './ui/prefs';
   import ActivityBar from './ui/shell/ActivityBar.svelte';
   import BottomPanel from './ui/shell/BottomPanel.svelte';
@@ -233,9 +245,15 @@
   const INSPECTOR_RANGE = { min: 240, max: 520, def: 320 };
   const PROBLEMS = { min: 80, def: 180 };
   const clampTo = (r: { min: number; max: number }, v: number) => Math.min(r.max, Math.max(r.min, v));
-  const startsNarrow = typeof matchMedia === 'function' && matchMedia('(max-width: 899px)').matches;
+  let uiScale = $state<UiScale>(loadUiScale());
+  // The narrow layout (drawers) starts below 900 CSS px; under the UI zoom a CSS px is bigger, so the breakpoint is 900 * zoom screen pixels (exclusive).
+  const narrowQuery = (scale: number) => `(max-width: ${Math.floor(900 * scale) - 1}px)`;
+  const startsNarrow = typeof matchMedia === 'function' && matchMedia(narrowQuery(untrack(() => uiScale))).matches;
   let narrow = $state(startsNarrow);
   let theme = $state<ThemePref>(loadTheme());
+  let hexBanding = $state(loadHexBanding());
+  let treeName = $state<number | null>(loadTreeColumn('name'));
+  let treeValue = $state<number | null>(loadTreeColumn('value'));
   let sideView = $state<SideView>(loadSideView());
   // On a narrow screen the side bar and inspector are drawers: they always start closed, whatever was saved.
   let sideOpen = $state(startsNarrow ? false : loadFlag('sideOpen', true));
@@ -249,16 +267,52 @@
   const problemsPx = $derived(Math.min(problemsHeight, problemsMax));
 
   $effect(() => applyTheme(theme));
+  $effect(() => applyUiScale(uiScale));
   $effect(() => {
     if (typeof matchMedia !== 'function') return;
-    const q = matchMedia('(max-width: 899px)');
+    const q = matchMedia(narrowQuery(uiScale));
     const on = () => {
       narrow = q.matches;
       if (narrow && sideOpen && inspectorOpen) inspectorOpen = false; // one drawer at a time
     };
+    untrack(on); // the zoom changed the breakpoint: the layout may have to change right now
     q.addEventListener('change', on);
     return () => q.removeEventListener('change', on);
   });
+
+  function setUiScale(scale: UiScale) {
+    uiScale = scale;
+    saveUiScale(scale);
+  }
+  function toggleHexBanding() {
+    hexBanding = !hexBanding;
+    saveHexBanding(hexBanding);
+  }
+  function setTreeColumn(column: TreeColumn, px: number | null) {
+    const v = px === null ? null : clampTreeColumn(column, px);
+    if (column === 'name') treeName = v;
+    else treeValue = v;
+    saveTreeColumn(column, v);
+  }
+  /**
+   * Back to the layout of a first visit: side bar, inspector and Problems panel sizes and visibility, the tree's column widths and
+   * the minimap. The theme, the zoom, the side bar view and the recent commands stay. On a narrow screen the drawers stay closed (as
+   * they always start); what is saved is the wide-screen default.
+   */
+  function resetLayout() {
+    sideWidth = SIDE_RANGE.def;
+    inspectorWidth = INSPECTOR_RANGE.def;
+    problemsHeight = PROBLEMS.def;
+    for (const name of ['sideWidth', 'inspectorWidth', 'problemsHeight']) clearSize(name);
+    sideOpen = !narrow;
+    inspectorOpen = !narrow;
+    problemsOpen = !narrow;
+    for (const name of ['sideOpen', 'inspectorOpen', 'problemsOpen']) saveFlag(name, true);
+    setTreeColumn('name', null);
+    setTreeColumn('value', null);
+    showMinimap = true;
+    saveShowMinimap(true);
+  }
 
   const THEME_ORDER: ThemePref[] = ['system', 'light', 'dark'];
   function cycleTheme() {
@@ -301,8 +355,15 @@
    * skips everything here). Nothing happens while a dialog or the palette is open.
    */
   function onWindowKeyDown(e: KeyboardEvent) {
-    if (e.defaultPrevented || aboutOpen || paletteOpen || confirm || formats.confirm) return;
     const key = globalKey(e);
+    // The zoom keys are the page's everywhere, dialogs and the palette included (zooming then is harmless), so that the browser's own
+    // zoom never stacks on top of the page's.
+    if (key === 'zoom-in' || key === 'zoom-out' || key === 'zoom-reset') {
+      e.preventDefault();
+      if (!e.repeat) setUiScale(key === 'zoom-reset' ? 1 : stepUiScale(uiScale, key === 'zoom-in' ? 1 : -1));
+      return;
+    }
+    if (e.defaultPrevented || aboutOpen || paletteOpen || confirm || formats.confirm) return;
     if (key === 'palette') {
       e.preventDefault();
       if (!e.repeat) openPalette(); // a held key repeats: keep the browser out of it, but do not act again
@@ -1273,7 +1334,7 @@
   const warningCount = $derived(diagnostics.length - errorCount);
   const SPEC_TAB = 'spec:'; // spec tab ids in the tab bar: SPEC_TAB + the spec id
   const tabs: EditorTab[] = $derived([
-    ...(source !== null ? [{ id: 'file', label: fileName ?? 'Untitled', modified: dirty, modifiedLabel: 'Modified', closable: false }] : []),
+    ...(source !== null ? [{ id: 'file', label: fileName ?? 'Untitled', modified: dirty, modifiedLabel: 'Modified', closable: false, icon: selectedSpec === 'bmp' ? 'bmp' : selectedSpec === 'zip' ? 'zip' : 'file' } as EditorTab] : []),
     ...formats.openTabs.map((t) => ({ id: SPEC_TAB + t.id, label: sanitizeText(t.name, 60), modified: t.dirty, modifiedLabel: 'Modified', closable: true })),
   ]);
   const activeEditorId = $derived(specActive ? SPEC_TAB + formats.activeSpecId : 'file');
@@ -1325,6 +1386,12 @@
     get showMinimap() {
       return showMinimap;
     },
+    get hexBanding() {
+      return hexBanding;
+    },
+    get uiScale() {
+      return uiScale;
+    },
     get theme() {
       return theme;
     },
@@ -1367,6 +1434,11 @@
       toggleInspector: () => setInspectorOpen(!inspectorOpen),
       toggleProblems: () => setProblemsOpen(!problemsOpen),
       toggleMinimap,
+      toggleHexBanding,
+      zoomIn: () => setUiScale(stepUiScale(uiScale, 1)),
+      zoomOut: () => setUiScale(stepUiScale(uiScale, -1)),
+      resetZoom: () => setUiScale(1),
+      resetLayout,
       focusSide: () => void openAndFocus('side'),
       focusEditor: () => void openAndFocus('editor'),
       focusProblems: () => void openAndFocus('bottom'),
@@ -1421,14 +1493,28 @@
       class:hidden={!sideOpen}
       data-region="side"
       {...hiddenAttrs(!sideOpen)}
-      style:width={narrow ? `min(${sideWidth}px, calc(100vw - 44px - 24px))` : !sideOpen ? `${sideWidth}px` : undefined}
+      style:width={narrow ? `min(${sideWidth}px, calc(100vw / var(--ui-scale) - 44px - 24px))` : !sideOpen ? `${sideWidth}px` : undefined}
     >
         <SideBar title={sideView === 'structure' ? 'Structure' : 'Formats'} onCollapse={() => setSideOpen(false)}>
           <div class="views">
             <div class="view" class:hidden={sideView !== 'structure'} {...hiddenAttrs(sideView !== 'structure')}>
               {#if source}
                 <div class="tree-wrap">
-                  <StructureTree bind:this={tree} {root} {diagnostics} {loadPage} {loadRef} onSelect={onTreeSelect} onPath={onTreePath} onJump={onTreeJump} preserveFor={treeKeep} />
+                  <StructureTree
+                    bind:this={tree}
+                    {root}
+                    {diagnostics}
+                    {loadPage}
+                    {loadRef}
+                    onSelect={onTreeSelect}
+                    onPath={onTreePath}
+                    onJump={onTreeJump}
+                    preserveFor={treeKeep}
+                    nameWidth={treeName}
+                    valueWidth={treeValue}
+                    onColumnWidth={setTreeColumn}
+                    onResetLayout={resetLayout}
+                  />
                 </div>
               {:else}
                 <p class="quiet">Open a file to see its structure.</p>
@@ -1449,6 +1535,7 @@
         max={SIDE_RANGE.max}
         onResize={setSideWidth}
         onReset={() => setSideWidth(SIDE_RANGE.def)}
+        onResetLayout={resetLayout}
       />
     {/if}
     {#if drawerOpen}
@@ -1487,6 +1574,7 @@
                   onNotice={(m) => (notice = m)}
                   {nodeRange}
                   {tints}
+                  banding={hexBanding}
                   {onViewChange}
                   onViewport={(start, end) => (viewportBytes = { start, end })}
                   onByteClick={(offset) => {
@@ -1506,6 +1594,7 @@
                     onSeek={(offset, center) => hexView?.scrollToOffset(offset, center)}
                     onWheelBy={(px) => hexView?.scrollBy(px)}
                     {onWantBuckets}
+                    scale={uiScale}
                   />
                 {/if}
               </div>
@@ -1520,6 +1609,7 @@
                 max={problemsMax}
                 onResize={setProblemsHeight}
                 onReset={() => setProblemsHeight(PROBLEMS.def)}
+                onResetLayout={resetLayout}
               />
             {/if}
             <div class="bottom" style:height={problemsOpen ? `${problemsPx}px` : '28px'}>
@@ -1567,10 +1657,11 @@
           max={INSPECTOR_RANGE.max}
           onResize={setInspectorWidth}
           onReset={() => setInspectorWidth(INSPECTOR_RANGE.def)}
+          onResetLayout={resetLayout}
         />
       {/if}
-      <div class="inspector-slot" data-region="inspector" class:overlay={narrow} style:width={narrow ? `min(${inspectorWidth}px, calc(100vw - 44px - 24px))` : undefined}>
-        <Inspector source={source && size > 0 ? source : null} offset={inspectOffset} version={editVersion} bind:littleEndian onCollapse={() => setInspectorOpen(false)} />
+      <div class="inspector-slot" data-region="inspector" class:overlay={narrow} style:width={narrow ? `min(${inspectorWidth}px, calc(100vw / var(--ui-scale) - 44px - 24px))` : undefined}>
+        <Inspector source={source && size > 0 ? source : null} hasFile={source !== null} empty={source !== null && size === 0} offset={inspectOffset} version={editVersion} bind:littleEndian onCollapse={() => setInspectorOpen(false)} />
       </div>
     {:else}
       <button type="button" class="rail" aria-label="Show data inspector" title="Show data inspector" aria-expanded="false" onclick={() => setInspectorOpen(true)}>
@@ -1602,6 +1693,8 @@
     {saving}
     {theme}
     onCycleTheme={cycleTheme}
+    {uiScale}
+    onResetZoom={() => setUiScale(1)}
   />
 </div>
 {#if confirm}
@@ -1640,8 +1733,9 @@
   .app {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: 100vh;
-    height: 100dvh;
+    /* CSS zoom on <html> scales viewport units as well: divide the zoom back out so the app is exactly as tall as the window */
+    height: calc(100vh / var(--ui-scale, 1));
+    height: calc(100dvh / var(--ui-scale, 1));
     min-width: 0;
   }
   .app.drag-over {
@@ -1676,6 +1770,51 @@
     top: 0;
     bottom: 0;
     left: 44px;
+  }
+  /*
+   * Drawers (narrow screens only): they fade and slide a few px in and out; opacity and transform only, and instant with reduced
+   * motion (the tokens are 0ms). Collapsing a panel on a wide screen changes the layout, so it stays instant. The inspector drawer
+   * is unmounted when closed, so it only animates in.
+   */
+  .shell.narrow .side-slot {
+    transition:
+      opacity var(--motion-out) var(--ease-in),
+      transform var(--motion-out) var(--ease-in),
+      visibility 0s linear var(--motion-out);
+  }
+  .shell.narrow .side-slot.closed {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  .shell.narrow .side-slot.overlay {
+    transition:
+      opacity var(--motion-in) var(--ease-out),
+      transform var(--motion-in) var(--ease-out),
+      visibility 0s;
+  }
+  .inspector-slot.overlay {
+    animation: drawer-in-right var(--motion-in) var(--ease-out);
+  }
+  .scrim {
+    animation: fade-in var(--motion-in) var(--ease-out);
+  }
+  @keyframes drawer-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(12px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   .scrim {
     position: absolute;

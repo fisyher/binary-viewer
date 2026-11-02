@@ -4,6 +4,7 @@
   import { findNodeAt } from '../core/engine/interpret';
   import { groupIdMap, rowGroups } from '../core/groups';
   import {
+    MAX_TITLE_CHARS,
     PAGE_SIZE,
     defaultExpanded,
     flattenTree,
@@ -26,6 +27,8 @@
     type Pages,
     type Row,
   } from '../core/tree-model';
+  import { TREE_COLUMN_MAX, TREE_COLUMN_MIN, type TreeColumn } from './prefs';
+  import Resizer from './shell/Resizer.svelte';
 
   // 24px: the twisty and the jump buttons are at least 24px tall targets, so a row is too.
   const ROW_HEIGHT = 24;
@@ -45,6 +48,10 @@
     onPath = undefined,
     onJump,
     preserveFor = null,
+    nameWidth = null,
+    valueWidth = null,
+    onColumnWidth = undefined,
+    onResetLayout = undefined,
   }: {
     root: Node | null;
     diagnostics?: Diagnostic[];
@@ -60,6 +67,13 @@
     onJump?: (offset: number, size: number) => void;
     /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
     preserveFor?: Node | null;
+    /** Widths (px) the user gave the Name and Value columns; null = the default, flexible width. */
+    nameWidth?: number | null;
+    valueWidth?: number | null;
+    /** A header divider was dragged or used from the keyboard (px), or double-clicked (null = back to the default). Without it the dividers are not shown. */
+    onColumnWidth?: (column: TreeColumn, px: number | null) => void;
+    /** The dividers' context menu item "Reset layout" (see Resizer). */
+    onResetLayout?: () => void;
   } = $props();
 
   let expanded = $state.raw<ReadonlySet<number>>(new Set());
@@ -72,6 +86,11 @@
   let viewportHeight = $state(0);
   let loadError = $state<string | null>(null);
   let scroller: HTMLDivElement | undefined = $state();
+  let nameCell = $state(0); // the header cells' current widths: where a divider starts from while the column is still flexible
+  let valueCell = $state(0);
+  // Fixed (dragged) columns make the row as wide as the sum of its columns; the scroller then scrolls sideways if that is more than fits.
+  const minWide = $derived((nameWidth ?? 150) + (valueWidth ?? 90) + 70 + 80 + 50 + 22 + 5 * 6);
+  const minNarrow = $derived((nameWidth ?? 100) + (valueWidth ?? 56) + 52 + 30 + 20 + 4 * 4);
   const uid = $props.id(); // row ids are unique per tree instance (the viewer and the Formats preview may both be mounted)
   const rowId = (key: string) => `${uid}-${key.replaceAll(':', '-')}`;
   // The row of the latest first click on a row: a double-click acts on it, wherever the rows have moved to. Cleared by any
@@ -425,9 +444,50 @@
   }
 </script>
 
-<div class="tree">
-  <div class="head" aria-hidden="true">
-    <span>Name</span><span>Value</span><span>Type</span><span>Offset</span><span class="num">Size</span><span></span>
+<div
+  class="tree"
+  style:--c-name={nameWidth !== null ? `${nameWidth}px` : undefined}
+  style:--c-value={valueWidth !== null ? `${valueWidth}px` : undefined}
+  style:--min-wide="{minWide}px"
+  style:--min-narrow="{minNarrow}px"
+>
+  <!-- The column titles are decoration for sighted users (the rows say what each value is); the dividers are real, focusable separators. -->
+  <div class="head">
+    <span class="h-name" bind:clientWidth={nameCell}>
+      <span aria-hidden="true">Name</span>
+      {#if onColumnWidth}
+        <span class="grip">
+          <Resizer
+            orientation="vertical"
+            label="Resize Name column"
+            value={nameWidth ?? nameCell}
+            min={TREE_COLUMN_MIN.name}
+            max={TREE_COLUMN_MAX}
+            onResize={(px) => onColumnWidth('name', px)}
+            onReset={() => onColumnWidth('name', null)}
+            {onResetLayout}
+          />
+        </span>
+      {/if}
+    </span>
+    <span class="h-value" bind:clientWidth={valueCell}>
+      <span aria-hidden="true">Value</span>
+      {#if onColumnWidth}
+        <span class="grip">
+          <Resizer
+            orientation="vertical"
+            label="Resize Value column"
+            value={valueWidth ?? valueCell}
+            min={TREE_COLUMN_MIN.value}
+            max={TREE_COLUMN_MAX}
+            onResize={(px) => onColumnWidth('value', px)}
+            onReset={() => onColumnWidth('value', null)}
+            {onResetLayout}
+          />
+        </span>
+      {/if}
+    </span>
+    <span aria-hidden="true">Type</span><span aria-hidden="true">Offset</span><span class="num" aria-hidden="true">Size</span><span></span>
   </div>
   <div
     class="scroller"
@@ -450,6 +510,8 @@
             {#if row.kind === 'node'}
               {@const node = row.node}
               {@const problems = problemMessages(node)}
+              {@const shownValue = formatNodeValue(node)}
+              {@const fullValue = formatNodeValue(node, MAX_TITLE_CHARS)}
               <div
                 class="row"
                 class:selected={row.key === selectedKey}
@@ -460,6 +522,7 @@
                 aria-level={row.depth + 1}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={row.key === selectedKey}
+                {...(fullValue !== shownValue ? { 'aria-description': fullValue } : {})}
                 id={rowId(row.key)}
                 data-key={row.key}
                 onclick={(e) => onRowClick(row, e)}
@@ -502,8 +565,8 @@
                     >
                   {/each}
                 </span>
-                <span class="val" title={formatNodeValue(node)}>
-                  <span class="vt">{formatNodeValue(node)}</span>
+                <span class="val" title={fullValue}>
+                  <span class="vt">{shownValue}</span>
                   {#if node.link && onJump}
                     <button
                       type="button"
@@ -592,25 +655,28 @@
   .head,
   .row {
     display: grid;
-    grid-template-columns: minmax(150px, 1.5fr) minmax(90px, 1fr) 70px 80px 50px 22px;
+    grid-template-columns: var(--c-name, minmax(150px, 1.5fr)) var(--c-value, minmax(90px, 1fr)) 70px 80px 50px 22px;
     align-items: center;
-    min-width: 470px;
+    min-width: var(--min-wide, 470px);
     box-sizing: border-box;
   }
   /* In a narrow side bar the Type column gives way, so the default width needs no horizontal scrolling. */
   @container tree (max-width: 469px) {
     .tree .head,
     .tree .row {
-      grid-template-columns: minmax(100px, 2fr) minmax(56px, 1fr) 52px 30px 20px;
+      grid-template-columns: var(--c-name, minmax(100px, 2fr)) var(--c-value, minmax(56px, 1fr)) 52px 30px 20px;
       gap: 4px;
-      min-width: 280px;
+      min-width: var(--min-narrow, 280px);
     }
     .head > :nth-child(3),
     .row > :nth-child(3) {
       display: none;
     }
     .scroller .spacer {
-      min-width: 280px;
+      min-width: var(--min-narrow, 280px);
+    }
+    .tree .grip {
+      right: -3px;
     }
   }
   .head {
@@ -622,6 +688,18 @@
   }
   .head > span:first-child {
     padding-left: 26px;
+  }
+  .head > span {
+    position: relative;
+    white-space: nowrap;
+  }
+  /* A divider sits in the gap to the right of its column title; its 17px hit area is the Resizer's own. */
+  .grip {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    right: -4px;
+    display: flex;
   }
   .scroller {
     flex: 1;
@@ -641,7 +719,7 @@
   }
   .spacer {
     position: relative;
-    min-width: 470px;
+    min-width: var(--min-wide, 470px);
   }
   .window {
     position: absolute;

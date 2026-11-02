@@ -151,7 +151,7 @@
   .keys dd {
     color: var(--ink-quiet);
   }
-  @media (max-width: 600px) {
+  @container page (max-width: 600px) {
     .column {
       padding: 28px 20px;
     }

@@ -98,3 +98,44 @@ describe('EditorTabs', () => {
     expect(box.scrollLeft).toBe(10 * 120 + 120 - 300);
   });
 });
+
+describe('EditorTabs icons', () => {
+  const icon = (el: HTMLElement) => el.querySelector('svg.icon');
+
+  it('every tab has an aria-hidden inline glyph in the activity bar line style: binary file for the file, braces for specs', () => {
+    const { getByRole } = render(EditorTabs, { ...base, tabs: [file, spec('a', 'Alpha')], activeId: 'file' });
+    const f = icon(getByRole('tab', { name: 'a.bin' }))!;
+    const s = icon(getByRole('tab', { name: 'Alpha' }))!;
+    expect(f.getAttribute('data-icon')).toBe('file');
+    expect(s.getAttribute('data-icon')).toBe('spec');
+    for (const svg of [f, s]) {
+      expect(svg.getAttribute('aria-hidden')).toBe('true');
+      expect(svg.getAttribute('focusable')).toBe('false');
+      expect(svg.getAttribute('stroke-width')).toBe('1.6'); // the activity bar's
+      expect(svg.getAttribute('stroke')).toBe('currentColor');
+    }
+    expect(f.innerHTML).not.toBe(s.innerHTML);
+  });
+
+  it('the glyph does not change the tab name, and the file tab may be shown as a BMP image or a ZIP archive', () => {
+    const { getByRole } = render(EditorTabs, { ...base, tabs: [{ ...file, icon: 'bmp' }, spec('a', 'Alpha')], activeId: 'file' });
+    expect(getByRole('tab', { name: 'a.bin' })).toBeTruthy();
+    expect(icon(getByRole('tab', { name: 'a.bin' }))!.getAttribute('data-icon')).toBe('bmp');
+    cleanup();
+    const zip = render(EditorTabs, { ...base, tabs: [{ ...file, icon: 'zip' }], activeId: 'file' });
+    expect(icon(zip.getByRole('tab', { name: 'a.bin' }))!.getAttribute('data-icon')).toBe('zip');
+    const all = new Set(['file', 'bmp', 'zip', 'spec']);
+    expect(all.size).toBe(4);
+  });
+
+  it('the four glyphs are different drawings', () => {
+    const drawn = (t: EditorTab) => {
+      const r = render(EditorTabs, { ...base, tabs: [t], activeId: t.id });
+      const html = r.container.querySelector('svg.icon')!.innerHTML;
+      r.unmount();
+      return html;
+    };
+    const set = new Set([drawn({ ...file, icon: 'file' }), drawn({ ...file, icon: 'bmp' }), drawn({ ...file, icon: 'zip' }), drawn(spec('a'))]);
+    expect(set.size).toBe(4);
+  });
+});

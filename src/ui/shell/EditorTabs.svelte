@@ -8,7 +8,11 @@
     /** Accessible name of the marker. */
     modifiedLabel: string;
     closable: boolean;
+    /** The glyph before the label. Default: a binary file for the 'file' tab, braces for the others. 'bmp' and 'zip' are for a file parsed as that format. */
+    icon?: 'file' | 'bmp' | 'zip' | 'spec';
   }
+
+  export const tabIcon = (tab: Pick<EditorTab, 'id' | 'icon'>): NonNullable<EditorTab['icon']> => tab.icon ?? (tab.id === 'file' ? 'file' : 'spec');
 
   /** DOM id of a tab button (spec ids are user text: keep it selector-safe). */
   export const tabDomId = (id: string) => 'editor-tab-' + id.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -89,6 +93,7 @@
     <div class="tabs" role="tablist" aria-label="Editors" bind:this={list}>
       {#each tabs as tab (tab.id)}
         {@const active = tab.id === current}
+        {@const icon = tabIcon(tab)}
         <div class="tab" class:active>
           <button
             type="button"
@@ -103,6 +108,27 @@
             onmousedown={onMouseDown}
             onauxclick={(e) => onAuxClick(e, tab)}
           >
+            <!-- 14px glyphs in the activity bar's line style (stroke 1.6, round caps); decorative -->
+            <svg class="icon" data-icon={icon} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              {#if icon === 'spec'}
+                <!-- braces: a format spec -->
+                <path d="M9 4C6.5 4 6 5 6 6.5V9c0 1.2-.8 2-2 3 1.2 1 2 1.8 2 3v2.5C6 19 6.5 20 9 20M15 4c2.5 0 3 1 3 2.5V9c0 1.2.8 2 2 3-1.2 1-2 1.8-2 3v2.5c0 1.5-.5 2.5-3 2.5" />
+              {:else if icon === 'bmp'}
+                <!-- an image: frame, sun, hills -->
+                <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+                <circle cx="9" cy="10" r="1.5" />
+                <path d="M3.5 17l5-4.5 4 3.5 3-2.5 5 4" />
+              {:else if icon === 'zip'}
+                <!-- an archive: a box with a zipper -->
+                <rect x="4.5" y="3.5" width="15" height="17" rx="1.5" />
+                <path d="M12 3.5v4M10.5 9.5h3M10.5 12.5h3M10.5 15.5h3" />
+              {:else}
+                <!-- a binary file: a page with 0 and 1 -->
+                <path d="M6 3h8l4 4v14H6z" />
+                <path d="M14 3v4h4" />
+                <path d="M9 12v3M9.2 17.2l.2.6M13.5 11.5v4.5M12.2 12.5l1.3-1" />
+              {/if}
+            </svg>
             <span class="label" class:file={tab.id === 'file'}>{tab.label}</span>
             {#if tab.modified}<span class="dirty" aria-label={tab.modifiedLabel} title={tab.modifiedLabel}>●</span>{/if}
           </button>
@@ -179,6 +205,10 @@
   }
   .tab.active [role='tab'] {
     font-weight: 600;
+  }
+  .icon {
+    flex: none;
+    opacity: 0.85;
   }
   .label {
     overflow: hidden;

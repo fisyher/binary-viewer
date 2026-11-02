@@ -14,6 +14,7 @@
     onSeek,
     onWheelBy,
     onWantBuckets,
+    scale = 1,
   }: {
     /** Length of the open document in bytes. */
     size: number;
@@ -31,6 +32,8 @@
     onWheelBy: (px: number) => void;
     /** How many buckets the strip can show (its height in device pixels); fired once, then debounced on resize. */
     onWantBuckets?: (buckets: number) => void;
+    /** The UI zoom factor (CSS zoom on the page): the canvas has one device pixel per screen pixel, so it is sized by pixel ratio times zoom. */
+    scale?: number;
   } = $props();
 
   const WANT_DELAY_MS = 150;
@@ -46,16 +49,18 @@
   let dragging = false;
   let kbFocus = $state(false); // focused from the keyboard (not by a pointer press): the tooltip then follows the view centre
 
-  const wPx = $derived(Math.round(cssW * dpr));
-  const hPx = $derived(Math.round(cssH * dpr));
+  // Device pixels per CSS px of this strip: the screen's pixel ratio times the UI zoom.
+  const px = $derived(dpr * scale);
+  const wPx = $derived(Math.round(cssW * px));
+  const hPx = $derived(Math.round(cssH * px));
   const shown = $derived(overview !== null && overview.size === size && overview.buckets.length > 0 ? overview : null);
   const bands = $derived(shown ? bandsFromBuckets(shown.buckets, hPx) : null);
   // Regions too small for the bands (a header in a big file) are drawn at a 2 CSS px minimum, over them.
-  const marks = $derived(shown ? smallRegionRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(dpr))) : null);
+  const marks = $derived(shown ? smallRegionRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(px))) : null);
   // A 1 CSS px ground line between neighbouring regions, so same-coloured neighbours stay distinguishable.
-  const boundaries = $derived(shown ? regionBoundaryRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(dpr))) : null);
-  const view = $derived(viewport && size > 0 ? rangeToRows(viewport.start, viewport.end, size, hPx, Math.round(4 * dpr)) : null);
-  const selRows = $derived(selection && size > 0 ? rangeToRows(selection.start, selection.end + 1, size, hPx, Math.round(2 * dpr)) : null);
+  const boundaries = $derived(shown ? regionBoundaryRows(shown.regions ?? [], size, hPx, Math.max(1, Math.round(px))) : null);
+  const view = $derived(viewport && size > 0 ? rangeToRows(viewport.start, viewport.end, size, hPx, Math.round(4 * px)) : null);
+  const selRows = $derived(selection && size > 0 ? rangeToRows(selection.start, selection.end + 1, size, hPx, Math.round(2 * px)) : null);
   const structured = $derived((bands ?? []).filter((b) => b.v > 0));
 
   const span = $derived(viewport ? Math.max(ROW_BYTES, viewport.end - viewport.start) : ROW_BYTES);
@@ -85,7 +90,7 @@
     if (canvas.height !== hPx) canvas.height = hPx;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    paintMinimap(ctx, { width: wPx, height: hPx, dpr, bands, marks, boundaries, view, selection: selRows, palette: readPalette(canvas) });
+    paintMinimap(ctx, { width: wPx, height: hPx, dpr: px, bands, marks, boundaries, view, selection: selRows, palette: readPalette(canvas) });
   });
 
   // Theme: data-theme on <html> or the system colour scheme.
@@ -133,7 +138,7 @@
     const r = el.getBoundingClientRect();
     if (!(r.height > 0)) return null;
     const y = e.clientY - r.top;
-    return { y: Math.min(r.height, Math.max(0, y)), offset: offsetAtY(y, r.height, size) };
+    return { y: Math.min(r.height, Math.max(0, y)) / scale, offset: offsetAtY(y, r.height, size) };
   }
 
   function onFocus() {
@@ -284,7 +289,7 @@
     text-overflow: ellipsis;
     z-index: 2;
   }
-  @media (max-width: 599px) {
+  @container page (max-width: 599px) {
     .minimap {
       display: none;
     }

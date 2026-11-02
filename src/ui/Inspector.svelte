@@ -2,6 +2,7 @@
   import type { ByteSource } from '../core/byte-source';
   import { formatOffset, offsetWidth } from '../core/hex-format';
   import { decodeInspector, INSPECTOR_WINDOW, type InspectorRow } from '../core/inspector';
+  import { paletteKeyName } from './shell/platform';
 
   let {
     source,
@@ -9,6 +10,8 @@
     version = 0,
     littleEndian = $bindable(true),
     onCollapse,
+    hasFile = true,
+    empty = false,
   }: {
     source: ByteSource | null;
     offset: number | null;
@@ -17,6 +20,10 @@
     littleEndian?: boolean;
     /** Hide the panel (it can be shown again from the rail). */
     onCollapse?: () => void;
+    /** A document is open (the empty state then explains how to pick a byte; else it says to open a file). */
+    hasFile?: boolean;
+    /** The open file has no bytes at all (there is nothing to click). */
+    empty?: boolean;
   } = $props();
 
   // Bytes tagged with the source/offset they were read for, so stale data can be dimmed.
@@ -86,7 +93,8 @@
   {#if error}
     <p class="msg error" role="alert">{error}</p>
   {:else if !bytes}
-    <p class="msg">Select a byte to inspect.</p>
+    <!-- There is no Go to shortcut of its own: Go to offset is a palette command (and the status bar's selection button). -->
+    <p class="msg">{!hasFile ? 'Open a file to inspect its bytes.' : empty ? 'The file is empty.' : `Click a byte, or press ${paletteKeyName()} and choose Go to offset.`}</p>
   {:else}
     <div class="body" class:stale aria-busy={stale}>
       {#each groups as g (g.name)}

@@ -8,6 +8,8 @@ import type { LazyArray, Node } from './engine';
 export const PAGE_SIZE = 200;
 /** Longest display string rendered in a cell. */
 export const MAX_CELL_CHARS = 200;
+/** The longest value text a tooltip or an accessible description carries (the cell itself shows MAX_CELL_CHARS). */
+export const MAX_TITLE_CHARS = 512;
 
 /** Loaded pages of fixed-size lazy arrays: array node id -> page index (element index / PAGE_SIZE) -> that page's nodes. */
 export type Pages = ReadonlyMap<number, ReadonlyMap<number, readonly Node[]>>;
@@ -309,8 +311,11 @@ function bytesPreview(b: Uint8Array): string {
   return b.length > n ? `${s} … (${b.length} bytes)` : s;
 }
 
-/** Text of the value cell (always passed through sanitizeText, at most MAX_CELL_CHARS): lazy array summary, enum label (+ display), display, or the formatted raw value. */
-export function formatNodeValue(node: Node): string {
+/**
+ * Text of the value cell (always passed through sanitizeText, at most `max` = MAX_CELL_CHARS plus an ellipsis): lazy array summary,
+ * enum label (+ display), display, or the formatted raw value. A larger `max` (MAX_TITLE_CHARS) gives the text for a tooltip.
+ */
+export function formatNodeValue(node: Node, max = MAX_CELL_CHARS): string {
   if (node.lazy) {
     const lz = node.lazy;
     return lz.count === null ? `[${lz.loaded}+] items` : `[${lz.count}] items`;
@@ -321,12 +326,12 @@ export function formatNodeValue(node: Node): string {
       : node.value === undefined
         ? ''
         : typeof node.value === 'string'
-          ? `"${sanitizeText(node.value, MAX_CELL_CHARS - 3, true)}"` // quotes added after truncation so the closing one survives
+          ? `"${sanitizeText(node.value, max - 3, true)}"` // quotes added after truncation so the closing one survives
           : node.value instanceof Uint8Array
             ? bytesPreview(node.value)
             : String(node.value);
-  if (node.enumLabel !== undefined) return sanitizeText(base === '' ? node.enumLabel : `${node.enumLabel} (${base})`);
-  return sanitizeText(base);
+  if (node.enumLabel !== undefined) return sanitizeText(base === '' ? node.enumLabel : `${node.enumLabel} (${base})`, max);
+  return sanitizeText(base, max);
 }
 
 /** Messages for the error/warning badge (`error` first, then `expect`/`assert` validation messages); empty when the node has no problems. */

@@ -85,3 +85,36 @@ describe.each(Object.entries(themes))('%s theme contrast', (_name, t) => {
     }
   });
 });
+
+describe('motion tokens', () => {
+  const base = declarations(':root');
+
+  it('define the durations and the easings', () => {
+    expect(base['--motion-in']).toBe('120ms');
+    expect(base['--motion-out']).toBe('80ms');
+    expect(base['--ease-out']).toBe('cubic-bezier(0.2, 0, 0, 1)');
+    expect(base['--ease-in']).toBe('cubic-bezier(0.3, 0, 1, 1)');
+  });
+
+  it('are 0ms under prefers-reduced-motion: reduce', () => {
+    const start = css.indexOf('@media (prefers-reduced-motion: reduce) {');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = css.slice(start);
+    const rule = /:root\s*\{([^}]*)\}/.exec(block);
+    expect(rule, 'a :root rule in the reduced-motion block').not.toBeNull();
+    const tokens = Object.fromEntries([...rule![1]!.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()]));
+    expect(tokens['--motion-in']).toBe('0ms');
+    expect(tokens['--motion-out']).toBe('0ms');
+  });
+});
+
+describe('hex banding token', () => {
+  it('is a faint tint in both themes (alpha of 0.05 or less), subtle but not absent', () => {
+    for (const [name, t] of Object.entries(themes)) {
+      const m = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(t['--band']!);
+      expect(m, name).not.toBeNull();
+      expect(Number(m![4]), name).toBeGreaterThan(0.01);
+      expect(Number(m![4]), name).toBeLessThanOrEqual(0.05);
+    }
+  });
+});

@@ -66,7 +66,7 @@
     color: var(--error);
     font-size: var(--fs-sm);
   }
-  @media (max-width: 720px) {
+  @container page (max-width: 720px) {
     input {
       width: 14ch;
     }

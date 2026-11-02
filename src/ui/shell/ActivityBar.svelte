@@ -74,12 +74,12 @@
   .item.active {
     color: var(--ink);
   }
-  /* The label: at once for the keyboard, after a short delay for the pointer (and at once with reduced motion). */
+  /* The label: at once for the keyboard, after a short delay for the pointer (and at once with reduced motion). It fades and slides 4px (opacity and transform only). */
   .tip {
     position: absolute;
     left: calc(100% + 4px);
     top: 50%;
-    transform: translateY(-50%);
+    transform: translate(-4px, -50%);
     padding: 2px 8px;
     background: var(--chrome-deep);
     color: var(--ink);
@@ -91,19 +91,27 @@
     opacity: 0;
     visibility: hidden;
     transition:
-      opacity 0s 0s,
-      visibility 0s 0s;
+      opacity var(--motion-out) var(--ease-in),
+      transform var(--motion-out) var(--ease-in),
+      visibility 0s linear var(--motion-out);
     z-index: 10;
   }
   .item:focus-visible .tip {
     opacity: 1;
     visibility: visible;
+    transform: translate(0, -50%);
+    transition:
+      opacity var(--motion-in) var(--ease-out),
+      transform var(--motion-in) var(--ease-out),
+      visibility 0s;
   }
   .item:hover .tip {
     opacity: 1;
     visibility: visible;
+    transform: translate(0, -50%);
     transition:
-      opacity 0s 400ms,
+      opacity var(--motion-in) var(--ease-out) 400ms,
+      transform var(--motion-in) var(--ease-out) 400ms,
       visibility 0s 400ms;
   }
   @media (prefers-reduced-motion: reduce) {

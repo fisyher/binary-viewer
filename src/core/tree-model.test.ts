@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Node } from './engine';
 import {
+  MAX_TITLE_CHARS,
   PAGE_SIZE,
   defaultExpanded,
   flattenTree,
@@ -148,6 +149,19 @@ describe('helpers', () => {
     expect(formatNodeValue(n('a', 0, 2, { value: 'BM' }))).toBe('"BM"');
     expect(formatNodeValue(n('a', 0, 3, { value: new Uint8Array([1, 0xab, 255]) }))).toBe('01 ab ff');
     expect(formatNodeValue(n('a', 0, 3, { value: 'x'.repeat(5000) })).length).toBeLessThanOrEqual(203);
+  });
+
+  it('formatNodeValue with a larger max (the tooltip text): the whole value up to 512 chars, sanitized, with an ellipsis beyond', () => {
+    const long = n('a', 0, 3, { value: 'ab\u202Ec'.repeat(300) });
+    expect(formatNodeValue(long).length).toBeLessThanOrEqual(201); // the cell
+    const title = formatNodeValue(long, MAX_TITLE_CHARS);
+    expect(title.length).toBeGreaterThan(formatNodeValue(long).length);
+    expect(title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS + 1);
+    expect(title).toContain('\u2026'); // cut inside the quotes, which are added after the cut
+    expect(title).not.toContain('\u202E'); // the bidi override is shown as an escape, never passed through
+    expect(title).toContain('\\u{202E}');
+    expect(formatNodeValue(n('a', 0, 2, { value: 'BM' }), MAX_TITLE_CHARS)).toBe('"BM"');
+    expect(formatNodeValue(n('a', 0, 4, { value: 3, display: 'x'.repeat(900), enumLabel: 'E' }), MAX_TITLE_CHARS).length).toBeLessThanOrEqual(MAX_TITLE_CHARS + 1);
   });
 
   it('sanitizeText escapes every invisible class, keeps real text, and truncates', () => {

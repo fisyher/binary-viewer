@@ -97,10 +97,12 @@ describe('command palette: opening and closing', () => {
     expect(isOpen()).toBe(false);
   });
 
-  it('opens from the Commands button in the title bar (title shows the shortcut) and gives focus back there', async () => {
+  it('opens from the Search commands field in the title bar (name and title show the shortcut) and gives focus back there', async () => {
     const { getByRole } = await mount();
-    const button = getByRole('button', { name: 'Commands' });
+    const button = getByRole('button', { name: 'Search commands (Ctrl+K)' });
     expect(button.getAttribute('title')).toContain('Ctrl+K');
+    expect(button.textContent).toContain('Search commands…');
+    expect(button.querySelector('kbd')?.textContent).toBe('Ctrl K');
     button.focus();
     await fireEvent.click(button);
     await waitFor(() => expect(isOpen()).toBe(true));

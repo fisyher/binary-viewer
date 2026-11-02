@@ -12,7 +12,7 @@ function ctx(over: Partial<Omit<CommandContext, 'actions'>> = {}) {
   const actions = Object.fromEntries(
     [
       'newFile', 'openFile', 'save', 'saveAs', 'goToOffset', 'chooseFormat', 'cancelParse', 'toggleSide', 'showView', 'toggleInspector',
-      'toggleProblems', 'toggleMinimap', 'focusSide', 'focusEditor', 'focusProblems', 'focusInspector', 'setTheme', 'setLittleEndian', 'selectTab', 'closeSpecTab', 'openSpec', 'openAbout',
+      'toggleProblems', 'toggleMinimap', 'toggleHexBanding', 'zoomIn', 'zoomOut', 'resetZoom', 'resetLayout', 'focusSide', 'focusEditor', 'focusProblems', 'focusInspector', 'setTheme', 'setLittleEndian', 'selectTab', 'closeSpecTab', 'openSpec', 'openAbout',
     ].map((n) => [n, log(n)]),
   ) as unknown as CommandContext['actions'];
   const c: CommandContext = {
@@ -28,6 +28,8 @@ function ctx(over: Partial<Omit<CommandContext, 'actions'>> = {}) {
     inspectorOpen: true,
     problemsOpen: true,
     showMinimap: true,
+    hexBanding: true,
+    uiScale: 1,
     theme: 'system',
     littleEndian: true,
     specs: [],
@@ -67,7 +69,7 @@ describe('buildCommands', () => {
     for (const l of [
       'Open file…', 'New file', 'Save', 'Save as…', 'Go to offset…', 'Choose format…', 'Cancel parsing', 'Hide side bar', 'Show Structure', 'Show Formats',
       'Hide data inspector', 'Hide Problems panel', 'Hide minimap', 'Theme: System', 'Theme: Light', 'Theme: Dark', 'Byte order: little-endian',
-      'Byte order: big-endian', 'Focus side bar', 'Focus editor', 'Focus Problems', 'Focus inspector', 'Close spec tab', 'Open format spec…', 'About Binary Viewer', 'Keyboard shortcuts',
+      'Byte order: big-endian', 'Toggle hex row banding', 'Zoom in', 'Zoom out', 'Reset zoom', 'Reset layout', 'Focus side bar', 'Focus editor', 'Focus Problems', 'Focus inspector', 'Close spec tab', 'Open format spec…', 'About Binary Viewer', 'Keyboard shortcuts',
     ]) expect(labels).toContain(l);
   });
 
@@ -97,6 +99,30 @@ describe('buildCommands', () => {
       'openFile', 'newFile', 'save', 'saveAs', 'toggleSide', 'toggleMinimap', 'toggleInspector', 'toggleProblems', 'openAbout',
       'showView:structure', 'showView:formats', 'setTheme:light', 'setLittleEndian:false',
     ]);
+  });
+
+  it('the zoom, banding and layout commands are in the View group and run their actions', () => {
+    const { commands, calls } = ctx({ uiScale: 1.15 });
+    for (const id of ['view.banding', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'view.resetLayout']) {
+      expect(find(commands, id).group, id).toBe('View');
+      find(commands, id).run!();
+    }
+    expect(calls).toEqual(['toggleHexBanding', 'zoomIn', 'zoomOut', 'resetZoom', 'resetLayout']);
+    expect(find(commands, 'view.zoomIn').shortcut).toBe('Ctrl+=');
+    expect(find(commands, 'view.zoomOut').shortcut).toBe('Ctrl+-');
+    expect(find(commands, 'view.zoomReset').shortcut).toBe('Ctrl+0');
+  });
+
+  it('banding shows its state; Reset layout needs no file; the zoom commands stop at the ends of the scale', () => {
+    expect(find(ctx({ hexBanding: false }).commands, 'view.banding').hint).toBe('Off');
+    expect(find(ctx().commands, 'view.banding').hint).toBe('On');
+    expect(reason(ctx({ hasFile: false, fileSize: 0 }).commands, 'view.resetLayout')).toBeNull();
+    expect(reason(ctx({ uiScale: 1 }).commands, 'view.zoomIn')).toBeNull();
+    expect(reason(ctx({ uiScale: 1 }).commands, 'view.zoomOut')).toBeNull();
+    expect(reason(ctx({ uiScale: 1 }).commands, 'view.zoomReset')).toBe('Already at 100%');
+    expect(reason(ctx({ uiScale: 1.3 }).commands, 'view.zoomIn')).toBe('Already at the largest size');
+    expect(reason(ctx({ uiScale: 0.9 }).commands, 'view.zoomOut')).toBe('Already at the smallest size');
+    expect(reason(ctx({ uiScale: 0.9 }).commands, 'view.zoomReset')).toBeNull();
   });
 
   it('the Focus commands are in the View group and run their actions', () => {

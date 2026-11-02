@@ -12,6 +12,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: 'Ctrl+C', action: 'Copy the selected bytes' },
   { keys: 'Ctrl+Home / Ctrl+End', action: 'Jump to the start / end of the file' },
   { keys: 'Ctrl+S', action: 'Save the file, or the format spec in a spec tab' },
+  { keys: 'Ctrl+= / Ctrl+-', action: 'Zoom the interface in / out (90%, 100%, 115%, 130%)' },
+  { keys: 'Ctrl+0', action: 'Reset the zoom to 100%' },
+  { keys: 'Shift+F10 / Menu', action: 'On a focused panel or column divider: open its context menu (Reset layout)' },
 ];
 
 /** The few shown on the start screen (the palette has its own line there). */

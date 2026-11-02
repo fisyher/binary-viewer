@@ -42,6 +42,7 @@
     onViewChange,
     onViewport,
     onByteClick,
+    banding = true,
     id = undefined,
   }: {
     source: ByteSource;
@@ -67,6 +68,8 @@
     onViewport?: (start: number, end: number) => void;
     /** A plain click (no drag, no shift) landed on a byte. */
     onByteClick?: (offset: number) => void;
+    /** Every other 8-byte group of the hex and ASCII columns gets a faint background (CSS only). */
+    banding?: boolean;
     /** DOM id of the scrolling grid (for aria-controls). */
     id?: string;
   } = $props();
@@ -619,7 +622,7 @@
           {@const base = row * BYTES_PER_ROW}
           <div class="row" style:height="{ROW_HEIGHT}px" role="row">
             <span class="off">{formatOffset(base, width)}</span>
-            <span class="hex">
+            <span class="hex" class:banded={banding}>
               {#each { length: BYTES_PER_ROW } as _, i (i)}
                 {@const o = base + i}
                 {@const b = o < size ? byteAt(o) : undefined}
@@ -636,7 +639,7 @@
                 >
               {/each}
             </span>
-            <span class="ascii">
+            <span class="ascii" class:banded={banding}>
               {#each { length: BYTES_PER_ROW } as _, i (i)}
                 {@const o = base + i}
                 {@const b = o < size ? byteAt(o) : undefined}
@@ -716,6 +719,23 @@
   .ascii {
     display: inline-flex;
     color: var(--ink-quiet);
+  }
+  /*
+   * Banding: the second 8-byte group of each row gets a faint background, as a gradient on the column (no per-byte work).
+   * It paints under the cells, whose own backgrounds (structure tints, node, selection) are drawn over it. The column
+   * fills the row's height so the bands join between rows. In .hex a byte is 2.4ch + 0.4ch of margin, and the group gap adds
+   * 1ch: the second group starts at 8 * 2.8 + 1 = 23.4ch, so the band begins in the middle of the gap, at 22.7ch.
+   */
+  .hex.banded,
+  .ascii.banded {
+    align-self: stretch;
+    align-items: center;
+  }
+  .hex.banded {
+    background-image: linear-gradient(to right, transparent 22.7ch, var(--band) 22.7ch);
+  }
+  .ascii.banded {
+    background-image: linear-gradient(to right, transparent 8ch, var(--band) 8ch);
   }
   [data-t='1'] {
     background: var(--struct-1-tint);

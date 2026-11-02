@@ -413,8 +413,8 @@
     z-index: 20;
   }
   .panel {
-    width: min(560px, calc(100vw - 32px));
-    max-height: calc(100dvh - min(14vh, 120px) - 16px);
+    width: min(560px, calc(100vw / var(--ui-scale, 1) - 32px));
+    max-height: calc((100dvh - min(14vh, 120px)) / var(--ui-scale, 1) - 16px);
     display: flex;
     flex-direction: column;
     background: var(--chrome);
@@ -426,17 +426,18 @@
   .panel:focus {
     outline: none;
   }
-  @media (prefers-reduced-motion: no-preference) {
-    .panel {
-      animation: fade-in 120ms ease-out;
-    }
+  /* Opens with a fade and a 4px rise (opacity and transform only); --motion-in is 0ms under reduced motion. */
+  .panel {
+    animation: palette-in var(--motion-in) var(--ease-out);
   }
-  @keyframes fade-in {
+  @keyframes palette-in {
     from {
       opacity: 0;
+      transform: translateY(4px);
     }
     to {
       opacity: 1;
+      transform: none;
     }
   }
   .crumb {
@@ -557,12 +558,12 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  @media (max-width: 480px) {
+  @container page (max-width: 480px) {
     .backdrop {
       padding-top: 8px;
     }
     .panel {
-      max-height: calc(100dvh - 16px);
+      max-height: calc(100dvh / var(--ui-scale, 1) - 16px);
     }
     .note {
       max-width: 45%;

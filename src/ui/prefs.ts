@@ -105,6 +105,15 @@ export function saveFlag(name: string, on: boolean): void {
   }
 }
 
+/** Forget a saved panel size (it reads as missing again). */
+export function clearSize(name: string): void {
+  try {
+    localStorage.removeItem(LAYOUT_PREFIX + name);
+  } catch {
+    // not persisted
+  }
+}
+
 export type SideView = 'structure' | 'formats';
 
 export function loadSideView(): SideView {
@@ -130,6 +139,85 @@ export function loadShowMinimap(): boolean {
 
 export function saveShowMinimap(on: boolean): void {
   saveFlag('showMinimap', on);
+}
+
+/** Whether every other 8-byte group of the hex and ASCII columns gets a faint background (on unless switched off). */
+export function loadHexBanding(): boolean {
+  return loadFlag('hexBanding', true);
+}
+
+export function saveHexBanding(on: boolean): void {
+  saveFlag('hexBanding', on);
+}
+
+/** Structure tree column widths (px) the user dragged; null = the default, flexible width. */
+export type TreeColumn = 'name' | 'value';
+export const TREE_COLUMN_MIN: Record<TreeColumn, number> = { name: 80, value: 60 };
+export const TREE_COLUMN_MAX = 800;
+const treeColumnKey = (c: TreeColumn) => (c === 'name' ? 'treeNameWidth' : 'treeValueWidth');
+
+/** The width a column takes when asked for something that is not a number (the least the flexible default gives it). */
+export const TREE_COLUMN_DEFAULT: Record<TreeColumn, number> = { name: 150, value: 90 };
+
+export function clampTreeColumn(c: TreeColumn, px: number): number {
+  if (!Number.isFinite(px)) return TREE_COLUMN_DEFAULT[c];
+  return Math.min(TREE_COLUMN_MAX, Math.max(TREE_COLUMN_MIN[c], Math.round(px)));
+}
+
+export function loadTreeColumn(c: TreeColumn): number | null {
+  const v = loadSize(treeColumnKey(c), 0);
+  return v > 0 ? clampTreeColumn(c, v) : null;
+}
+
+export function saveTreeColumn(c: TreeColumn, px: number | null): void {
+  if (px === null) clearSize(treeColumnKey(c));
+  else saveSize(treeColumnKey(c), clampTreeColumn(c, px));
+}
+
+// ---- Zoom ----
+
+/** The UI sizes: a factor on every size in the app (1 = 100%). */
+export const UI_SCALES = [0.9, 1, 1.15, 1.3] as const;
+export type UiScale = (typeof UI_SCALES)[number];
+const SCALE_KEY = 'binaryviewer.uiScale';
+
+/** Saved zoom; 1 unless one of UI_SCALES was stored. Storage errors read as 1. */
+export function loadUiScale(): UiScale {
+  try {
+    const v = Number(localStorage.getItem(SCALE_KEY));
+    return UI_SCALES.find((s) => s === v) ?? 1;
+  } catch {
+    return 1;
+  }
+}
+
+export function saveUiScale(scale: UiScale): void {
+  try {
+    if (scale === 1) localStorage.removeItem(SCALE_KEY);
+    else localStorage.setItem(SCALE_KEY, String(scale));
+  } catch {
+    // storage unavailable: the choice just won't persist
+  }
+}
+
+/** The next larger (`+1`) or smaller (`-1`) zoom, or the same one at the end of the list. */
+export function stepUiScale(scale: UiScale, dir: 1 | -1): UiScale {
+  const i = UI_SCALES.indexOf(scale) + dir;
+  return UI_SCALES[Math.min(UI_SCALES.length - 1, Math.max(0, i))]!;
+}
+
+/**
+ * Apply a zoom to the document with CSS `zoom` on the root (everything scales, dialogs included). `--ui-scale` lets
+ * viewport-sized boxes (`100dvh`, which `zoom` would scale too) divide it back out.
+ */
+export function applyUiScale(scale: UiScale, root: HTMLElement = document.documentElement): void {
+  if (scale === 1) {
+    root.style.removeProperty('zoom');
+    root.style.removeProperty('--ui-scale');
+  } else {
+    root.style.setProperty('zoom', String(scale));
+    root.style.setProperty('--ui-scale', String(scale));
+  }
 }
 
 // ---- Command palette ----

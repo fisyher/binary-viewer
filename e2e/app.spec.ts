@@ -643,8 +643,8 @@ test.describe('command palette', () => {
     await expect(dialog(page)).toBeHidden();
   });
 
-  test('the Commands button opens it', async ({ page }) => {
-    await page.getByRole('button', { name: 'Commands' }).click();
+  test('the Search commands field opens it', async ({ page }) => {
+    await page.getByRole('button', { name: 'Search commands (Ctrl+K)' }).click();
     await expect(dialog(page)).toBeVisible();
     await expect(dialog(page).getByRole('option').first()).toBeVisible();
   });
@@ -788,7 +788,7 @@ test.describe('UX refinement', () => {
       page.getByRole('button', { name: 'Problems', exact: true }),
       page.getByRole('button', { name: 'New', exact: true }),
       page.getByRole('button', { name: 'Open…' }),
-      page.getByRole('button', { name: 'Commands' }),
+      page.getByRole('button', { name: 'Search commands (Ctrl+K)' }),
       page.getByRole('button', { name: 'About', exact: true }),
     ];
     for (const b of buttons) {
@@ -950,5 +950,456 @@ test.describe('UX refinement', () => {
     const b = await box(strip);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); // the middle of the file: the pixel data
     await expect(strip.locator('.tip')).toContainText(/^pixels · 0x[0-9A-F]{8}$/);
+  });
+});
+
+test.describe('UX refinement 2', () => {
+  const box = async (locator: import('@playwright/test').Locator) => {
+    await expect(locator).toBeVisible();
+    const b = await locator.boundingBox();
+    expect(b, 'bounding box').not.toBeNull();
+    return b!;
+  };
+  const palette = (page: Page) => page.getByRole('dialog').filter({ has: page.getByRole('combobox') });
+  async function runCommand(page: Page, query: string) {
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox').fill(query);
+    await page.keyboard.press('Enter');
+    await expect(palette(page)).toHaveCount(0);
+  }
+  /** Seed local storage and reload, so the page starts as a returning user's would. */
+  async function startWith(page: Page, prefs: Record<string, string>) {
+    await gotoApp(page);
+    await page.evaluate((p) => {
+      for (const [k, v] of Object.entries(p)) localStorage.setItem(k, v);
+    }, prefs);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Binary Viewer', level: 1 })).toBeVisible();
+  }
+
+  // A file without a format: a click selects just the clicked byte (in a parsed file the structure takes the selection over).
+  const ramp = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
+
+  // ---- A6: zoom ----
+  for (const scale of ['0.9', '1.15', '1.3']) {
+    test(`at ${Math.round(Number(scale) * 100)}% a click on a byte selects that byte, in the hex and the ASCII column`, async ({ page }) => {
+      await startWith(page, { 'binaryviewer.uiScale': scale });
+      await openBytes(page, 'ramp.bin', ramp(400));
+      await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe(scale);
+      await hexByte(page, 0x40).click();
+      await expect(statusBar(page)).toContainText('Start: 0x40 (64)');
+      await hexByte(page, 0x7b).click();
+      await expect(statusBar(page)).toContainText('Start: 0x7B (123)');
+      await page.locator('.ascii .c[data-o="100"]').click();
+      await expect(statusBar(page)).toContainText('Start: 0x64 (100)');
+      // the status bar says it is not 100%
+      await expect(statusBar(page).getByRole('button', { name: /^Zoom: / })).toHaveText(`${Math.round(Number(scale) * 100)}%`);
+    });
+  }
+
+  test('Ctrl+= zooms the interface (not the browser), Ctrl+0 resets, and a click still lands on the right byte at 115%', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'ramp.bin', ramp(400));
+    const dpr = await page.evaluate(() => window.devicePixelRatio);
+    await page.keyboard.press('Control+Equal');
+    await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe('1.15');
+    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(dpr); // the page, not the browser, zoomed
+    await expect(statusBar(page).getByRole('button', { name: 'Zoom: 115%. Reset to 100%' })).toBeVisible();
+    await hexByte(page, 0x50).click();
+    await expect(statusBar(page)).toContainText('Start: 0x50 (80)');
+    await page.keyboard.press('Control+0');
+    await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe('');
+    await expect(statusBar(page).getByRole('button', { name: /^Zoom: / })).toHaveCount(0);
+    await hexByte(page, 0x50).click();
+    await expect(statusBar(page)).toContainText('Start: 0x50 (80)');
+    // Zoom in / out from the palette
+    await runCommand(page, 'zoom out');
+    await expect(statusBar(page).getByRole('button', { name: 'Zoom: 90%. Reset to 100%' })).toBeVisible();
+    await statusBar(page).getByRole('button', { name: /^Zoom: / }).click();
+    await expect(statusBar(page).getByRole('button', { name: /^Zoom: / })).toHaveCount(0);
+  });
+
+  for (const scale of ['0.9', '1.3']) {
+    test(`at ${Math.round(Number(scale) * 100)}% the app still fills the window exactly (no scrollbars, status bar at the bottom)`, async ({ page }) => {
+      await startWith(page, { 'binaryviewer.uiScale': scale });
+      await openBytes(page, 'pic.bmp', makeBmp(400));
+      const vh = page.viewportSize()!.height;
+      const bar = await box(statusBar(page));
+      expect(bar.y + bar.height).toBeGreaterThan(vh - 2);
+      expect(bar.y + bar.height).toBeLessThanOrEqual(vh + 1);
+      expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1)).toBe(true);
+    });
+  }
+
+  test('at 115% dragging a resizer moves it by the pointer distance (screen px over zoom)', async ({ page }) => {
+    await startWith(page, { 'binaryviewer.uiScale': '1.15' });
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const sep = page.getByRole('separator', { name: 'Resize side bar' });
+    const before = Number(await sep.getAttribute('aria-valuenow'));
+    const line = await box(sep);
+    await page.mouse.move(line.x + 0.5, line.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(line.x + 0.5 + 57.5, line.y + 100, { steps: 5 }); // 57.5 screen px = 50 CSS px at 115%
+    await page.mouse.up();
+    const after = Number(await sep.getAttribute('aria-valuenow'));
+    expect(after - before).toBeGreaterThanOrEqual(48);
+    expect(after - before).toBeLessThanOrEqual(52);
+    // and the line followed the pointer
+    const moved = await box(sep);
+    expect(Math.abs(moved.x - (line.x + 57.5))).toBeLessThanOrEqual(3);
+  });
+
+  test('at 115% a click on the minimap seeks by the strip ratio, and its canvas has one pixel per screen pixel', async ({ page }) => {
+    await startWith(page, { 'binaryviewer.uiScale': '1.15' });
+    await openBytes(page, 'pic.bmp', makeBmp(20_000));
+    await expectParsed(page);
+    const strip = minimap(page);
+    const b = await box(strip);
+    const size = 54 + 20_000;
+    await strip.click({ position: { x: b.width / 2, y: b.height / 2 } });
+    await expect(hexByte(page, Math.floor(size / 2))).toBeVisible();
+    const px = await strip.locator('canvas').evaluate((c) => ({ w: (c as HTMLCanvasElement).width, h: (c as HTMLCanvasElement).height, rect: c.getBoundingClientRect() }));
+    expect(Math.abs(px.w - px.rect.width * (await page.evaluate(() => window.devicePixelRatio)))).toBeLessThanOrEqual(2);
+    expect(Math.abs(px.h - px.rect.height * (await page.evaluate(() => window.devicePixelRatio)))).toBeLessThanOrEqual(2);
+  });
+
+  test('at 115% the tree still selects the clicked row and scrolls its window (virtualization)', async ({ page }) => {
+    await startWith(page, { 'binaryviewer.uiScale': '1.15' });
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await treeRow(page, 'dib').click();
+    await expectSelection(page, 14, 40);
+  });
+
+  // ---- B1: tree values and columns ----
+  test('the tree column dividers resize Name and Value from the keyboard, are remembered, and double-click resets them', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const name = page.getByRole('separator', { name: 'Resize Name column' });
+    const value = page.getByRole('separator', { name: 'Resize Value column' });
+    await expect(name).toBeVisible();
+    await name.focus();
+    const w0 = Number(await name.getAttribute('aria-valuenow'));
+    await page.keyboard.press('ArrowRight');
+    await expect(name).toHaveAttribute('aria-valuenow', String(w0 + 16));
+    // the rows follow: the Name cell is as wide as the divider says
+    const cell = await treeRow(page, 'file_header').locator('.name').evaluate((el) => el.getBoundingClientRect().width);
+    expect(Math.abs(cell - (w0 + 16))).toBeLessThanOrEqual(1.5);
+    await value.focus();
+    for (let i = 0; i < 20; i++) await page.keyboard.press('ArrowLeft'); // far below the minimum
+    await expect(value).toHaveAttribute('aria-valuenow', '60');
+    await page.keyboard.press('Home');
+    await expect(name).toHaveAttribute('aria-valuenow', String(w0 + 16));
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expect(page.getByRole('separator', { name: 'Resize Name column' })).toHaveAttribute('aria-valuenow', String(w0 + 16));
+    await expect(page.getByRole('separator', { name: 'Resize Value column' })).toHaveAttribute('aria-valuenow', '60');
+    await page.getByRole('separator', { name: 'Resize Name column' }).dblclick();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('binaryviewer.layout.treeNameWidth'))).toBeNull();
+  });
+
+  test('dragging a tree divider with the mouse changes the width and the minimum holds', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const name = page.getByRole('separator', { name: 'Resize Name column' });
+    const b = await box(name);
+    const w0 = Number(await name.getAttribute('aria-valuenow'));
+    await page.mouse.move(b.x + 0.5, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 0.5 + 40, b.y + b.height / 2, { steps: 4 });
+    await page.mouse.up();
+    const w1 = Number(await name.getAttribute('aria-valuenow'));
+    expect(w1 - w0).toBeGreaterThanOrEqual(38);
+    expect(w1 - w0).toBeLessThanOrEqual(42);
+    const b2 = await box(name);
+    await page.mouse.move(b2.x + 0.5, b2.y + b2.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b2.x - 600, b2.y + b2.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await expect(name).toHaveAttribute('aria-valuenow', '80');
+  });
+
+  // ---- B5: motion ----
+  test('the motion tokens are 120ms / 80ms, and 0ms with reduced motion', async ({ page }) => {
+    await gotoApp(page);
+    // the production build's CSS minifier may write 120ms as .12s: compare the durations, not the text
+    const ms = (v: string) => (v.endsWith('ms') ? parseFloat(v) : parseFloat(v) * 1000);
+    const tokens = () => page.evaluate(() => ['--motion-in', '--motion-out'].map((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim())).then((a) => a.map(ms));
+    expect(await tokens()).toEqual([120, 80]);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect(await tokens()).toEqual([0, 0]);
+  });
+
+  test('the palette opens with a 120ms fade and 4px rise, and with none under reduced motion', async ({ page }) => {
+    await gotoApp(page);
+    const anim = async () => {
+      await page.keyboard.press('Control+k');
+      const panel = page.getByRole('dialog').filter({ has: page.getByRole('combobox') });
+      await expect(panel).toBeVisible();
+      const r = await panel.evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { name: s.animationName, duration: s.animationDuration };
+      });
+      await page.keyboard.press('Escape');
+      await expect(panel).toHaveCount(0);
+      return r;
+    };
+    const normal = await anim();
+    expect(normal.name).toMatch(/palette-in/);
+    expect(normal.duration).toBe('0.12s');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect((await anim()).duration).toBe('0s');
+  });
+
+  test('the hex grid, the minimap and the tree rows are never animated', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    await expectParsed(page);
+    const animated = await page.evaluate(() => {
+      const sel = ['[role="grid"]', '[role="grid"] *', '[role="scrollbar"]', '[role="scrollbar"] *', '[role="treeitem"]', '[role="tree"]'];
+      return [...document.querySelectorAll(sel.join(','))].filter((el) => {
+        const s = getComputedStyle(el);
+        return s.animationName !== 'none' || s.transitionProperty.split(',').some((p) => p.trim() !== 'all' && p.trim() !== '') && parseFloat(s.transitionDuration) > 0;
+      }).length;
+    });
+    expect(animated).toBe(0);
+  });
+
+  // ---- B6: reset layout ----
+  test('Reset layout restores the default sizes and visibility and keeps the theme', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await page.getByRole('button', { name: /^Theme: / }).click(); // System -> Light
+    const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+    const sep = page.getByRole('separator', { name: 'Resize side bar' });
+    await sep.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(sep).toHaveAttribute('aria-valuenow', '316');
+    await page.getByRole('button', { name: 'Hide data inspector' }).click();
+    await runCommand(page, 'minimap');
+    await expect(minimap(page)).toHaveCount(0);
+    await runCommand(page, 'reset layout');
+    await expect(page.getByRole('separator', { name: 'Resize side bar' })).toHaveAttribute('aria-valuenow', '300');
+    await expect(page.getByRole('complementary', { name: 'Data inspector' })).toBeVisible();
+    await expect(minimap(page)).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe(theme);
+  });
+
+  test('a resizer has a context menu with one item, Reset layout: right-click or Shift+F10, Escape closes it and focus returns', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const sep = page.getByRole('separator', { name: 'Resize side bar' });
+    await sep.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(sep).toHaveAttribute('aria-valuenow', '316');
+    await page.keyboard.press('Shift+F10');
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveCount(1);
+    await expect(menu.getByRole('menuitem', { name: 'Reset layout' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(sep).toBeFocused();
+    // right click
+    const b = await box(sep);
+    await page.mouse.click(b.x + 0.5, b.y + 200, { button: 'right' });
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(menu).toHaveCount(0);
+    await expect(sep).toHaveAttribute('aria-valuenow', '300');
+    await expect(sep).toBeFocused();
+    // the ContextMenu key too
+    await page.keyboard.press('ContextMenu');
+    await expect(menu).toBeVisible();
+  });
+
+  // ---- B7 / C2 / C3 ----
+  test('the inspector says what to do: open a file, then click a byte or use Go to offset', async ({ page }) => {
+    await gotoApp(page);
+    const inspector = page.getByRole('complementary', { name: 'Data inspector' });
+    await expect(inspector).toContainText('Open a file to inspect its bytes.');
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expect(inspector).toContainText('Click a byte, or press Ctrl+K and choose Go to offset.');
+    await hexByte(page, 3).click();
+    await expect(inspector).not.toContainText('Click a byte');
+  });
+
+  test('the title bar search field is about 240px wide and centred, shrinks, and is only an icon under 720px', async ({ page }) => {
+    await gotoApp(page);
+    const field = page.getByRole('button', { name: 'Search commands (Ctrl+K)' });
+    await expect(field).toContainText('Search commands…');
+    await expect(field.locator('kbd')).toHaveText('Ctrl K');
+    const b = await box(field);
+    expect(b.width).toBeGreaterThanOrEqual(235);
+    expect(b.width).toBeLessThanOrEqual(241);
+    const vw = page.viewportSize()!.width;
+    expect(Math.abs(b.x + b.width / 2 - vw / 2)).toBeLessThanOrEqual(4);
+    await page.setViewportSize({ width: 800, height: 700 });
+    const mid = await box(field);
+    expect(mid.width).toBeLessThanOrEqual(241);
+    await expect(field.locator('kbd')).toBeVisible();
+    await page.setViewportSize({ width: 700, height: 700 });
+    await expect(field.locator('kbd')).toBeHidden();
+    await expect(field.getByText('Search commands…')).toBeHidden();
+    const icon = await box(field);
+    expect(icon.width).toBeLessThanOrEqual(40);
+    expect(icon.height).toBeGreaterThanOrEqual(24);
+    await field.click();
+    await expect(palette(page)).toBeVisible();
+  });
+
+  test('editor tabs have a type icon: a binary file, a BMP image once parsed, braces for a spec tab', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'x.bin', Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]));
+    await expect(page.getByRole('tab', { name: 'x.bin' }).locator('svg.icon')).toHaveAttribute('data-icon', 'file');
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await expect(page.getByRole('tab', { name: 'pic.bmp' }).locator('svg.icon')).toHaveAttribute('data-icon', 'bmp');
+    await page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Formats' }).click();
+    await runCommand(page, 'open spec windows');
+    await expect(page.getByRole('tab').filter({ has: page.locator('svg.icon[data-icon="spec"]') })).toHaveCount(1);
+    for (const svg of await page.locator('[role="tab"] svg.icon').all()) {
+      await expect(svg).toHaveAttribute('aria-hidden', 'true');
+      const s = await svg.boundingBox();
+      expect(s!.width).toBeLessThanOrEqual(16);
+    }
+  });
+
+  // ---- C4: banding ----
+  test('hex banding: on by default, the band sits under the tints and the selection, "Toggle hex row banding" turns it off', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    await expectParsed(page);
+    const hexCol = page.locator('.hex').first();
+    const bg = () => hexCol.evaluate((el) => getComputedStyle(el).backgroundImage);
+    expect(await bg()).toMatch(/linear-gradient/);
+    expect(await bg()).toMatch(/rgba?\(/);
+    expect(await page.locator('.ascii').first().evaluate((el) => getComputedStyle(el).backgroundImage)).toMatch(/linear-gradient/);
+    // a structure tint and the selection still paint their own, stronger background on the cell
+    const tinted = await page.locator('.hex .b[data-t]').first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(tinted).toMatch(/rgba\(.*, 0\.\d+\)/);
+    await hexByte(page, 0x60).click();
+    expect(await hexByte(page, 0x60).evaluate((el) => getComputedStyle(el).backgroundColor)).toMatch(/rgba\(.*, 0\.\d+\)/);
+    // the band is the token, subtle but not absent, in both themes
+    const band = (t: 'light' | 'dark') =>
+      page.evaluate((theme) => {
+        document.documentElement.setAttribute('data-theme', theme);
+        const probe = document.createElement('div');
+        probe.style.background = 'var(--band)';
+        document.body.append(probe);
+        const c = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return c;
+      }, t);
+    expect(await band('light')).toBe('rgba(31, 36, 48, 0.035)');
+    expect(await band('dark')).toBe('rgba(214, 219, 228, 0.035)');
+    await runCommand(page, 'banding');
+    await expect.poll(bg).toBe('none');
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    expect(await page.locator('.hex').first().evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none'); // remembered
+    await runCommand(page, 'banding');
+    expect(await page.locator('.hex').first().evaluate((el) => getComputedStyle(el).backgroundImage)).toMatch(/linear-gradient/);
+  });
+
+  test('the band covers the second 8-byte group of the row: its edge is between byte 7 and byte 8', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    const edge = await page.locator('.hex').first().evaluate((el) => {
+      const bg = getComputedStyle(el).backgroundImage; // linear-gradient(to right, transparent Xpx, rgba(...) Xpx)
+      const m = /rgba[(]0, 0, 0, 0[)] (-?[\d.]+)px/.exec(bg);
+      const r = el.getBoundingClientRect();
+      const cells = [...el.querySelectorAll('.b')].map((c) => c.getBoundingClientRect());
+      return { x: m ? parseFloat(m[1]!) : NaN, left: r.left, end7: cells[7]!.right - r.left, start8: cells[8]!.left - r.left };
+    });
+    expect(edge.x).toBeGreaterThan(edge.end7 - 0.5);
+    expect(edge.x).toBeLessThan(edge.start8 + 0.5);
+  });
+
+  test('narrow screens: a drawer slides and fades in (opacity and transform), and not at all with reduced motion', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const slot = page.locator('.side-slot');
+    const t = () => slot.evaluate((el) => ({ props: getComputedStyle(el).transitionProperty, dur: getComputedStyle(el).transitionDuration }));
+    const closed = await t();
+    expect(closed.props).toMatch(/opacity/);
+    expect(closed.props).toMatch(/transform/);
+    expect(closed.props).not.toMatch(/width|left|right/);
+    expect(closed.dur).toMatch(/0\.08s/);
+    await page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' }).click();
+    await expect(page.getByRole('tree', { name: 'Structure' })).toBeVisible();
+    expect((await t()).dur).toMatch(/0\.12s/);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect((await t()).dur).not.toMatch(/0\.12s/);
+  });
+
+  test('a collapsed panel on a wide screen does not animate', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const dur = await page.locator('.side-slot').evaluate((el) => getComputedStyle(el).transitionDuration);
+    expect(dur.split(',').every((d) => parseFloat(d) === 0)).toBe(true);
+  });
+});
+
+test.describe('UX refinement 2: review fixes', () => {
+  test('width breakpoints follow the zoomed layout: at 130% in a 760px window the minimap is hidden and the status bar is compact; at 100% they are not', async ({ page }) => {
+    await page.setViewportSize({ width: 760, height: 700 });
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    await expectParsed(page);
+    await expect(minimap(page)).toBeVisible(); // 760 CSS px: above 599
+    await expect(statusBar(page).locator('.size')).toBeVisible(); // above 720
+    await page.evaluate(() => localStorage.setItem('binaryviewer.uiScale', '1.3'));
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(400));
+    await expectParsed(page);
+    await expect(page.locator('html')).toHaveCSS('zoom', '1.3');
+    await expect(minimap(page)).toBeHidden(); // 760 / 1.3 = 584 CSS px
+    await expect(statusBar(page).locator('.size')).toBeHidden();
+    await expect(statusBar(page).locator('.nodes')).toBeHidden();
+  });
+
+  test('closing the divider menu with Tab leaves focus on the divider (not <body>)', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const sep = page.getByRole('separator', { name: 'Resize problems panel' });
+    await sep.focus();
+    await page.keyboard.press('Shift+F10');
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(menu).toHaveCount(0);
+    await expect(sep).toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+    await page.keyboard.press('ArrowUp'); // and it is still the working divider
+    await expect(sep).toBeFocused();
+  });
+
+  test('the divider menu stays inside the window when opened at its bottom right corner', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    const sep = page.getByRole('separator', { name: 'Resize inspector' });
+    const b = (await sep.boundingBox())!;
+    await page.mouse.click(b.x + 0.5, b.y + b.height - 2, { button: 'right' }); // the bottom of the divider, just above the status bar
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    const m = (await menu.boundingBox())!;
+    const vp = page.viewportSize()!;
+    expect(m.y + m.height).toBeLessThanOrEqual(vp.height + 0.5);
+    expect(m.x + m.width).toBeLessThanOrEqual(vp.width + 0.5);
+  });
+
+  test('the zoom keys work while the palette is open', async ({ page }) => {
+    await gotoApp(page);
+    await page.keyboard.press('Control+k');
+    await expect(page.getByRole('combobox')).toBeVisible();
+    await page.keyboard.press('Control+Equal');
+    await expect(page.locator('html')).toHaveCSS('zoom', '1.15');
+    await page.keyboard.press('Control+0');
+    await expect(page.locator('html')).toHaveCSS('zoom', '1');
   });
 });

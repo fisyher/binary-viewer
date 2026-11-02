@@ -48,6 +48,26 @@ describe('globalKey', () => {
     expect(key('F6', { isComposing: true })).toBeNull();
   });
 
+  it('Ctrl+= / Ctrl++ zoom in, Ctrl+- zoom out and Ctrl+0 resets (Cmd on macOS, the numpad too)', () => {
+    expect(key('=', { ctrlKey: true })).toBe('zoom-in');
+    expect(key('+', { ctrlKey: true, shiftKey: true })).toBe('zoom-in');
+    expect(key('+', { metaKey: true })).toBe('zoom-in');
+    expect(key('Add', { ctrlKey: true, code: 'NumpadAdd' })).toBe('zoom-in');
+    expect(key('-', { ctrlKey: true })).toBe('zoom-out');
+    expect(key('_', { ctrlKey: true, shiftKey: true })).toBe('zoom-out');
+    expect(key('Subtract', { ctrlKey: true, code: 'NumpadSubtract' })).toBe('zoom-out');
+    expect(key('0', { ctrlKey: true })).toBe('zoom-reset');
+    expect(key('0', { metaKey: true })).toBe('zoom-reset');
+    expect(key('0', { ctrlKey: true, code: 'Numpad0' })).toBe('zoom-reset');
+  });
+
+  it('the zoom keys need Ctrl or Cmd, and are not claimed with Alt, composition or Ctrl+Shift+0', () => {
+    for (const k of ['=', '+', '-', '_', '0']) expect(key(k), k).toBeNull();
+    expect(key('=', { ctrlKey: true, altKey: true })).toBeNull();
+    expect(key('-', { ctrlKey: true, isComposing: true })).toBeNull();
+    expect(key('0', { ctrlKey: true, shiftKey: true })).toBeNull();
+  });
+
   it('classifies IME keys', () => {
     expect(isImeKey({ isComposing: false, keyCode: 229 })).toBe(true);
     expect(isImeKey({ isComposing: true, keyCode: 13 })).toBe(true);
