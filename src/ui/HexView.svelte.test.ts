@@ -6,6 +6,7 @@ import HexHarness from '../test/HexHarness.svelte';
 import HexView from './HexView.svelte';
 
 let viewport = 400; // 20 rows
+const HEADER = 22; // the grid's own client height also holds its column header row
 type RO = { cb: (entries: Array<{ target: Element }>) => void; els: Element[] };
 // Svelte keeps one module-level observer for the whole file, so never reset this list.
 const observers: RO[] = [];
@@ -18,7 +19,7 @@ function resizeTo(height: number) {
 
 beforeAll(() => {
   // jsdom has no layout or ResizeObserver; stub both.
-  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => viewport });
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => viewport + HEADER });
   globalThis.ResizeObserver = class {
     private o: RO;
     constructor(cb: RO['cb']) {
@@ -258,5 +259,62 @@ describe('HexView banding', () => {
   it('is plain with banding off', async () => {
     const { container } = await mountView(false);
     expect(container.querySelector('.banded')).toBeNull();
+  });
+});
+
+describe('HexView column header row', () => {
+  it('has 16 hex labels 00..0F and 16 ASCII labels 0..F, hidden from assistive technology, outside the data rows', async () => {
+    const { src, calls } = stubSource(1000, () => 7);
+    const { container } = render(HexView, { source: src, selection: null, error: null } as never);
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const head = container.querySelector('.hrow')!;
+    expect(head.getAttribute('aria-hidden')).toBe('true');
+    expect(head.closest('[role="row"]')).toBeNull();
+    expect(head.textContent).toContain('Offset');
+    expect([...head.querySelectorAll('.hb')].map((e) => e.textContent)).toEqual(Array.from({ length: 16 }, (_, i) => i.toString(16).toUpperCase().padStart(2, '0')));
+    expect([...head.querySelectorAll('.hc')].map((e) => e.textContent).join('')).toBe('0123456789ABCDEF');
+    expect(head.querySelectorAll('.hb')[8]!.classList.contains('gap')).toBe(true); // the same 8-byte gap as the data
+    expect(container.querySelectorAll('.hrow [data-o]')).toHaveLength(0); // never a click target
+    expect(container.querySelectorAll('.row').length).toBeGreaterThan(0);
+  });
+
+  it('highlights the labels of the column the caret is in, in both columns', async () => {
+    const { src, calls } = stubSource(1000, () => 7);
+    const { container } = render(HexView, { source: src, selection: { anchor: 0x25, caret: 0x25 }, error: null } as never);
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect([...container.querySelectorAll('.hb.here')].map((e) => e.textContent)).toEqual(['05']);
+    expect([...container.querySelectorAll('.hc.here')].map((e) => e.textContent)).toEqual(['5']);
+  });
+
+  it('a grid shorter than its header has no rows area, but the row maths stays finite: no NaN or negative heights, paging and goTo work, and it recovers', async () => {
+    const s = stubSource(16 * 100);
+    const seen: Array<[number, number]> = [];
+    const { container, component } = render(HexHarness, { source: s.src, onViewport: (a: number, b: number) => seen.push([a, b]) });
+    await waitFor(() => expect(s.calls.length).toBe(1));
+    resizeTo(-15); // client height 7: less than the 22px header
+    await waitFor(() => expect((container.querySelector('.layer') as HTMLElement).style.height).toBe('0px'));
+    expect(container.querySelector('.layer')!.getAttribute('style')).not.toMatch(/NaN|-d/);
+    for (const [a, b] of seen) {
+      expect(Number.isFinite(a) && Number.isFinite(b)).toBe(true);
+      expect(a).toBeGreaterThanOrEqual(0);
+      expect(b).toBeGreaterThanOrEqual(a);
+    }
+    component.goTo(16 * 50 + 3);
+    component.scrollToOffset(16 * 70);
+    const grid = container.querySelector('[role="grid"]')!;
+    await fireEvent.keyDown(grid, { key: 'PageDown' });
+    await fireEvent.keyDown(grid, { key: 'ArrowDown' });
+    expect(container.innerHTML).not.toMatch(/NaN/);
+    expect(container.querySelectorAll('.row')).toHaveLength(0); // no data height: nothing to draw (as for a hidden grid)
+    resizeTo(400); // and it recovers when the grid grows again
+    await waitFor(() => expect(container.querySelectorAll('.row').length).toBeGreaterThan(10));
+  });
+
+  it('the header takes its own height out of the grid: the rows area is the 400px that is left, below the 22px header', async () => {
+    const { src, calls } = stubSource(16 * 100, () => 7);
+    const { container } = render(HexView, { source: src, selection: null, error: null } as never);
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect((container.querySelector('.layer') as HTMLElement).style.height).toBe('400px');
+    expect((container.querySelector('.layer') as HTMLElement).style.top).toBe('22px');
   });
 });

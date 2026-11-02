@@ -407,3 +407,48 @@ describe('StructureTree pointer interaction', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe('reveal and scroll robustness', () => {
+  it('an older reveal that is still loading a page does not select or scroll once a newer one has started', async () => {
+    const table = n('table', 100, 1000, { typeName: 'u1[]', lazy: { start: 100, count: 1000, elemType: 'u1', elemSize: 1, loaded: 0, resumeOffset: null } });
+    const tail = n('tail', 1100, 1);
+    const root = n('r', 0, 2000, { children: [table, tail] });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => (release = res));
+    const loadPage = vi.fn(async (_id: number, start: number, count: number) => {
+      await gate;
+      return { nodes: Array.from({ length: count }, (_, i) => n(`table[${start + i}]`, 100 + start + i, 1)), lazy: null };
+    });
+    const onSelect = vi.fn();
+    const { container, component } = render(StructureTree, { root, loadPage, onSelect });
+    await waitFor(() => row(container, 'table'));
+    const first = component.reveal([root.id, table.id], 450, 550); // waits for its page
+    await component.reveal([root.id, table.id]); // the newer one (the array itself) finishes at once
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(onSelect).toHaveBeenCalledTimes(1); // the older one stopped after its await
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'table' }), expect.anything());
+    await waitFor(() => expect(row(container, 'table')?.getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('a scroll done by the user between a programmatic scroll and its follow-up is not overwritten', async () => {
+    const root = n('r', 0, 100, { children: Array.from({ length: 60 }, (_, i) => n(`c${i}`, i, 1)) });
+    const { container, findByText } = render(StructureTree, { root, loadPage: noLoadT, onSelect: () => {} });
+    await findByText('c0');
+    const scroller = container.querySelector('.scroller') as HTMLElement;
+    let st = 0;
+    const sets: number[] = [];
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => st, set: (v: number) => ((st = v), sets.push(v)) });
+    await fireEvent.click(row(container, 'c0'));
+    sets.length = 0;
+    scroller.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })); // scrolls to the last row, synchronously
+    expect(sets.length).toBe(1);
+    st = 777; // the user scrolls before the follow-up runs
+    await waitFor(() => expect(row(container, 'c59')?.getAttribute('aria-selected')).toBe('true'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(st).toBe(777);
+    expect(sets.length).toBe(1);
+  });
+});
+const noLoadT = async () => ({ nodes: [], lazy: null });

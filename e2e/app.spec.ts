@@ -977,7 +977,7 @@ test.describe('UX refinement 2', () => {
     await expect(page.getByRole('heading', { name: 'Binary Viewer', level: 1 })).toBeVisible();
   }
 
-  // A file without a format: a click selects just the clicked byte (in a parsed file the structure takes the selection over).
+  // A file without a format has no structure to find. (In a parsed file a click also selects just the clicked byte; its node is only highlighted.)
   const ramp = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
 
   // ---- A6: zoom ----
@@ -1401,5 +1401,284 @@ test.describe('UX refinement 2: review fixes', () => {
     await expect(page.locator('html')).toHaveCSS('zoom', '1.15');
     await page.keyboard.press('Control+0');
     await expect(page.locator('html')).toHaveCSS('zoom', '1');
+  });
+});
+
+test.describe('UI fixes: tree after a seek, caret on a clicked byte, header row', () => {
+  const manyEntries = (n: number) => buildZip(Array.from({ length: n }, (_, i) => ({ name: `f${i}.txt`, data: `data ${i}` })));
+
+  test('minimap seek to the end of a big file, then a hex click: the tree still shows its rows and the selected one, without a wheel event', async ({ page }) => {
+    await gotoApp(page);
+    const { bytes, layout } = manyEntries(300);
+    await openBytes(page, 'many.zip', bytes);
+    await expectParsed(page);
+    const strip = minimap(page);
+    const b = (await strip.boundingBox())!;
+    await strip.click({ position: { x: b.width / 2, y: b.height - 1 } });
+    const target = layout.entries[299]!.cdh + 20;
+    await expect(hexByte(page, target)).toBeVisible();
+    await hexByte(page, target).click();
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    const selected = tree.locator('[role="treeitem"][aria-selected="true"]');
+    await expect(selected).toHaveCount(1);
+    await expect(selected).toBeVisible();
+    const inside = await selected.evaluate((row) => {
+      const r = row.getBoundingClientRect();
+      const t = row.closest('[role="tree"]')!.getBoundingClientRect();
+      return r.top >= t.top - 1 && r.bottom <= t.bottom + 1;
+    });
+    expect(inside, 'the selected row is inside the tree viewport').toBe(true);
+    expect(await tree.getByRole('treeitem').count()).toBeGreaterThan(3);
+  });
+
+  test('the tree reveals the row of a hex click made while the side bar is collapsed', async ({ page }) => {
+    await gotoApp(page);
+    const { bytes, layout } = manyEntries(300);
+    await openBytes(page, 'many.zip', bytes);
+    await expectParsed(page);
+    await page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' }).click(); // collapse
+    await expect(page.getByRole('tree', { name: 'Structure' })).toBeHidden();
+    const strip = minimap(page);
+    const b = (await strip.boundingBox())!;
+    await strip.click({ position: { x: b.width / 2, y: b.height - 1 } });
+    const target = layout.entries[299]!.cdh + 20;
+    await hexByte(page, target).click();
+    await page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' }).click(); // open again
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    const selected = tree.locator('[role="treeitem"][aria-selected="true"]');
+    await expect(selected).toBeVisible();
+    expect(await tree.getByRole('treeitem').count()).toBeGreaterThan(3);
+  });
+
+  test('a hex click on the third byte of a 4-byte field puts the caret on it; typing in overwrite mode changes only that byte; the row is selected and the field highlighted', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40)); // off_bits is bytes 10..13: 36 00 00 00
+    await expectParsed(page);
+    await hexByte(page, 12).click();
+    await expect(treeRow(page, 'off_bits')).toHaveAttribute('aria-selected', 'true');
+    await expectSelection(page, 12, 1);
+    await expect(statusBar(page)).toContainText('End: 0xC (12)');
+    await expect(hexByte(page, 12)).toHaveClass(/caret/);
+    await expect(hexByte(page, 12)).toHaveClass(/sel/);
+    for (const o of [10, 11, 12, 13]) await expect(hexByte(page, o)).toHaveClass(/node/); // the field is highlighted...
+    for (const o of [9, 14]) await expect(hexByte(page, o)).not.toHaveClass(/node/); // ...and only the field
+    for (const o of [10, 11, 13]) await expect(hexByte(page, o)).not.toHaveClass(/sel/); // but not selected
+    await expect(page.getByRole('complementary', { name: 'Data inspector' }).getByText('@ 0x0000000C')).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Structure path' })).toContainText('off_bits');
+    // overwrite mode is the default: two hex digits replace exactly byte 12
+    await page.keyboard.press('F');
+    await page.keyboard.press('7');
+    await expect(hexByte(page, 12)).toHaveText('F7');
+    await expect(hexByte(page, 10)).toHaveText('36');
+    await expect(hexByte(page, 11)).toHaveText('00');
+    await expect(hexByte(page, 13)).toHaveText('00');
+    await expect(hexByte(page, 14)).toHaveText('28'); // the next field is untouched too (dib header size 40)
+    // the ASCII column too: the caret goes where the pointer was, and typing writes a character there
+    await page.locator('.ascii .c[data-o="11"]').click();
+    await expectSelection(page, 11, 1);
+    await page.keyboard.press('A');
+    await expect(hexByte(page, 11)).toHaveText('41');
+    await expect(hexByte(page, 10)).toHaveText('36');
+    await expect(hexByte(page, 12)).toHaveText('F7');
+    // choosing the node in the tree still selects all of it
+    await treeRow(page, 'off_bits').locator('.nm').click(); // (the value cell holds the link to the pixel data)
+    await expectSelection(page, 10, 4);
+  });
+
+  test('a hex click in Insert mode inserts before the clicked byte', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    await hexByte(page, 12).click();
+    await page.keyboard.press('Insert');
+    await page.keyboard.press('F');
+    await page.keyboard.press('7');
+    await expect(hexByte(page, 12)).toHaveText('F7');
+    await expect(hexByte(page, 13)).toHaveText('00'); // the old byte 12 moved up
+    await expect(hexByte(page, 10)).toHaveText('36');
+    await expect(hexByte(page, 11)).toHaveText('00');
+  });
+
+  for (const scale of ['1', '1.3']) {
+    test(`the header labels 00, 07, 08 and 0F line up with the byte cells, and the ASCII labels with the characters, at ${Math.round(Number(scale) * 100)}%`, async ({ page }) => {
+      await gotoApp(page);
+      await page.evaluate((s) => localStorage.setItem('binaryviewer.uiScale', s), scale);
+      await page.reload();
+      await openBytes(page, 'ramp.bin', Uint8Array.from({ length: 2000 }, (_, i) => i % 251));
+      await expect(page.locator('html')).toHaveCSS('zoom', scale);
+      const grid = hexView(page);
+      const centre = async (loc: import('@playwright/test').Locator) => {
+        const b = (await loc.boundingBox())!;
+        return b.x + b.width / 2;
+      };
+      for (const i of [0, 7, 8, 15]) {
+        const label = grid.locator('.hrow .hb').nth(i);
+        expect(Math.abs((await centre(label)) - (await centre(hexByte(page, i)))), `hex column ${i}`).toBeLessThanOrEqual(0.75);
+        expect(await label.textContent()).toBe(i.toString(16).toUpperCase().padStart(2, '0'));
+        const c = grid.locator('.hrow .hc').nth(i);
+        expect(Math.abs((await centre(c)) - (await centre(page.locator(`.ascii .c[data-o="${i}"]`)))), `ASCII column ${i}`).toBeLessThanOrEqual(0.75);
+      }
+      // the header is above the first row
+      const head = (await grid.locator('.hrow').boundingBox())!;
+      const first = (await hexByte(page, 0).boundingBox())!;
+      expect(first.y).toBeGreaterThanOrEqual(head.y + head.height - 0.5);
+      // the caret's column is highlighted
+      await hexByte(page, 0x23).click();
+      await expect(grid.locator('.hrow .hb.here')).toHaveText('03');
+      await expect(grid.locator('.hrow .hc.here')).toHaveText('3');
+    });
+  }
+
+  test('the header stays put while scrolling, and a caret moved to the last row or the first is not hidden under it', async ({ page }) => {
+    await gotoApp(page);
+    const size = 16 * 400;
+    await openBytes(page, 'ramp.bin', Uint8Array.from({ length: size }, (_, i) => i % 251));
+    const grid = hexView(page);
+    const head = grid.locator('.hrow');
+    const top0 = (await head.boundingBox())!;
+    expect(await head.evaluate((el) => getComputedStyle(el).fontFamily)).toBe(await hexByte(page, 0).evaluate((el) => getComputedStyle(el).fontFamily));
+    await hexByte(page, 0).click();
+    await page.keyboard.press('Control+End'); // the caret is at the last byte
+    await expect(hexByte(page, size - 1)).toBeVisible();
+    const h = (await head.boundingBox())!;
+    expect(Math.abs(h.y - top0.y)).toBeLessThanOrEqual(0.5); // did not scroll away
+    const last = (await hexByte(page, size - 1).boundingBox())!;
+    const g = (await grid.boundingBox())!;
+    expect(last.y).toBeGreaterThanOrEqual(h.y + h.height - 0.5);
+    expect(last.y + last.height).toBeLessThanOrEqual(g.y + g.height + 0.5);
+    await page.keyboard.press('Control+Home');
+    await expect(hexByte(page, 0)).toBeVisible();
+    const first = (await hexByte(page, 0).boundingBox())!;
+    expect(first.y).toBeGreaterThanOrEqual(h.y + h.height - 0.5);
+    // a caret moved down one row at a time past the bottom edge, then up past the top edge
+    for (let i = 0; i < 40; i++) await page.keyboard.press('ArrowDown');
+    const caret = (await grid.locator('.hex .b.caret').boundingBox())!;
+    expect(caret.y).toBeGreaterThanOrEqual(h.y + h.height - 0.5);
+    expect(caret.y + caret.height).toBeLessThanOrEqual(g.y + g.height + 0.5);
+    for (let i = 0; i < 39; i++) await page.keyboard.press('ArrowUp');
+    const up = (await grid.locator('.hex .b.caret').boundingBox())!;
+    expect(up.y).toBeGreaterThanOrEqual(h.y + h.height - 0.5);
+    // the minimap frame follows the rows the grid shows: its top row is the first visible row, below the header
+    const topRowOffset = await viewTop(page);
+    await expect(hexByte(page, topRowOffset)).toBeVisible();
+    expect((await hexByte(page, topRowOffset).boundingBox())!.y).toBeGreaterThanOrEqual(h.y + h.height - 0.5);
+  });
+
+  test('PageDown moves by exactly the rows that fit below the header', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'ramp.bin', Uint8Array.from({ length: 16 * 400 }, (_, i) => i % 251));
+    const rows = await hexView(page).evaluate((el) => Math.floor((el.clientHeight - 22) / 20));
+    await hexByte(page, 0).click();
+    await page.keyboard.press('PageDown');
+    await expectSelection(page, 16 * rows, 1);
+    await expect(hexByte(page, 16 * rows)).toBeVisible();
+  });
+
+  test('every tree column is resizable: Type, Offset and Size from the keyboard, with the drag, double-click, Reset layout and a reload', async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 800 });
+    await gotoApp(page);
+    // a wide side bar: in a narrow one the Type column gives way (and so does its divider)
+    await page.evaluate(() => localStorage.setItem('binaryviewer.layout.sideWidth', '600'));
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const sep = (label: string) => page.getByRole('separator', { name: `Resize ${label} column` });
+    const row = treeRow(page, 'file_header');
+    const cell = (cls: string) => row.locator(cls).evaluate((el) => el.getBoundingClientRect().width);
+    const cols = [
+      { label: 'Type', cls: '.type', min: 40, key: 'treeTypeWidth' },
+      { label: 'Offset', cls: '.off', min: 50, key: 'treeOffsetWidth' },
+      { label: 'Size', cls: '.num', min: 36, key: 'treeSizeWidth' },
+    ];
+    for (const c of cols) {
+      await expect(sep(c.label)).toBeVisible();
+      await sep(c.label).focus();
+      const w0 = Number(await sep(c.label).getAttribute('aria-valuenow'));
+      expect(Math.abs((await cell(c.cls)) - w0), `${c.label} starts at its cell width`).toBeLessThanOrEqual(1.5);
+      await page.keyboard.press('ArrowRight');
+      await expect(sep(c.label)).toHaveAttribute('aria-valuenow', String(w0 + 16));
+      expect(Math.abs((await cell(c.cls)) - (w0 + 16))).toBeLessThanOrEqual(1.5);
+      await page.keyboard.press('Home');
+      await expect(sep(c.label)).toHaveAttribute('aria-valuenow', String(c.min));
+      expect(Math.abs((await cell(c.cls)) - c.min)).toBeLessThanOrEqual(1.5);
+    }
+    // a narrowed cell truncates with an ellipsis, and the full text is its title
+    const typeCell = row.locator('.type');
+    expect(await typeCell.evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis');
+    expect(await typeCell.evaluate((el) => getComputedStyle(el).overflow)).toBe('hidden');
+    expect(await typeCell.getAttribute('title')).toBeTruthy();
+    // persisted
+    await page.reload();
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expect(sep('Type')).toHaveAttribute('aria-valuenow', '40');
+    await expect(sep('Offset')).toHaveAttribute('aria-valuenow', '50');
+    await expect(sep('Size')).toHaveAttribute('aria-valuenow', '36');
+    // a mouse drag on the last data column (Size)
+    const b = (await sep('Size').boundingBox())!;
+    await page.mouse.move(b.x + 0.5, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 0.5 + 30, b.y + b.height / 2, { steps: 3 });
+    await page.mouse.up();
+    const dragged = Number(await sep('Size').getAttribute('aria-valuenow'));
+    expect(dragged - 36).toBeGreaterThanOrEqual(28);
+    expect(dragged - 36).toBeLessThanOrEqual(32);
+    await sep('Offset').dblclick();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('binaryviewer.layout.treeOffsetWidth'))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem('binaryviewer.layout.treeTypeWidth'))).toBe('40');
+    // Reset layout (from a divider's menu) forgets all of them
+    await sep('Size').focus();
+    await page.keyboard.press('Shift+F10');
+    await page.getByRole('menuitem', { name: 'Reset layout' }).click();
+    for (const c of cols) await expect.poll(() => page.evaluate((k) => localStorage.getItem('binaryviewer.layout.' + k), c.key)).toBeNull();
+  });
+
+  test('a reveal made while the side bar was collapsed is dropped when another file replaces the tree', async ({ page }) => {
+    await gotoApp(page);
+    const { bytes, layout } = manyEntries(300);
+    await openBytes(page, 'many.zip', bytes);
+    await expectParsed(page);
+    const activity = page.getByRole('navigation', { name: 'Activity bar' }).getByRole('button', { name: 'Structure' });
+    await activity.click(); // collapse
+    const strip = minimap(page);
+    const b = (await strip.boundingBox())!;
+    await strip.click({ position: { x: b.width / 2, y: b.height - 1 } });
+    await hexByte(page, layout.entries[299]!.cdh + 20).click(); // reveals deep in the hidden tree
+    await openBytes(page, 'other.zip', manyEntries(300).bytes); // a new tree: node ids are reused
+    await expectParsed(page);
+    await activity.click(); // show again
+    const tree = page.getByRole('tree', { name: 'Structure' });
+    await expect(tree.getByRole('treeitem').first()).toBeVisible();
+    expect(await tree.evaluate((el) => el.scrollTop)).toBe(0);
+    await expect(tree.locator('[role="treeitem"][aria-selected="true"]')).toHaveCount(0);
+  });
+
+  test('the node highlight goes away when the caret leaves the node by keyboard, or a click lands in a gap', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', new Uint8Array([...makeBmp(40), ...new Uint8Array(40).fill(7)])); // 40 bytes after the pixel data
+    await expectParsed(page);
+    await hexByte(page, 12).click();
+    await expect(hexByte(page, 12)).toHaveClass(/node/);
+    await page.keyboard.press('ArrowRight'); // byte 13: still in off_bits
+    await page.keyboard.press('ArrowRight'); // byte 14: the DIB header
+    await expect(hexByte(page, 10)).not.toHaveClass(/node/);
+    await hexByte(page, 12).click();
+    await expect(hexByte(page, 12)).toHaveClass(/node/);
+    await hexByte(page, 120).click(); // beyond the structure
+    await expect(hexByte(page, 12)).not.toHaveClass(/node/);
+    await expect(hexByte(page, 120)).not.toHaveClass(/node/);
+    await expectSelection(page, 120, 1);
+  });
+
+  test('a long name is cut with an ellipsis when its column is narrow, and its title has the whole name', async ({ page }) => {
+    await gotoApp(page);
+    await openBytes(page, 'pic.bmp', makeBmp(40));
+    await expectParsed(page);
+    const name = page.getByRole('separator', { name: 'Resize Name column' });
+    await name.focus();
+    await page.keyboard.press('Home'); // 80px
+    const nm = treeRow(page, 'file_header').locator('.nm');
+    expect(await nm.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    expect(await nm.evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis');
+    expect(await nm.getAttribute('title')).toBe('file_header');
   });
 });

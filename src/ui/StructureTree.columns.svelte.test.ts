@@ -68,8 +68,8 @@ describe('StructureTree column dividers', () => {
     expect(container.querySelector('.head')!.textContent).toContain('Name');
   });
 
-  it('are two focusable separators for Name and Value, with the limits (Name 80, Value 60) and the current width', async () => {
-    const { getByRole, findByText } = render(StructureTree, { root: tree(), loadPage: noLoad, onSelect: () => {}, onColumnWidth: () => {}, nameWidth: 200, valueWidth: 120 });
+  it('Name and Value are focusable separators with the limits (Name 80, Value 60) and the current width', async () => {
+    const { getByRole, findByText } = render(StructureTree, { root: tree(), loadPage: noLoad, onSelect: () => {}, onColumnWidth: () => {}, widths: { name: 200, value: 120 } });
     await findByText('a');
     const name = getByRole('separator', { name: 'Resize Name column' });
     const value = getByRole('separator', { name: 'Resize Value column' });
@@ -83,7 +83,7 @@ describe('StructureTree column dividers', () => {
 
   it('arrow keys on a divider report a new width (and never below the minimum), Home goes to the minimum, double-click resets', async () => {
     const onColumnWidth = vi.fn();
-    const { getByRole, findByText } = render(StructureTree, { root: tree(), loadPage: noLoad, onSelect: () => {}, onColumnWidth, nameWidth: 100, valueWidth: 70 });
+    const { getByRole, findByText } = render(StructureTree, { root: tree(), loadPage: noLoad, onSelect: () => {}, onColumnWidth, widths: { name: 100, value: 70 } });
     await findByText('a');
     const name = getByRole('separator', { name: 'Resize Name column' });
     const value = getByRole('separator', { name: 'Resize Value column' });
@@ -105,11 +105,51 @@ describe('StructureTree column dividers', () => {
     const t = container.querySelector<HTMLElement>('.tree')!;
     expect(t.style.getPropertyValue('--c-name')).toBe('');
     expect(t.style.getPropertyValue('--c-value')).toBe('');
-    await rerender({ nameWidth: 240, valueWidth: 130 });
+    await rerender({ widths: { name: 240, value: 130 } });
     expect(t.style.getPropertyValue('--c-name')).toBe('240px');
     expect(t.style.getPropertyValue('--c-value')).toBe('130px');
     // the row is as wide as its columns: 240 + 130 + 70 + 80 + 50 + 22 + 5 gaps of 6px
     expect(t.style.getPropertyValue('--min-wide')).toBe(`${240 + 130 + 70 + 80 + 50 + 22 + 30}px`);
+  });
+
+  it('every data column has a divider: Type, Offset and Size too, each with its own minimum and its width as the grid column', async () => {
+    const onColumnWidth = vi.fn();
+    const { container, getByRole, findByText } = render(StructureTree, { root: tree(), loadPage: noLoad, onSelect: () => {}, onColumnWidth, widths: { type: 90, offset: 100, size: 60 } });
+    await findByText('a');
+    const mins = { Type: 40, Offset: 50, Size: 36 };
+    const now = { Type: 90, Offset: 100, Size: 60 };
+    for (const label of ['Type', 'Offset', 'Size'] as const) {
+      const sep = getByRole('separator', { name: `Resize ${label} column` });
+      expect(sep.tabIndex).toBe(0);
+      expect(sep.getAttribute('aria-valuenow')).toBe(String(now[label]));
+      expect(sep.getAttribute('aria-valuemin')).toBe(String(mins[label]));
+      await fireEvent.keyDown(sep, { key: 'ArrowLeft' });
+      expect(onColumnWidth).toHaveBeenLastCalledWith(label.toLowerCase(), Math.max(mins[label], now[label] - 16));
+      await fireEvent.keyDown(sep, { key: 'Home' });
+      expect(onColumnWidth).toHaveBeenLastCalledWith(label.toLowerCase(), mins[label]);
+      await fireEvent.dblClick(sep);
+      expect(onColumnWidth).toHaveBeenLastCalledWith(label.toLowerCase(), null);
+    }
+    expect(container.querySelectorAll('.head [role="separator"]')).toHaveLength(5);
+    const t = container.querySelector<HTMLElement>('.tree')!;
+    expect(t.style.getPropertyValue('--c-type')).toBe('90px');
+    expect(t.style.getPropertyValue('--c-offset')).toBe('100px');
+    expect(t.style.getPropertyValue('--c-size')).toBe('60px');
+    expect(t.style.getPropertyValue('--c-name')).toBe('');
+    // 150 + 90 (the flexible columns' minimums) + 90 + 100 + 60 + 22 + 5 gaps of 6px
+    expect(t.style.getPropertyValue('--min-wide')).toBe(`${150 + 90 + 90 + 100 + 60 + 22 + 30}px`);
+  });
+
+  it('every cell truncates with an ellipsis and keeps the full text as its title (Name, Type, Offset, Size)', async () => {
+    const long = 'a_very_long_field_name_'.repeat(4);
+    const root = n('file', 0, 4, { children: [n(long, 0x12345678, 4, { typeName: 'some.long.Type.Name', value: 1 })] });
+    const { container, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {}, widths: { name: 80, type: 40, offset: 50, size: 36 } });
+    await findByText(long);
+    const r = rowOf(container, long);
+    expect(r.querySelector('.nm')!.getAttribute('title')).toBe(long);
+    expect(r.querySelector('.type')!.getAttribute('title')).toBe('some.long.Type.Name');
+    expect(r.querySelector('.off')!.getAttribute('title')).toBe('0x12345678');
+    expect(r.querySelector('.num')!.getAttribute('title')).toBe('4');
   });
 
   it('their context menu offers Reset layout when the tree is given the action', async () => {

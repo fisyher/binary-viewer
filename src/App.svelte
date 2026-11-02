@@ -55,6 +55,7 @@
     saveTreeColumn,
     saveUiScale,
     stepUiScale,
+    TREE_COLUMNS,
     withRecentCommand,
     type SideView,
     type ThemePref,
@@ -252,8 +253,9 @@
   let narrow = $state(startsNarrow);
   let theme = $state<ThemePref>(loadTheme());
   let hexBanding = $state(loadHexBanding());
-  let treeName = $state<number | null>(loadTreeColumn('name'));
-  let treeValue = $state<number | null>(loadTreeColumn('value'));
+  let treeWidths = $state<Record<TreeColumn, number | null>>(
+    Object.fromEntries(TREE_COLUMNS.map((c) => [c, loadTreeColumn(c)])) as Record<TreeColumn, number | null>,
+  );
   let sideView = $state<SideView>(loadSideView());
   // On a narrow screen the side bar and inspector are drawers: they always start closed, whatever was saved.
   let sideOpen = $state(startsNarrow ? false : loadFlag('sideOpen', true));
@@ -290,8 +292,7 @@
   }
   function setTreeColumn(column: TreeColumn, px: number | null) {
     const v = px === null ? null : clampTreeColumn(column, px);
-    if (column === 'name') treeName = v;
-    else treeValue = v;
+    treeWidths = { ...treeWidths, [column]: v };
     saveTreeColumn(column, v);
   }
   /**
@@ -308,8 +309,7 @@
     inspectorOpen = !narrow;
     problemsOpen = !narrow;
     for (const name of ['sideOpen', 'inspectorOpen', 'problemsOpen']) saveFlag(name, true);
-    setTreeColumn('name', null);
-    setTreeColumn('value', null);
+    for (const c of TREE_COLUMNS) setTreeColumn(c, null);
     showMinimap = true;
     saveShowMinimap(true);
   }
@@ -869,7 +869,14 @@
     }
   }
 
-  function onTreeSelect(node: Node, range: { start: number; end: number } | null) {
+  function onTreeSelect(node: Node, range: { start: number; end: number } | null, opts?: { keepSelection: boolean }) {
+    if (opts?.keepSelection) {
+      // A hex click found this node: the clicked byte stays the selection (and the caret), the node's bytes are only highlighted.
+      const size = source?.size ?? 0;
+      nodeRange = range && range.start < size ? { start: range.start, end: Math.min(range.end, size - 1) } : null;
+      nodeInspectOffset = null;
+      return;
+    }
     selectBytes(range, node.offset);
   }
 
@@ -918,6 +925,8 @@
     const sel = selection;
     const caret = sel?.caret;
     if (pointerHeld || caret === undefined || sel === appSelection || !root || !client) return;
+    // The caret left the highlighted node (keys, typing at its end, a drag): the highlight no longer says where the caret is.
+    if (nodeRange && (caret < nodeRange.start || caret > nodeRange.end)) nodeRange = null;
     caretTimer = setTimeout(() => void lookupCrumbs(caret), CARET_LOOKUP_MS);
   }
 
@@ -954,10 +963,14 @@
     const t = ++locateToken;
     try {
       const loc = await c.nodeAt(offset);
-      if (t !== locateToken || !loc.path || root !== r) return;
+      if (t !== locateToken || root !== r) return;
+      if (!loc.path) {
+        nodeRange = null; // a gap in the structure: the node of an earlier click is not this byte's
+        return;
+      }
       crumbToken++;
       crumbs = crumbsFromLocation(r, loc.path, loc.lazyIndex, offset); // the tree's own selection refines it below
-      await tree?.reveal(loc.path, loc.lazyIndex, offset);
+      await tree?.reveal(loc.path, loc.lazyIndex, offset, true); // the clicked byte stays selected
     } catch {
       /* superseded or engine gone: nothing to reveal */
     }
@@ -1510,8 +1523,7 @@
                     onPath={onTreePath}
                     onJump={onTreeJump}
                     preserveFor={treeKeep}
-                    nameWidth={treeName}
-                    valueWidth={treeValue}
+                    widths={treeWidths}
                     onColumnWidth={setTreeColumn}
                     onResetLayout={resetLayout}
                   />

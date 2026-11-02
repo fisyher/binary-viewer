@@ -150,14 +150,23 @@ export function saveHexBanding(on: boolean): void {
   saveFlag('hexBanding', on);
 }
 
-/** Structure tree column widths (px) the user dragged; null = the default, flexible width. */
-export type TreeColumn = 'name' | 'value';
-export const TREE_COLUMN_MIN: Record<TreeColumn, number> = { name: 80, value: 60 };
+/** Structure tree column widths (px) the user dragged; null = the default width (Name and Value flex). */
+export type TreeColumn = 'name' | 'value' | 'type' | 'offset' | 'size';
+/** Every data column of the tree, left to right (the narrow badge cell at the end is not resizable). */
+export const TREE_COLUMNS: readonly TreeColumn[] = ['name', 'value', 'type', 'offset', 'size'];
+export const TREE_COLUMN_MIN: Record<TreeColumn, number> = { name: 80, value: 60, type: 40, offset: 50, size: 36 };
 export const TREE_COLUMN_MAX = 800;
-const treeColumnKey = (c: TreeColumn) => (c === 'name' ? 'treeNameWidth' : 'treeValueWidth');
+const TREE_COLUMN_KEY: Record<TreeColumn, string> = {
+  name: 'treeNameWidth',
+  value: 'treeValueWidth',
+  type: 'treeTypeWidth',
+  offset: 'treeOffsetWidth',
+  size: 'treeSizeWidth',
+};
+const treeColumnKey = (c: TreeColumn) => TREE_COLUMN_KEY[c];
 
-/** The width a column takes when asked for something that is not a number (the least the flexible default gives it). */
-export const TREE_COLUMN_DEFAULT: Record<TreeColumn, number> = { name: 150, value: 90 };
+/** The width a column takes when asked for something that is not a number (the least the default layout gives it). */
+export const TREE_COLUMN_DEFAULT: Record<TreeColumn, number> = { name: 150, value: 90, type: 70, offset: 80, size: 50 };
 
 export function clampTreeColumn(c: TreeColumn, px: number): number {
   if (!Number.isFinite(px)) return TREE_COLUMN_DEFAULT[c];

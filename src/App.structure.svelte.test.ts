@@ -72,9 +72,89 @@ describe('App: format engine + structure tree', () => {
     await fireEvent.mouseDown(byte);
     await fireEvent.mouseUp(byte);
     await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
-    expect(selectedOffsets(container)).toEqual([10, 11, 12, 13]);
+    // the clicked byte stays the selection (and the caret); the node's bytes are only highlighted
+    expect(selectedOffsets(container)).toEqual([10]);
     expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]);
     expect(container.querySelector('.at')?.textContent).toBe('@ 0x0000000A');
+  });
+
+  it('a hex click inside a field keeps the caret on the clicked byte: typing edits that byte, the field row is selected and its bytes only highlighted', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    // the third byte (offset 12) of off_bits (bytes 10..13): in the ASCII column too
+    const byte = container.querySelector('.b[data-o="12"]')!;
+    await fireEvent.mouseDown(byte);
+    await fireEvent.mouseUp(byte);
+    await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
+    expect(selectedOffsets(container)).toEqual([12]);
+    expect(container.querySelectorAll('.b.caret')).toHaveLength(1);
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('12');
+    expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]);
+    expect(container.querySelector('.at')?.textContent).toBe('@ 0x0000000C');
+    const grid = container.querySelector('[role="grid"]')!;
+    await fireEvent.keyDown(grid, { key: 'f' });
+    await fireEvent.keyDown(grid, { key: '7' });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('F7'));
+    expect(container.querySelector('.b[data-o="11"]')!.textContent).toBe('00');
+    expect(container.querySelector('.b[data-o="13"]')!.textContent).toBe('00');
+
+    const ascii = container.querySelector('.c[data-o="40"]')!; // inside the DIB header, in the ASCII column
+    await fireEvent.mouseDown(ascii);
+    await fireEvent.mouseUp(ascii);
+    await waitFor(() => expect(nodeOffsets(container, '.c')).toContain(40));
+    expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('false');
+    expect(container.querySelectorAll('[role="treeitem"][aria-selected="true"]')).toHaveLength(1);
+    expect(selectedOffsets(container, '.c')).toEqual([40]);
+    expect(container.querySelector('.c.caret')!.getAttribute('data-o')).toBe('40');
+
+    // a selection made from the tree is still the whole node
+    await fireEvent.click(rowOf(container, 'off_bits')!);
+    await waitFor(() => expect(selectedOffsets(container)).toEqual([10, 11, 12, 13]));
+  });
+
+  it('the node highlight follows the caret: a click in a gap and a key move out of the node clear it', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    const bytes = new Uint8Array([...makeBmp(), ...new Uint8Array(30).fill(7)]); // 30 bytes after the parsed structure
+    await pick(container, new File([bytes], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    const click = async (o: number) => {
+      const b = container.querySelector(`.b[data-o="${o}"]`)!;
+      await fireEvent.mouseDown(b);
+      await fireEvent.mouseUp(b);
+    };
+    await click(12);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]));
+    // a keyboard move to a byte of another node: the highlight of off_bits goes away
+    const grid = container.querySelector('[role="grid"]')!;
+    await click(13);
+    await fireEvent.keyDown(grid, { key: 'ArrowRight' });
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([]));
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('14');
+    // a click in the gap after a click in a node
+    await click(12);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]));
+    await click(70);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([]));
+    expect(selectedOffsets(container)).toEqual([70]);
+  });
+
+  it('an undo after a hex click puts the caret back on the edited byte and restores it', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    const byte = container.querySelector('.b[data-o="12"]')!;
+    await fireEvent.mouseDown(byte);
+    await fireEvent.mouseUp(byte);
+    await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
+    const grid = container.querySelector('[role="grid"]')!;
+    await fireEvent.keyDown(grid, { key: 'f' });
+    await fireEvent.keyDown(grid, { key: '7' });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('F7'));
+    await fireEvent.keyDown(grid, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('00'));
+    expect(selectedOffsets(container)).toEqual([12]);
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('12');
   });
 
   it('tints the visible bytes by top-level field using ranges from the worker', async () => {

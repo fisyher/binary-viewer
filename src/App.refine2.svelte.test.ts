@@ -201,6 +201,9 @@ describe('Reset layout', () => {
       showMinimap: '0',
       treeNameWidth: '300',
       treeValueWidth: '200',
+      treeTypeWidth: '120',
+      treeOffsetWidth: '130',
+      treeSizeWidth: '90',
     })) localStorage.setItem('binaryviewer.layout.' + k, v);
     localStorage.setItem('binaryviewer.theme', 'dark');
     localStorage.setItem('binaryviewer.uiScale', '1.15');
@@ -218,7 +221,7 @@ describe('Reset layout', () => {
     await runCommand('reset layout');
 
     const L = (k: string) => localStorage.getItem('binaryviewer.layout.' + k);
-    for (const k of ['sideWidth', 'inspectorWidth', 'problemsHeight', 'treeNameWidth', 'treeValueWidth']) expect(L(k), k).toBeNull();
+    for (const k of ['sideWidth', 'inspectorWidth', 'problemsHeight', 'treeNameWidth', 'treeValueWidth', 'treeTypeWidth', 'treeOffsetWidth', 'treeSizeWidth']) expect(L(k), k).toBeNull();
     for (const k of ['sideOpen', 'inspectorOpen', 'problemsOpen', 'showMinimap']) expect(L(k), k).toBe('1');
     expect(container.querySelector('aside[aria-label="Data inspector"]')).not.toBeNull();
     await waitFor(() => expect(container.querySelector('[role="scrollbar"][aria-label="File overview"]')).not.toBeNull());

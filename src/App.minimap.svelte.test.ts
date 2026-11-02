@@ -6,7 +6,13 @@ import { le16, le32 } from './core/engine/test-helpers';
 import { createInlineClient } from './worker/inline-client';
 
 beforeAll(() => {
-  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 400 });
+  // The hex grid also holds its 22px column header row above its 400px of rows.
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.getAttribute('role') === 'grid' ? 422 : 400;
+    },
+  });
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}

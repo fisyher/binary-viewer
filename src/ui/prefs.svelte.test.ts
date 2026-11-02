@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  TREE_COLUMNS,
+  TREE_COLUMN_DEFAULT,
+  TREE_COLUMN_MIN,
   UI_SCALES,
   applyTheme,
   applyUiScale,
@@ -241,5 +244,31 @@ describe('tree column widths', () => {
     expect(loadTreeColumn('name')).toBe(80);
     localStorage.setItem('binaryviewer.layout.treeValueWidth', 'wide');
     expect(loadTreeColumn('value')).toBeNull();
+  });
+});
+
+describe('tree columns: every data column', () => {
+  const ALL = ['name', 'value', 'type', 'offset', 'size'] as const;
+
+  it('lists the five columns, each with a minimum under the shared maximum', () => {
+    expect([...TREE_COLUMNS]).toEqual([...ALL]);
+    for (const c of ALL) expect(TREE_COLUMN_MIN[c]).toBeLessThan(TREE_COLUMN_DEFAULT[c]);
+    expect(TREE_COLUMN_MIN).toEqual({ name: 80, value: 60, type: 40, offset: 50, size: 36 });
+  });
+
+  it('saves, loads, clamps and forgets each column under its own key', () => {
+    localStorage.clear();
+    const keys = { name: 'treeNameWidth', value: 'treeValueWidth', type: 'treeTypeWidth', offset: 'treeOffsetWidth', size: 'treeSizeWidth' };
+    for (const c of ALL) {
+      expect(loadTreeColumn(c)).toBeNull();
+      saveTreeColumn(c, 123);
+      expect(localStorage.getItem('binaryviewer.layout.' + keys[c])).toBe('123');
+      expect(loadTreeColumn(c)).toBe(123);
+      expect(clampTreeColumn(c, 1)).toBe(TREE_COLUMN_MIN[c]);
+      expect(clampTreeColumn(c, 99999)).toBe(800);
+      expect(clampTreeColumn(c, Number.NaN)).toBe(TREE_COLUMN_DEFAULT[c]);
+      saveTreeColumn(c, null);
+      expect(localStorage.getItem('binaryviewer.layout.' + keys[c])).toBeNull();
+    }
   });
 });
