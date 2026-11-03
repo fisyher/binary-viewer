@@ -838,7 +838,7 @@
     if (!client) throw new Error('format engine unavailable');
     const r = await client.expand(nodeId, start, count);
     if (r.newErrors.length > 0) diagnostics = [...diagnostics, ...r.newErrors];
-    requestOverview(); // a variable-size expansion changes which bytes the tree covers (the worker answers from its cache otherwise)
+    if (r.treeChanged) requestOverview(); // a variable-size expansion changes which bytes the tree covers; a fixed-size page load does not
     return { nodes: r.nodes, lazy: r.lazy };
   }
 

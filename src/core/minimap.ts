@@ -1,3 +1,5 @@
+import { groupOfIndex } from './groups';
+
 /** Geometry of the structure minimap: pure functions from file offsets and worker buckets to pixel rows and back. */
 
 /** A run of pixel rows [y0, y1) painted alike: v is 0 (no parsed node) or the colour group + 1 (1..4). */
@@ -75,7 +77,7 @@ export function smallRegionRows(
   for (const r of regions) {
     if (((Math.min(size, r.end) - Math.max(0, r.start)) / size) * heightPx >= min) continue; // tall enough to read as a band
     const { y0, y1 } = rangeToRows(r.start, r.end, size, heightPx, min);
-    if (y1 > y0) out.push({ y0, y1, v: (((r.group % 4) + 4) % 4) + 1 });
+    if (y1 > y0) out.push({ y0, y1, v: groupOfIndex(r.group) + 1 });
   }
   // Neighbouring small regions must not cover one another: push each below the previous one, then pull the tail back
   // inside the strip (the order, and so which region is first, is always the file order).

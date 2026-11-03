@@ -167,6 +167,8 @@ const treeColumnKey = (c: TreeColumn) => TREE_COLUMN_KEY[c];
 
 /** The width a column takes when asked for something that is not a number (the least the default layout gives it). */
 export const TREE_COLUMN_DEFAULT: Record<TreeColumn, number> = { name: 150, value: 90, type: 70, offset: 80, size: 50 };
+/** Default widths (px) in the narrow tree layout, which has no Type column. */
+export const TREE_COLUMN_DEFAULT_NARROW = { name: 100, value: 56, offset: 52, size: 30 } as const;
 
 export function clampTreeColumn(c: TreeColumn, px: number): number {
   if (!Number.isFinite(px)) return TREE_COLUMN_DEFAULT[c];

@@ -99,7 +99,8 @@ export type EngineResponse =
   | { id: number; type: 'parse'; snapshot: ParseSnapshot | null }
   /** `rejected`: one readable message per text that was not accepted. */
   | { id: number; type: 'setSpecs'; specs: SpecInfo[]; rejected: string[] }
-  | { id: number; type: 'expand'; nodes: Node[]; lazy: LazyArray | null; newErrors: Diagnostic[] }
+  /** `treeChanged`: the expansion attached children to the tree (variable-size), so byte coverage and the overview changed. */
+  | { id: number; type: 'expand'; nodes: Node[]; lazy: LazyArray | null; newErrors: Diagnostic[]; treeChanged: boolean }
   | { id: number; type: 'expandRef'; nodes: Node[]; newErrors: Diagnostic[] }
   | { id: number; type: 'cancel' }
   /** `path` = node ids from the root to the node (inclusive); null when nothing matched. */

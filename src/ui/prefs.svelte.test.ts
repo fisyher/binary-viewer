@@ -231,8 +231,8 @@ describe('tree column widths', () => {
 
   it('a width that is not a number falls back to the default instead of poisoning the layout', () => {
     for (const bad of [NaN, Infinity, -Infinity]) {
-      expect(clampTreeColumn('name', bad)).toBe(150);
-      expect(clampTreeColumn('value', bad)).toBe(90);
+      expect(clampTreeColumn('name', bad)).toBe(TREE_COLUMN_DEFAULT.name);
+      expect(clampTreeColumn('value', bad)).toBe(TREE_COLUMN_DEFAULT.value);
     }
   });
 

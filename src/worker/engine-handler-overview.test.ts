@@ -1,11 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryByteSource, type ByteSource } from '../core/byte-source';
 import * as realEngine from '../core/engine';
 import type { Node } from '../core/engine';
 import { find, mkSpec } from '../core/engine/test-helpers';
 import { loadBuiltinSpecs } from '../formats';
 import { createEngineHandler, type EngineApi } from './engine-handler';
+import { computeRegions } from './overview';
 import type { EngineRequest, EngineResponse, RequestBody, ResponseOf } from './protocol';
+
+vi.mock('./overview', async (orig) => {
+  const actual = await orig<typeof import('./overview')>();
+  return { ...actual, computeRegions: vi.fn(actual.computeRegions) };
+});
 
 const stats = { nodes: 1, steps: 0, reads: 0, bytesRead: 0, truncated: false, aborted: false, suppressedDiagnostics: 0 };
 const leaf = (id: number, offset: number, size: number, extra: Partial<Node> = {}): Node => ({ id, name: `n${id}`, typeName: 'u1', offset, size, ...extra });
@@ -179,6 +185,27 @@ describe('overview request', () => {
     expect(reads).toBeGreaterThan(afterFirst); // another size: recomputed
   });
 
+  it('computes the regions once per tree shape: another bucket count recomputes only the buckets', async () => {
+    const root: Node = {
+      id: 1, name: 'r', typeName: 'r', offset: 0, size: 64,
+      children: [{ id: 2, name: 'a', typeName: 's', offset: 0, size: 32, children: [leaf(3, 0, 32)] }, { id: 4, name: 'b', typeName: 's', offset: 32, size: 32, children: [leaf(5, 32, 32)] }],
+    };
+    const s = setup({ engine: engineWith(root), source: new MemoryByteSource(new Uint8Array(64)) });
+    await openParsed(s);
+    vi.mocked(computeRegions).mockClear();
+    const a = await s.send<'overview'>({ type: 'overview', buckets: 16 });
+    const b = await s.send<'overview'>({ type: 'overview', buckets: 32 });
+    expect(computeRegions).toHaveBeenCalledTimes(1);
+    expect(a!.buckets).toHaveLength(16);
+    expect(b!.buckets).toHaveLength(32);
+    const expected = [{ start: 0, end: 32, group: 0, name: 'a' }, { start: 32, end: 64, group: 1, name: 'b' }];
+    expect(a!.regions).toEqual(expected);
+    expect(b!.regions).toEqual(expected);
+    await s.send({ type: 'parse', specId: 'lazy' }); // a new tree shape: computed again
+    await s.send({ type: 'overview', buckets: 16 });
+    expect(computeRegions).toHaveBeenCalledTimes(2);
+  });
+
   it('is recomputed after a variable-size expansion attached nodes, but not after a fixed-size page load', async () => {
     const fixed: Node = { id: 2, name: 'fixed', typeName: 'u1[]', offset: 0, size: 32, lazy: { start: 0, count: 32, elemType: 'u1', elemSize: 1, loaded: 0, resumeOffset: null } };
     const variable: Node = {
@@ -199,9 +226,9 @@ describe('overview request', () => {
     const first = await s.send<'overview'>({ type: 'overview', buckets: 16 });
     expect([...first!.buckets.slice(0, 8)]).toEqual(Array(8).fill(1));
     expect([...first!.buckets.slice(8)]).toEqual(Array(8).fill(2)); // all of var counts while it is unexpanded
-    await s.send({ type: 'expand', nodeId: 2, start: 0, count: 4 });
+    expect((await s.send<'expand'>({ type: 'expand', nodeId: 2, start: 0, count: 4 }))!.treeChanged).toBe(false);
     expect([...(await s.send<'overview'>({ type: 'overview', buckets: 16 }))!.buckets]).toEqual([...first!.buckets]);
-    await s.send({ type: 'expand', nodeId: 3, start: 0, count: 1 });
+    expect((await s.send<'expand'>({ type: 'expand', nodeId: 3, start: 0, count: 1 }))!.treeChanged).toBe(true);
     const after = await s.send<'overview'>({ type: 'overview', buckets: 16 });
     // Only the loaded element is covered now, exactly as `ranges` sees it.
     expect([...after!.buckets.slice(8)]).toEqual([2, 0, 0, 0, 0, 0, 0, 0]);

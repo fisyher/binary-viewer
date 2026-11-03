@@ -44,6 +44,8 @@ export interface ExpandResult {
   nodes: Node[];
   lazy: LazyArray | null;
   newErrors: Diagnostic[];
+  /** The expansion attached children (variable-size), changing which bytes the tree covers; false for a fixed-size page load. */
+  treeChanged: boolean;
 }
 /** Answer to `expandRef`: the target node(s) to attach under the ref node (the same nodes if it was opened before). */
 export interface RefResult {
@@ -190,8 +192,8 @@ export function createClient(t: Transport): EngineClient {
       return { specs, rejected };
     },
     expand: async (nodeId, start, count) => {
-      const { nodes, lazy, newErrors } = await send<'expand'>({ type: 'expand', nodeId, start, count });
-      return { nodes, lazy, newErrors };
+      const { nodes, lazy, newErrors, treeChanged } = await send<'expand'>({ type: 'expand', nodeId, start, count });
+      return { nodes, lazy, newErrors, treeChanged };
     },
     expandRef: async (nodeId) => {
       const { nodes, newErrors } = await send<'expandRef'>({ type: 'expandRef', nodeId });

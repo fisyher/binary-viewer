@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Node } from '../core/engine';
 import { MAX_TITLE_CHARS } from '../core/tree-model';
+import { TREE_COLUMNS, TREE_COLUMN_DEFAULT, TREE_COLUMN_DEFAULT_NARROW } from './prefs';
 import StructureTree from './StructureTree.svelte';
 
 beforeAll(() => {
@@ -136,8 +137,11 @@ describe('StructureTree column dividers', () => {
     expect(t.style.getPropertyValue('--c-offset')).toBe('100px');
     expect(t.style.getPropertyValue('--c-size')).toBe('60px');
     expect(t.style.getPropertyValue('--c-name')).toBe('');
-    // 150 + 90 (the flexible columns' minimums) + 90 + 100 + 60 + 22 + 5 gaps of 6px
-    expect(t.style.getPropertyValue('--min-wide')).toBe(`${150 + 90 + 90 + 100 + 60 + 22 + 30}px`);
+    // The flexible columns' minimums + 90 + 100 + 60 + 22 + 5 gaps of 6px
+    expect(t.style.getPropertyValue('--min-wide')).toBe(`${TREE_COLUMN_DEFAULT.name + TREE_COLUMN_DEFAULT.value + 90 + 100 + 60 + 22 + 30}px`);
+    // The CSS fallbacks for columns without a width come from prefs.ts through these variables
+    for (const c of TREE_COLUMNS) expect(t.style.getPropertyValue(`--dw-${c}`)).toBe(`${TREE_COLUMN_DEFAULT[c]}px`);
+    for (const [c, px] of Object.entries(TREE_COLUMN_DEFAULT_NARROW)) expect(t.style.getPropertyValue(`--dn-${c}`)).toBe(`${px}px`);
   });
 
   it('every cell truncates with an ellipsis and keeps the full text as its title (Name, Type, Offset, Size)', async () => {

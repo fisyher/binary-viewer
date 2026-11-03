@@ -66,7 +66,8 @@ export function createEngineHandler(deps: HandlerDeps) {
   let result: ParseResult | null = null;
   let index: TreeIndex | null = null;
   let extents: Map<Node, { lo: number; hi: number }> | null = null;
-  let overviewCache: { n: number; size: number; buckets: Uint8Array; regions: OverviewRegion[]; truncated: boolean } | null = null; // for the current tree shape
+  // For the current tree shape. The regions do not depend on the bucket count, so only `buckets` is keyed on it.
+  let overviewCache: { size: number; regions: OverviewRegion[]; truncated: boolean; buckets: { n: number; data: Uint8Array } | null } | null = null;
   let errorsSent = 0; // diagnostics of `result` already delivered to the client
   let generation = 0; // bumped by open/parse; responses from older generations are dropped
   let parseCtl: AbortController | null = null;
@@ -233,7 +234,8 @@ export function createEngineHandler(deps: HandlerDeps) {
         const nodes = await engine.expandLazy(r, req.nodeId, { start: req.start, count: req.count }, { signal: lifeCtl?.signal });
         if (gen !== generation) return null;
         const lazy = arr?.lazy ?? null;
-        if ((arr?.children?.length ?? 0) !== childrenBefore) {
+        const treeChanged = (arr?.children?.length ?? 0) !== childrenBefore;
+        if (treeChanged) {
           // Variable-size expansion appended children; fixed-size page loads leave the tree untouched.
           index = null;
           extents = null;
@@ -242,7 +244,7 @@ export function createEngineHandler(deps: HandlerDeps) {
         // Overlapping expands share one cursor, advanced synchronously after the await, so no error is sent twice.
         const newErrors = r.errors.slice(errorsSent);
         errorsSent = r.errors.length;
-        return { id, type: 'expand', nodes, lazy, newErrors };
+        return { id, type: 'expand', nodes, lazy, newErrors, treeChanged };
       }
       case 'expandRef': {
         if (!result) return { id, type: 'error', message: 'no parse result' };
@@ -286,11 +288,13 @@ export function createEngineHandler(deps: HandlerDeps) {
         const size = source?.size ?? 0;
         const n = size > 0 ? Math.min(clampBuckets(req.buckets), size) : clampBuckets(req.buckets); // never empty buckets
         // The reply's buffer is transferred away, so the cache keeps its own copy.
-        if (!overviewCache || overviewCache.n !== n || overviewCache.size !== size) {
-          overviewCache = { n, size, buckets: computeOverview(result.root, size, n), ...computeRegions(result.root, size) };
+        if (!overviewCache || overviewCache.size !== size) {
+          overviewCache = { size, ...computeRegions(result.root, size), buckets: null };
         }
+        if (overviewCache.buckets?.n !== n) overviewCache.buckets = { n, data: computeOverview(result.root, size, n) };
         const { buckets, regions, truncated } = overviewCache;
-        return { id, type: 'overview', size, buckets: buckets.slice(), regions: regions.map((r) => ({ ...r })), truncated };
+        // Both transports structured-clone the reply, so `regions` need no copy; only the transferred buffer does.
+        return { id, type: 'overview', size, buckets: buckets.data.slice(), regions, truncated };
       }
       default:
         return { id: (req as { id?: number }).id ?? -1, type: 'error', message: 'unknown request' };

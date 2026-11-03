@@ -27,7 +27,7 @@
     type Pages,
     type Row,
   } from '../core/tree-model';
-  import { TREE_COLUMNS, TREE_COLUMN_MAX, TREE_COLUMN_MIN, type TreeColumn } from './prefs';
+  import { TREE_COLUMNS, TREE_COLUMN_DEFAULT, TREE_COLUMN_DEFAULT_NARROW, TREE_COLUMN_MAX, TREE_COLUMN_MIN, type TreeColumn } from './prefs';
   import Resizer from './shell/Resizer.svelte';
 
   // 24px: the twisty and the jump buttons are at least 24px tall targets, so a row is too.
@@ -41,9 +41,8 @@
     { col: 'offset', label: 'Offset' },
     { col: 'size', label: 'Size' },
   ];
-  // Default widths (px) of the columns that have no fixed one: the wide layout, and the narrow one (no Type column).
-  const WIDE: Record<TreeColumn, number> = { name: 150, value: 90, type: 70, offset: 80, size: 50 };
-  const NARROW: Partial<Record<TreeColumn, number>> = { name: 100, value: 56, offset: 52, size: 30 };
+  // Default widths (px) of the columns that have no fixed one come from prefs.ts: the wide layout, and the narrow one (no Type column).
+  // The CSS reads them through the --dw-* / --dn-* variables set on .tree.
 
   export interface PageResult {
     nodes: Node[];
@@ -99,8 +98,8 @@
   let cells = $state<Record<TreeColumn, number>>({ name: 0, value: 0, type: 0, offset: 0, size: 0 });
   // Fixed (dragged) columns make the row as wide as the sum of its columns; the scroller then scrolls sideways if that is more than fits.
   // Anything wider than the columns is plain filler to the right of the last one.
-  const minWide = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (widths[c] ?? WIDE[c]), 0) + 22 + 5 * 6);
-  const minNarrow = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (c === 'type' ? 0 : (widths[c] ?? NARROW[c] ?? 0)), 0) + 20 + 4 * 4);
+  const minWide = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (widths[c] ?? TREE_COLUMN_DEFAULT[c]), 0) + 22 + 5 * 6);
+  const minNarrow = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (c === 'type' ? 0 : (widths[c] ?? TREE_COLUMN_DEFAULT_NARROW[c] ?? 0)), 0) + 20 + 4 * 4);
   const cssPx = (c: TreeColumn) => (widths[c] != null ? `${widths[c]}px` : undefined);
   // A reveal that happened while the tree was not shown (collapsed side bar): scrolled to once it has a height.
   let pendingReveal: string | null = null;
@@ -539,6 +538,15 @@
   style:--c-size={cssPx('size')}
   style:--min-wide="{minWide}px"
   style:--min-narrow="{minNarrow}px"
+  style:--dw-name="{TREE_COLUMN_DEFAULT.name}px"
+  style:--dw-value="{TREE_COLUMN_DEFAULT.value}px"
+  style:--dw-type="{TREE_COLUMN_DEFAULT.type}px"
+  style:--dw-offset="{TREE_COLUMN_DEFAULT.offset}px"
+  style:--dw-size="{TREE_COLUMN_DEFAULT.size}px"
+  style:--dn-name="{TREE_COLUMN_DEFAULT_NARROW.name}px"
+  style:--dn-value="{TREE_COLUMN_DEFAULT_NARROW.value}px"
+  style:--dn-offset="{TREE_COLUMN_DEFAULT_NARROW.offset}px"
+  style:--dn-size="{TREE_COLUMN_DEFAULT_NARROW.size}px"
 >
   <!-- The column titles are decoration for sighted users (the rows say what each value is); the dividers are real, focusable separators. -->
   <div class="head">
@@ -729,25 +737,26 @@
   .head,
   .row {
     display: grid;
-    grid-template-columns: var(--c-name, minmax(150px, 1.5fr)) var(--c-value, minmax(90px, 1fr)) var(--c-type, 70px) var(--c-offset, 80px) var(--c-size, 50px) 22px;
+    /* The fallbacks use the default widths from prefs.ts (--dw-*, set on .tree). */
+    grid-template-columns: var(--c-name, minmax(var(--dw-name), 1.5fr)) var(--c-value, minmax(var(--dw-value), 1fr)) var(--c-type, var(--dw-type)) var(--c-offset, var(--dw-offset)) var(--c-size, var(--dw-size)) 22px;
     align-items: center;
-    min-width: var(--min-wide, 470px);
+    min-width: var(--min-wide);
     box-sizing: border-box;
   }
   /* In a narrow side bar the Type column gives way, so the default width needs no horizontal scrolling. */
   @container tree (max-width: 469px) {
     .tree .head,
     .tree .row {
-      grid-template-columns: var(--c-name, minmax(100px, 2fr)) var(--c-value, minmax(56px, 1fr)) var(--c-offset, 52px) var(--c-size, 30px) 20px;
+      grid-template-columns: var(--c-name, minmax(var(--dn-name), 2fr)) var(--c-value, minmax(var(--dn-value), 1fr)) var(--c-offset, var(--dn-offset)) var(--c-size, var(--dn-size)) 20px;
       gap: 4px;
-      min-width: var(--min-narrow, 280px);
+      min-width: var(--min-narrow);
     }
     .head > :nth-child(3),
     .row > :nth-child(3) {
       display: none;
     }
     .scroller .spacer {
-      min-width: var(--min-narrow, 280px);
+      min-width: var(--min-narrow);
     }
     .tree .grip {
       right: -3px;
@@ -793,7 +802,7 @@
   }
   .spacer {
     position: relative;
-    min-width: var(--min-wide, 470px);
+    min-width: var(--min-wide);
   }
   .window {
     position: absolute;
