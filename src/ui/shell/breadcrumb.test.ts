@@ -40,7 +40,7 @@ describe('crumbsFromLocation', () => {
     const { root, table } = sample();
     const c = crumbsFromLocation(root, [root.id, table.id], 450, 6 + 450 * 4 + 1);
     expect(c.map((x) => x.label)).toEqual(['bmp', 'table[450]']);
-    expect(c[1]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 450, offset: 6 + 450 * 4 + 1 });
+    expect(c[1]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 450, offset: 6 + 450 * 4 + 1, sub: [] }); // the element itself, not the deepest node at the caret
     expect(c[1]!.name).toBe('table'); // the node's own name stays for the title
   });
 
@@ -59,6 +59,32 @@ describe('crumbsFromLocation', () => {
   });
 });
 
+describe('crumbs inside a lazy array element reveal the exact node', () => {
+  it('gives each segment its child-index path from the element', () => {
+    const { root, table } = sample();
+    const tag = node('tag', 6 + 12, 2);
+    const header = node('header', 6 + 12, 4, [tag]);
+    const val = node('val', 6 + 16, 4);
+    const elem = node('entry', 6 + 12, 8, [header, val]);
+    const c = crumbsFromChain([root, table, elem, header, tag]);
+    expect(c.map((x) => x.label)).toEqual(['bmp', 'table[3]', 'header', 'tag']);
+    expect(c.map((x) => x.reveal.sub)).toEqual([undefined, [], [0], [0, 0]]);
+    expect(crumbsFromChain([root, table, elem, val]).at(-1)!.reveal.sub).toEqual([1]);
+    // every segment of the caret-based path is the element itself
+    expect(crumbsFromLocation(root, [root.id, table.id], 3, 6 + 12).at(-1)!.reveal.sub).toEqual([]);
+  });
+
+  it('leaves sub out when a node cannot be found among its parent children (offset resolution is the fallback)', () => {
+    const { root, table } = sample();
+    const inner = node('inner', 6 + 12, 2);
+    const detached = node('detached', 6 + 12, 2, [inner]);
+    const elem = node('entry', 6 + 12, 8, [node('other', 6 + 12, 2)]);
+    const c = crumbsFromChain([root, table, elem, detached, inner]);
+    expect(c[2]!.reveal.sub).toBeUndefined();
+    expect(c[3]!.reveal.sub).toBeUndefined();
+  });
+});
+
 describe('crumbsFromChain', () => {
   it('reveals plain nodes by their id path', () => {
     const { root, header, magic } = sample();
@@ -74,10 +100,10 @@ describe('crumbsFromChain', () => {
     const element = crumbsFromChain([root, table, elem]);
     expect(element.map((x) => x.label)).toEqual(['bmp', 'table[3]']); // the same as crumbsFromLocation gives for a hex click
     expect(element[1]).toMatchObject({ id: table.id, name: 'table' });
-    expect(element[1]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 3, offset: 18 });
+    expect(element[1]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 3, offset: 18, sub: [] });
     const c = crumbsFromChain([root, table, elem, field]);
     expect(c.map((x) => x.label)).toEqual(['bmp', 'table[3]', 'a']);
-    expect(c[2]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 3, offset: 20 });
+    expect(c[2]!.reveal).toEqual({ path: [root.id, table.id], lazyIndex: 3, offset: 20, sub: [0] });
   });
 
   it('keeps the array segment when it is selected itself', () => {

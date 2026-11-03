@@ -12,6 +12,11 @@ export interface CrumbReveal {
   path: number[];
   lazyIndex: number | null;
   offset: number | null;
+  /**
+   * Only inside a fixed-size lazy array's element: the exact node as child indexes from that element (empty: the element
+   * itself), so that it is not mistaken for the deepest node at `offset`. Absent: resolve by `offset`.
+   */
+  sub?: number[];
 }
 
 /** A snapshot of one node on the path (lazy loads mutate the tree in place, so nothing here points into it). */
@@ -46,6 +51,7 @@ export function crumbsFromLocation(root: Node, path: readonly number[], lazyInde
     const last = i === chain.length - 1;
     const element = last && lazyIndex !== null && isFixedLazy(n);
     const reveal: CrumbReveal = { path: ids.slice(0, i + 1), lazyIndex: element ? lazyIndex : null, offset: element ? offset : null };
+    if (element) reveal.sub = []; // the segment is the element itself, not the deepest node at the caret
     return snapshot(n, element ? `${n.name}[${lazyIndex}]` : n.name, reveal);
   });
 }
@@ -60,6 +66,7 @@ export function crumbsFromChain(chain: readonly Node[]): Crumb[] {
   const out: Crumb[] = [];
   const ids: number[] = [];
   let element: number | null = null; // the array's element index once the chain is inside one (-1: not computable)
+  let sub: number[] | null = []; // child indexes from the element to the current node (null: not computable)
   chain.forEach((n, i) => {
     const parent = i > 0 ? chain[i - 1]! : null;
     if (element === null && parent && isFixedLazy(parent)) {
@@ -67,13 +74,18 @@ export function crumbsFromChain(chain: readonly Node[]): Crumb[] {
       const array = out[out.length - 1]!;
       if (element >= 0) array.label = sanitizeText(`${parent.name}[${element}]`, MAX_LABEL);
       array.reveal = { path: ids.slice(), lazyIndex: element >= 0 ? element : null, offset: n.offset };
+      if (element >= 0) array.reveal.sub = [];
       return; // the element is the array's segment
     }
     if (element === null) {
       ids.push(n.id);
       out.push(snapshot(n, n.name, { path: ids.slice(), lazyIndex: null, offset: null }));
     } else {
-      out.push(snapshot(n, n.name, { path: ids.slice(), lazyIndex: element >= 0 ? element : null, offset: n.offset }));
+      const at = parent?.children?.indexOf(n) ?? -1;
+      sub = sub !== null && at >= 0 ? [...sub, at] : null;
+      const reveal: CrumbReveal = { path: ids.slice(), lazyIndex: element >= 0 ? element : null, offset: n.offset };
+      if (element >= 0 && sub) reveal.sub = sub;
+      out.push(snapshot(n, n.name, reveal));
     }
   });
   return out;

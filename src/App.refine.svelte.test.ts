@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/sv
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import App from './App.svelte';
 import { le16, le32 } from './core/engine/test-helpers';
+import { validateSpec } from './core/engine/validate';
 import { chooseFormat, formatShown } from './test/format-ui';
 import { SpecLibrary } from './core/spec-library';
 import { createMemoryStore } from './core/spec-store';
@@ -179,6 +180,131 @@ describe('breadcrumb: stale paths and extra lookups', () => {
     await new Promise((res) => setTimeout(res, 50));
     expect(within(status(container)).getAllByRole('alert')).toHaveLength(1);
     expect(status(container).textContent).not.toContain('boom'); // the failure is announced by one item only
+  });
+});
+
+describe('hex click -> tree: stale and unmatched clicks', () => {
+  const nodeBytes = (c: HTMLElement) => [...c.querySelectorAll('.b.node')].map((e) => Number((e as HTMLElement).dataset.o));
+  const selectedRows = (c: HTMLElement) => [...c.querySelectorAll('[role="treeitem"][aria-selected="true"]')].map((r) => r.querySelector('.nm')?.textContent);
+
+  it('a click whose lookup answers after the caret moved leaves no stale highlight, tree selection or breadcrumb', async () => {
+    const client = createInlineClient();
+    const real = client.nodeAt.bind(client);
+    let answer!: () => void;
+    const gate = new Promise<void>((r) => (answer = r));
+    let held = false;
+    vi.spyOn(client, 'nodeAt').mockImplementation(async (offset: number) => {
+      const res = await real(offset);
+      if (!held) {
+        held = true; // the click's lookup is the first one: it answers only when told to
+        await gate;
+      }
+      return res;
+    });
+    const r = render(App, { createClient: () => client });
+    await pick(r.container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(r.container.querySelector('[role="treeitem"]')).not.toBeNull());
+    await clickByte(r.container, 10); // off_bits, bytes 10..13: the lookup is now pending
+    const grid = r.container.querySelector<HTMLElement>('[role="grid"]')!;
+    grid.focus();
+    await fireEvent.keyDown(grid, { key: 'ArrowDown' }); // the caret is at 26 before the click's answer arrives
+    answer();
+    await new Promise((res) => setTimeout(res, 400)); // the answer, the reveal and the caret's own debounced lookup
+    expect(nodeBytes(r.container)).toEqual([]);
+    expect(selectedRows(r.container)).not.toContain('off_bits');
+    expect(crumbLabels(r.container).at(-1)).not.toBe('off_bits');
+    expect(crumbLabels(r.container)).toContain('dib'); // the caret's own breadcrumb lookup was not cancelled
+  });
+
+  it('a normal click still highlights its node and selects it in the tree', async () => {
+    const { container } = await mountBmp();
+    await clickByte(container, 10);
+    await waitFor(() => expect(nodeBytes(container)).toEqual([10, 11, 12, 13]));
+    await waitFor(() => expect(selectedRows(container)).toEqual(['off_bits']));
+    await clickByte(container, 0); // a second click: the first one's node is replaced
+    await waitFor(() => expect(nodeBytes(container)).toEqual([0, 1]));
+    await waitFor(() => expect(selectedRows(container)).toEqual(['magic']));
+  });
+
+  it('a reveal that completes after the caret left the node does not highlight it', async () => {
+    // The lazy page load is held; the caret moves on while the click's nodeAt answer is already in, then the page arrives.
+    const v = validateSpec({
+      schemaVersion: 1, id: 'lz', name: 'Lazy', endian: 'le', extensions: ['lz'], root: 'file',
+      types: { file: { fields: [{ name: 'entries', type: 'entry', repeat: 'eos' }] }, entry: { fields: [{ name: 'a', type: 'u4' }, { name: 'b', type: 'u4' }] } },
+    });
+    if (!v.ok) throw new Error('spec invalid');
+    const client = createInlineClient({ specs: [v.spec] });
+    const r = render(App, { createClient: () => client });
+    await pick(r.container, new File([new Uint8Array(8 * 2000)], 'a.lz'));
+    await waitFor(() => expect(r.container.querySelector('[role="treeitem"]')).not.toBeNull());
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    const real = client.expand.bind(client);
+    vi.spyOn(client, 'expand').mockImplementation(async (...a: Parameters<typeof real>) => {
+      await gate;
+      return real(...a);
+    });
+    const nodeAt = vi.spyOn(client, 'nodeAt');
+    await clickByte(r.container, 20); // entries[2] (bytes 16..23): its page is not loaded yet
+    await waitFor(() => expect(nodeAt).toHaveBeenCalled());
+    await nodeAt.mock.results[0]!.value; // the answer is in: the reveal is now waiting for the page
+    await new Promise((res) => setTimeout(res, 20));
+    const grid = r.container.querySelector<HTMLElement>('[role="grid"]')!;
+    grid.focus();
+    await fireEvent.keyDown(grid, { key: 'ArrowDown' }); // the caret leaves entries[2]
+    release();
+    await new Promise((res) => setTimeout(res, 400));
+    expect(nodeBytes(r.container)).toEqual([]);
+  });
+
+  it('a click on a byte no node covers clears the breadcrumb and the tree selection', async () => {
+    const bytes = new Uint8Array([...makeBmp(), 1, 2, 3, 4]); // trailing bytes after the parsed structure
+    const r = render(App, { createClient: () => createInlineClient() });
+    await pick(r.container, new File([bytes], 'pic.bmp'));
+    await waitFor(() => expect(r.container.querySelector('[role="treeitem"]')).not.toBeNull());
+    await clickByte(r.container, 10);
+    await waitFor(() => expect(selectedRows(r.container)).toEqual(['off_bits']));
+    await clickByte(r.container, bytes.length - 1);
+    await waitFor(() => expect(selectedRows(r.container)).toEqual([]));
+    expect(nodeBytes(r.container)).toEqual([]);
+    expect(crumbLabels(r.container)).toEqual(['file']); // only the root, as before any click
+    await new Promise((res) => setTimeout(res, 300)); // no late lookup brings the old path back
+    expect(crumbLabels(r.container)).toEqual(['file']);
+  });
+});
+
+describe('breadcrumb segments inside a lazy array element', () => {
+  it('clicking entries[3] or header selects that exact node, not the deepest node at the caret', async () => {
+    const v = validateSpec({
+      schemaVersion: 1,
+      id: 'lz',
+      name: 'Lazy',
+      endian: 'le',
+      extensions: ['lz'],
+      root: 'file',
+      types: {
+        file: { fields: [{ name: 'magic', type: 'u2' }, { name: 'entries', type: 'entry', repeat: 'eos' }] },
+        entry: { fields: [{ name: 'header', type: 'hdr' }, { name: 'val', type: 'u4' }] },
+        hdr: { fields: [{ name: 'tag', type: 'u2' }, { name: 'len', type: 'u2' }] },
+      },
+    });
+    if (!v.ok) throw new Error('spec invalid');
+    const r = render(App, { createClient: () => createInlineClient({ specs: [v.spec] }) });
+    await pick(r.container, new File([new Uint8Array(2 + 8 * 2000)], 'a.lz')); // 2000 entries: above eagerElements, so a lazy array
+    await waitFor(() => expect(r.container.querySelector('[role="treeitem"]')).not.toBeNull());
+    await clickByte(r.container, 26); // entries[3] -> header -> tag
+    await waitFor(() => expect(crumbLabels(r.container)).toEqual(['file', 'entries[3]', 'header', 'tag']));
+    const selected = () => [...r.container.querySelectorAll('[role="treeitem"][aria-selected="true"]')].map((e) => e.querySelector('.nm')?.textContent);
+    const nodeBytes = () => [...r.container.querySelectorAll('.b.node')].map((e) => Number((e as HTMLElement).dataset.o));
+    const crumb = (name: string) => within(crumbNav(r.container)).getByRole('button', { name });
+    await fireEvent.click(crumb('header'));
+    await waitFor(() => expect(selected()).toEqual(['header']));
+    await waitFor(() => expect([...r.container.querySelectorAll('.b.sel')].map((e) => Number((e as HTMLElement).dataset.o))).toEqual([26, 27, 28, 29]));
+    await waitFor(() => expect(crumbLabels(r.container)).toEqual(['file', 'entries[3]', 'header']));
+    await fireEvent.click(crumb('entries[3]'));
+    await waitFor(() => expect(selected()).toEqual(['entries[3]']));
+    await waitFor(() => expect([...r.container.querySelectorAll('.b.sel')].length).toBe(8));
+    expect(nodeBytes().length).toBeLessThanOrEqual(8);
   });
 });
 

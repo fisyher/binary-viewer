@@ -67,4 +67,17 @@ describe('StructureTree that is not shown', () => {
     expect(scroller.scrollTop).toBe(0);
     expect(container.querySelector('[role="treeitem"][aria-selected="true"]')).toBeNull();
   });
+
+  it('clearSelection() drops a remembered reveal: showing the tree later does not scroll to it', async () => {
+    const root = tree(5000, 80);
+    const { container, component } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {} });
+    await component.reveal([root.id, root.children![60]!.id]); // remembered: the tree has no height
+    component.clearSelection();
+    resizeTo(240);
+    const scroller = container.querySelector('.scroller') as HTMLElement;
+    await waitFor(() => expect(container.querySelector('[role="treeitem"]')).not.toBeNull());
+    await new Promise((r) => setTimeout(r, 30));
+    // jsdom keeps the scrollTop asked for while hidden (a browser clamps it to 0); what must not happen is the centred scroll of the dropped reveal
+    expect(scroller.scrollTop).not.toBe(61 * 24 - 240 / 2);
+  });
 });

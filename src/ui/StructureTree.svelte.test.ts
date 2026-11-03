@@ -452,3 +452,82 @@ describe('reveal and scroll robustness', () => {
   });
 });
 const noLoadT = async () => ({ nodes: [], lazy: null });
+
+describe('reveal of an exact node inside a lazy element, and abandoning a reveal', () => {
+  function lazy() {
+    // entry = header{tag, len} + val; the deepest node at the entry's first byte is `tag`
+    const header = n('header', 6, 4, { children: [n('tag', 6, 2), n('len', 8, 2)] });
+    const entry = n('t[0]', 6, 8, { children: [header, n('val', 10, 4)] });
+    const arr = n('t', 6, 8, { lazy: { start: 6, count: 1, elemType: 'entry', elemSize: 8, loaded: 0, resumeOffset: null } });
+    const root = n('file', 0, 14, { children: [arr] });
+    return { root, arr, entry, header };
+  }
+  const selected = (c: HTMLElement) => rowsOf(c).filter((r) => r.getAttribute('aria-selected') === 'true').map((r) => r.querySelector('.nm')?.textContent);
+
+  it('sub selects the element itself or a child of it; one that does not resolve, or starts elsewhere, falls back to the offset, without throwing', async () => {
+    const { root, arr, entry } = lazy();
+    const loadPage = vi.fn(async () => ({ nodes: [entry], lazy: arr.lazy ?? null }));
+    const onSelect = vi.fn();
+    const { container, component } = render(StructureTree, { root, loadPage, onSelect });
+    const at = [root.id, arr.id];
+    await component.reveal(at, 0, 6, false, []); // offset 6 would give `tag`
+    expect(selected(container)).toEqual(['t[0]']);
+    await component.reveal(at, 0, 6, false, [0]);
+    expect(selected(container)).toEqual(['header']);
+    await component.reveal(at, 0, 8, false, [0, 1]);
+    expect(selected(container)).toEqual(['len']);
+    for (const bad of [[5], [0, 9], [-1], [0.5], [Number.NaN]]) {
+      await component.reveal(at, 0, 6, false, bad); // does not resolve: the deepest node at the offset
+      expect(selected(container)).toEqual(['tag']);
+    }
+    await component.reveal(at, 0, 10, false, [0, 1]); // resolves to `len` (offset 8), not where the caller says: by offset
+    expect(selected(container)).toEqual(['val']);
+    await component.reveal(at, 0, 6); // without sub: the deepest node at the offset
+    expect(selected(container)).toEqual(['tag']);
+  });
+
+  it('a reveal whose isCurrent turns false while its page loads selects nothing', async () => {
+    const { root, arr, entry } = lazy();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const loadPage = vi.fn(async () => {
+      await gate;
+      return { nodes: [entry], lazy: arr.lazy ?? null };
+    });
+    const onSelect = vi.fn();
+    const onPath = vi.fn();
+    const { component } = render(StructureTree, { root, loadPage, onSelect, onPath });
+    let current = true;
+    const p = component.reveal([root.id, arr.id], 0, 6, true, null, () => current);
+    current = false;
+    release();
+    await p;
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onPath).not.toHaveBeenCalled();
+  });
+
+  it('a reveal whose isCurrent turns false while the rows render selects nothing', async () => {
+    const { root } = sample();
+    const onSelect = vi.fn();
+    const { component } = render(StructureTree, { root, loadPage: noLoad, onSelect });
+    let current = true;
+    const p = component.reveal([root.id, root.children![0]!.id], null, null, true, null, () => current);
+    current = false;
+    await p;
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('clearSelection() deselects the row and abandons a reveal in flight', async () => {
+    const { root, hdr } = sample();
+    const { container, component, findByText } = render(StructureTree, { root, loadPage: noLoad, onSelect: () => {} });
+    await findByText('magic');
+    await fireEvent.click(row(container, 'magic'));
+    expect(rowsOf(container).some((r) => r.getAttribute('aria-selected') === 'true')).toBe(true);
+    component.clearSelection();
+    await waitFor(() => expect(rowsOf(container).some((r) => r.getAttribute('aria-selected') === 'true')).toBe(false));
+    const p = component.reveal([root.id, hdr.id]);
+    component.clearSelection();
+    await p;
+    expect(rowsOf(container).some((r) => r.getAttribute('aria-selected') === 'true')).toBe(false);
+  });
+});

@@ -443,10 +443,18 @@
    * Expand every ancestor of the node at the end of `path` (ids from the root, as returned by the worker) and select it.
    * For fixed-size lazy arrays, `lazyIndex` + `offset` identify the element (and the node inside it) to load and reveal.
    */
-  export async function reveal(path: number[], lazyIndex: number | null = null, offset: number | null = null, keepSelection = false): Promise<void> {
+  export async function reveal(
+    path: number[],
+    lazyIndex: number | null = null,
+    offset: number | null = null,
+    keepSelection = false,
+    sub: readonly number[] | null = null,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
     const r = root;
     if (!r) return;
     const gen = ++revealGen;
+    const stale = () => root !== r || gen !== revealGen || !isCurrent();
     const chain = followPath(r, path);
     if (chain.length === 0) return;
     let target = chain[chain.length - 1]!;
@@ -457,19 +465,44 @@
       open.clear();
       const page = Math.floor(lazyIndex / PAGE_SIZE);
       if (!pages.get(target.id)?.has(page)) await load(target, page * PAGE_SIZE);
-      if (root !== r || gen !== revealGen) return;
+      if (stale()) return;
       const elem = pages.get(target.id)?.get(page)?.[lazyIndex - page * PAGE_SIZE];
       if (elem) {
-        const hit = offset !== null ? findNodeAt(elem, offset) : null;
-        const sub = (hit && pathById(elem, hit.id)) || [elem];
-        for (const n of sub.slice(0, -1)) open.add(n.id);
-        target = sub[sub.length - 1]!;
+        let inside: Node[] | null = null;
+        if (sub) {
+          // An exact node: child indexes from the element (empty: the element itself).
+          inside = [elem];
+          for (const i of sub) {
+            const next: Node | undefined = Number.isInteger(i) && i >= 0 ? inside[inside.length - 1]!.children?.[i] : undefined;
+            if (!next) {
+              inside = null;
+              break;
+            }
+            inside.push(next);
+          }
+          // A node inside the element must also start where the caller says (the children may have changed since): else resolve by offset.
+          if (inside && sub.length > 0 && offset !== null && inside[inside.length - 1]!.offset !== offset) inside = null;
+        }
+        if (!inside) {
+          const hit = offset !== null ? findNodeAt(elem, offset) : null;
+          inside = (hit && pathById(elem, hit.id)) || [elem];
+        }
+        for (const n of inside.slice(0, -1)) open.add(n.id);
+        target = inside[inside.length - 1]!;
       }
     }
     expanded = new Set([...expanded, ...open]);
     await tick(); // the new rows are in the DOM, so the scroll height is right when the row is scrolled to
-    if (root !== r || gen !== revealGen) return; // a newer reveal has started: it alone selects and scrolls
+    if (stale()) return; // a newer reveal has started (it alone selects and scrolls), or the caller no longer wants this one
     selectNode(target, true, true, keepSelection);
+  }
+
+  /** Drop the selection (no node is selected any more); any reveal still in flight is abandoned. */
+  export function clearSelection() {
+    revealGen++;
+    pendingReveal = null;
+    selectedKey = null;
+    activeKey = null;
   }
 
   function onScroll() {

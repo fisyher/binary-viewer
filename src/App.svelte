@@ -235,6 +235,7 @@
   let engineToken = 0; // bumped by every viewer open/parse; results from older ones are ignored
   let needsDetect = false; // startEngine was started but its detection result has not been applied yet
   let locateToken = 0;
+  let selectionMoves = 0; // bumped by every selection change that is not a click in progress: a click's locate/reveal that started before it is stale
   // ---- Breadcrumb: the path to the node under the caret, or the one selected in the tree ----
   let crumbs = $state.raw<Crumb[]>([]); // snapshots (lazy loads mutate the tree in place); empty: nothing located yet
   let crumbToken = 0; // bumped by every breadcrumb update and by anything that clears it: a late nodeAt answer is dropped
@@ -873,7 +874,10 @@
     if (opts?.keepSelection) {
       // A hex click found this node: the clicked byte stays the selection (and the caret), the node's bytes are only highlighted.
       const size = source?.size ?? 0;
-      nodeRange = range && range.start < size ? { start: range.start, end: Math.min(range.end, size - 1) } : null;
+      const shown = range && range.start < size ? { start: range.start, end: Math.min(range.end, size - 1) } : null;
+      // Never highlight a node the caret is not in (the caret moved on while the click was being resolved).
+      const caret = selection?.caret;
+      nodeRange = shown && (caret === undefined || (caret >= shown.start && caret <= shown.end)) ? shown : null;
       nodeInspectOffset = null;
       return;
     }
@@ -895,7 +899,7 @@
 
   /** A breadcrumb segment was chosen: select that node in the tree (and so in the hex view). */
   function onCrumb(c: Crumb) {
-    void tree?.reveal(c.reveal.path, c.reveal.lazyIndex, c.reveal.offset);
+    void tree?.reveal(c.reveal.path, c.reveal.lazyIndex, c.reveal.offset, false, c.reveal.sub ?? null);
   }
 
   /** The caret moved by the keyboard: look up its node (the latest lookup wins; a click or a tree selection supersedes it). */
@@ -922,6 +926,7 @@
 
   function armCaretLookup() {
     clearTimeout(caretTimer);
+    selectionMoves++;
     const sel = selection;
     const caret = sel?.caret;
     if (pointerHeld || caret === undefined || sel === appSelection || !root || !client) return;
@@ -956,21 +961,25 @@
   }
 
   // Hex -> tree: only on a plain click, throttled, latest wins.
-  const locate = throttleLatest(async (offset: number) => {
+  const locate = throttleLatest(async (offset: number, moves: number) => {
     const c = client;
     if (!c || !root) return;
     const r = root;
     const t = ++locateToken;
+    const current = () => t === locateToken && moves === selectionMoves && root === r;
     try {
       const loc = await c.nodeAt(offset);
-      if (t !== locateToken || root !== r) return;
+      if (!current()) return;
       if (!loc.path) {
-        nodeRange = null; // a gap in the structure: the node of an earlier click is not this byte's
+        // A gap in the structure: the node of an earlier click is not this byte's.
+        nodeRange = null;
+        clearCrumbs();
+        tree?.clearSelection();
         return;
       }
       crumbToken++;
       crumbs = crumbsFromLocation(r, loc.path, loc.lazyIndex, offset); // the tree's own selection refines it below
-      await tree?.reveal(loc.path, loc.lazyIndex, offset, true); // the clicked byte stays selected
+      await tree?.reveal(loc.path, loc.lazyIndex, offset, true, null, current); // the clicked byte stays selected
     } catch {
       /* superseded or engine gone: nothing to reveal */
     }
@@ -1592,7 +1601,7 @@
                   onByteClick={(offset) => {
                     clearTimeout(caretTimer); // the click's own lookup (below) answers for this caret
                     clickHandled = true;
-                    locate(offset);
+                    locate(offset, selectionMoves); // the selection as of the click (relies on the mousedown selection change being flushed, bumping the counter, before this mouseup): a later move makes the answer stale
                   }}
                   id="hex-grid"
                 />
