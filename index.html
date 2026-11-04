@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Binary Viewer</title>
+    <script>
+      // Apply the remembered theme before first paint (no flash). Reads only localStorage; no network.
+      try {
+        var t = localStorage.getItem('binaryviewer.theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <script type="module" crossorigin src="./assets/index-BtLQ2N6M.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BU_i7onN.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
