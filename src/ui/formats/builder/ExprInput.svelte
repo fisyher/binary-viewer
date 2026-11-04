@@ -75,13 +75,13 @@
     min-width: 6ch;
     width: 100%;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   .bad {
     border-color: var(--error);
   }
   .fb {
     color: var(--error);
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
 </style>

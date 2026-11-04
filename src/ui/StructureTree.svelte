@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import type { Diagnostic, LazyArray, Node } from '../core/engine';
   import { findNodeAt } from '../core/engine/interpret';
+  import { groupIdMap, rowGroups } from '../core/groups';
   import {
+    MAX_TITLE_CHARS,
     PAGE_SIZE,
     defaultExpanded,
     flattenTree,
@@ -25,9 +27,22 @@
     type Pages,
     type Row,
   } from '../core/tree-model';
+  import { TREE_COLUMNS, TREE_COLUMN_DEFAULT, TREE_COLUMN_DEFAULT_NARROW, TREE_COLUMN_MAX, TREE_COLUMN_MIN, type TreeColumn } from './prefs';
+  import Resizer from './shell/Resizer.svelte';
 
-  const ROW_HEIGHT = 22;
+  // 24px: the twisty and the jump buttons are at least 24px tall targets, so a row is too.
+  const ROW_HEIGHT = 24;
   const NAV_KEYS = new Set<string>(['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']);
+  // The data columns, left to right; each header cell ends in a divider. A badge cell (not resizable) follows the last one.
+  const HEAD: { col: TreeColumn; label: string }[] = [
+    { col: 'name', label: 'Name' },
+    { col: 'value', label: 'Value' },
+    { col: 'type', label: 'Type' },
+    { col: 'offset', label: 'Offset' },
+    { col: 'size', label: 'Size' },
+  ];
+  // Default widths (px) of the columns that have no fixed one come from prefs.ts: the wide layout, and the narrow one (no Type column).
+  // The CSS reads them through the --dw-* / --dn-* variables set on .tree.
 
   export interface PageResult {
     nodes: Node[];
@@ -40,8 +55,12 @@
     loadPage,
     loadRef,
     onSelect,
+    onPath = undefined,
     onJump,
     preserveFor = null,
+    widths = {},
+    onColumnWidth = undefined,
+    onResetLayout = undefined,
   }: {
     root: Node | null;
     diagnostics?: Diagnostic[];
@@ -49,12 +68,20 @@
     loadPage: (nodeId: number, start: number, count: number) => Promise<PageResult>;
     /** Open the `ref` of node `nodeId` (from the worker): resolves to the target node(s) to attach under it. */
     loadRef?: (nodeId: number) => Promise<Node[]>;
-    /** `range` is the inclusive byte range of the node, or null for zero-size nodes. */
-    onSelect: (node: Node, range: { start: number; end: number } | null) => void;
+    /** `range` is the inclusive byte range of the node, or null for zero-size nodes. `opts.keepSelection`: the selection came from a hex click, so the bytes the user clicked stay selected (the node range is only highlighted). */
+    onSelect: (node: Node, range: { start: number; end: number } | null, opts?: { keepSelection: boolean }) => void;
+    /** The selected node's chain from the root (root first), reported with every selection: the breadcrumb bar's path. */
+    onPath?: (chain: Node[]) => void;
     /** A node's `link` button was used: select `size` bytes at `offset` in the hex view (size 0 = just show the position). Without it no link buttons are shown. */
     onJump?: (offset: number, size: number) => void;
     /** When `root` is this exact tree (a re-parse of edited bytes), keep expansion and selection where node paths still match. */
     preserveFor?: Node | null;
+    /** Widths (px) the user gave the columns; missing or null = the default width (Name and Value then share what is left). */
+    widths?: Partial<Record<TreeColumn, number | null>>;
+    /** A header divider was dragged or used from the keyboard (px), or double-clicked (null = back to the default). Without it the dividers are not shown. */
+    onColumnWidth?: (column: TreeColumn, px: number | null) => void;
+    /** The dividers' context menu item "Reset layout" (see Resizer). */
+    onResetLayout?: () => void;
   } = $props();
 
   let expanded = $state.raw<ReadonlySet<number>>(new Set());
@@ -67,6 +94,16 @@
   let viewportHeight = $state(0);
   let loadError = $state<string | null>(null);
   let scroller: HTMLDivElement | undefined = $state();
+  // The header cells' current widths: where a divider starts from while its column still has its default width.
+  let cells = $state<Record<TreeColumn, number>>({ name: 0, value: 0, type: 0, offset: 0, size: 0 });
+  // Fixed (dragged) columns make the row as wide as the sum of its columns; the scroller then scrolls sideways if that is more than fits.
+  // Anything wider than the columns is plain filler to the right of the last one.
+  const minWide = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (widths[c] ?? TREE_COLUMN_DEFAULT[c]), 0) + 22 + 5 * 6);
+  const minNarrow = $derived(TREE_COLUMNS.reduce((sum, c) => sum + (c === 'type' ? 0 : (widths[c] ?? TREE_COLUMN_DEFAULT_NARROW[c] ?? 0)), 0) + 20 + 4 * 4);
+  const cssPx = (c: TreeColumn) => (widths[c] != null ? `${widths[c]}px` : undefined);
+  // A reveal that happened while the tree was not shown (collapsed side bar): scrolled to once it has a height.
+  let pendingReveal: string | null = null;
+  let revealGen = 0; // bumped by every reveal(): an older one stops after each await once a newer one has started
   const uid = $props.id(); // row ids are unique per tree instance (the viewer and the Formats preview may both be mounted)
   const rowId = (key: string) => `${uid}-${key.replaceAll(':', '-')}`;
   // The row of the latest first click on a row: a double-click acts on it, wherever the rows have moved to. Cleared by any
@@ -84,6 +121,7 @@
     const keep = r !== null && preserveFor === r;
     const old = prevRoot;
     prevRoot = r;
+    pendingReveal = null; // node ids are reused by the next parse: a row remembered for the old tree must not be scrolled to in the new one
     clickedKey = null;
     if (keep && old) {
       untrack(() => {
@@ -124,6 +162,11 @@
     void version;
     return root ? flattenTree(root, { expanded, pages, loading }) : [];
   });
+  // Colour groups, as the hex view and the minimap colour them: group nodes get a swatch, what is inside them a rule.
+  const marks = $derived.by(() => {
+    void version;
+    return root ? rowGroups(rows.map((r) => ({ depth: r.depth, id: r.kind === 'node' ? r.node.id : null })), groupIdMap(root)) : [];
+  });
   const win = $derived(virtualWindow(rows.length, scrollTop, viewportHeight, ROW_HEIGHT));
   const visible = $derived(rows.slice(win.start, win.end));
   // Only an active row that is rendered can be named; when it has scrolled out of the window the attribute is omitted.
@@ -142,7 +185,18 @@
   function setScroll(top: number) {
     const t = Math.max(0, top);
     scrollTop = t;
-    if (scroller) scroller.scrollTop = t;
+    if (!scroller) return;
+    scroller.scrollTop = t;
+    const kept = scroller.scrollTop;
+    scrollTop = kept; // what the browser kept: it clamps to the height it has now, and a clamp that changes nothing fires no scroll event
+    // Rows added in this same tick (a reveal expands ancestors) are not in the DOM yet, so the scroll height is still the old one:
+    // do it again once they are, and take the window from the real position. Not if the position moved meanwhile (the user
+    // scrolled, or a newer scroll took over).
+    void tick().then(() => {
+      if (!scroller || scroller.scrollTop !== kept) return;
+      scroller.scrollTop = t;
+      scrollTop = scroller.scrollTop;
+    });
   }
 
   function scrollToIndex(i: number, center: boolean) {
@@ -152,13 +206,37 @@
   }
 
   /** `scroll` false for pointer selection: the clicked row is already (partly) visible and moving it would break a double-click. */
-  function selectNode(node: Node, center = false, scroll = true) {
+  function selectNode(node: Node, center = false, scroll = true, keepSelection = false) {
     const key = nodeKey(node.id);
     selectedKey = key;
     activeKey = key;
     const i = scroll ? rows.findIndex((r) => r.key === key) : -1;
-    if (i >= 0) scrollToIndex(i, center);
-    onSelect(node, nodeByteRange(node));
+    if (i >= 0) {
+      if (viewportHeight <= 0) pendingReveal = center ? key : null; // not shown (hidden side bar): nothing to scroll yet
+      scrollToIndex(i, center);
+    }
+    if (keepSelection) onSelect(node, nodeByteRange(node), { keepSelection: true });
+    else onSelect(node, nodeByteRange(node));
+    onPath?.(chainTo(node));
+  }
+
+  /** The nodes from the root to `node`: through the visible rows (which include the unattached elements of fixed-size lazy arrays), else through the tree. */
+  function chainTo(node: Node): Node[] {
+    const at = new Map(rows.map((r, i) => [r.key, i] as const));
+    const chain: Node[] = [];
+    let i = at.get(nodeKey(node.id));
+    for (let guard = 0; i !== undefined && guard < 10_000; guard++) {
+      const r = rows[i]!;
+      if (r.kind === 'node') chain.push(r.node);
+      i = r.parentKey === null ? undefined : at.get(r.parentKey);
+    }
+    if (chain.length > 0) return chain.reverse();
+    return (root && pathById(root, node.id)) || [node];
+  }
+
+  /** Move keyboard focus to the tree. */
+  export function focus() {
+    scroller?.focus();
   }
 
   async function load(array: Node, start: number): Promise<void> {
@@ -364,9 +442,18 @@
    * Expand every ancestor of the node at the end of `path` (ids from the root, as returned by the worker) and select it.
    * For fixed-size lazy arrays, `lazyIndex` + `offset` identify the element (and the node inside it) to load and reveal.
    */
-  export async function reveal(path: number[], lazyIndex: number | null = null, offset: number | null = null): Promise<void> {
+  export async function reveal(
+    path: number[],
+    lazyIndex: number | null = null,
+    offset: number | null = null,
+    keepSelection = false,
+    sub: readonly number[] | null = null,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
     const r = root;
     if (!r) return;
+    const gen = ++revealGen;
+    const stale = () => root !== r || gen !== revealGen || !isCurrent();
     const chain = followPath(r, path);
     if (chain.length === 0) return;
     let target = chain[chain.length - 1]!;
@@ -377,27 +464,112 @@
       open.clear();
       const page = Math.floor(lazyIndex / PAGE_SIZE);
       if (!pages.get(target.id)?.has(page)) await load(target, page * PAGE_SIZE);
-      if (root !== r) return;
+      if (stale()) return;
       const elem = pages.get(target.id)?.get(page)?.[lazyIndex - page * PAGE_SIZE];
       if (elem) {
-        const hit = offset !== null ? findNodeAt(elem, offset) : null;
-        const sub = (hit && pathById(elem, hit.id)) || [elem];
-        for (const n of sub.slice(0, -1)) open.add(n.id);
-        target = sub[sub.length - 1]!;
+        let inside: Node[] | null = null;
+        if (sub) {
+          // An exact node: child indexes from the element (empty: the element itself).
+          inside = [elem];
+          for (const i of sub) {
+            const next: Node | undefined = Number.isInteger(i) && i >= 0 ? inside[inside.length - 1]!.children?.[i] : undefined;
+            if (!next) {
+              inside = null;
+              break;
+            }
+            inside.push(next);
+          }
+          // A node inside the element must also start where the caller says (the children may have changed since): else resolve by offset.
+          if (inside && sub.length > 0 && offset !== null && inside[inside.length - 1]!.offset !== offset) inside = null;
+        }
+        if (!inside) {
+          const hit = offset !== null ? findNodeAt(elem, offset) : null;
+          inside = (hit && pathById(elem, hit.id)) || [elem];
+        }
+        for (const n of inside.slice(0, -1)) open.add(n.id);
+        target = inside[inside.length - 1]!;
       }
     }
     expanded = new Set([...expanded, ...open]);
-    selectNode(target, true);
+    await tick(); // the new rows are in the DOM, so the scroll height is right when the row is scrolled to
+    if (stale()) return; // a newer reveal has started (it alone selects and scrolls), or the caller no longer wants this one
+    selectNode(target, true, true, keepSelection);
+  }
+
+  /** Drop the selection (no node is selected any more); any reveal still in flight is abandoned. */
+  export function clearSelection() {
+    revealGen++;
+    pendingReveal = null;
+    selectedKey = null;
+    activeKey = null;
   }
 
   function onScroll() {
     if (scroller) scrollTop = scroller.scrollTop;
   }
+
+  // The window comes from the real scroll position whenever the row count changes (an expand or a page load) or the tree gets a
+  // height (it was hidden): the position the browser kept may differ from the one asked for, without any scroll event.
+  $effect(() => {
+    void rows.length;
+    untrack(() => {
+      if (scroller) scrollTop = scroller.scrollTop;
+    });
+  });
+  $effect(() => {
+    const h = viewportHeight;
+    untrack(() => {
+      if (!scroller || h <= 0) return;
+      const key = pendingReveal;
+      pendingReveal = null;
+      const i = key === null ? -1 : rows.findIndex((r) => r.key === key);
+      if (i >= 0) setScroll(i * ROW_HEIGHT - h / 2);
+      else scrollTop = scroller.scrollTop;
+    });
+  });
 </script>
 
-<div class="tree">
-  <div class="head" aria-hidden="true">
-    <span>Name</span><span>Value</span><span>Type</span><span>Offset</span><span class="num">Size</span><span></span>
+<div
+  class="tree"
+  style:--c-name={cssPx('name')}
+  style:--c-value={cssPx('value')}
+  style:--c-type={cssPx('type')}
+  style:--c-offset={cssPx('offset')}
+  style:--c-size={cssPx('size')}
+  style:--min-wide="{minWide}px"
+  style:--min-narrow="{minNarrow}px"
+  style:--dw-name="{TREE_COLUMN_DEFAULT.name}px"
+  style:--dw-value="{TREE_COLUMN_DEFAULT.value}px"
+  style:--dw-type="{TREE_COLUMN_DEFAULT.type}px"
+  style:--dw-offset="{TREE_COLUMN_DEFAULT.offset}px"
+  style:--dw-size="{TREE_COLUMN_DEFAULT.size}px"
+  style:--dn-name="{TREE_COLUMN_DEFAULT_NARROW.name}px"
+  style:--dn-value="{TREE_COLUMN_DEFAULT_NARROW.value}px"
+  style:--dn-offset="{TREE_COLUMN_DEFAULT_NARROW.offset}px"
+  style:--dn-size="{TREE_COLUMN_DEFAULT_NARROW.size}px"
+>
+  <!-- The column titles are decoration for sighted users (the rows say what each value is); the dividers are real, focusable separators. -->
+  <div class="head">
+    {#each HEAD as h (h.col)}
+      <span class="h-{h.col}" class:num={h.col === 'size'} bind:clientWidth={cells[h.col]}>
+        <span aria-hidden="true">{h.label}</span>
+        {#if onColumnWidth}
+          <span class="grip">
+            <Resizer
+              orientation="vertical"
+              label="Resize {h.label} column"
+              value={widths[h.col] ?? cells[h.col]}
+              min={TREE_COLUMN_MIN[h.col]}
+              max={TREE_COLUMN_MAX}
+              onResize={(px) => onColumnWidth(h.col, px)}
+              onReset={() => onColumnWidth(h.col, null)}
+              {onResetLayout}
+            />
+          </span>
+        {/if}
+      </span>
+    {/each}
+    <span></span>
   </div>
   <div
     class="scroller"
@@ -415,10 +587,13 @@
     {:else}
       <div class="spacer" style:height="{rows.length * ROW_HEIGHT}px">
         <div class="window" style:transform="translateY({win.start * ROW_HEIGHT}px)">
-          {#each visible as row (row.key)}
+          {#each visible as row, vi (row.key)}
+            {@const mark = marks[win.start + vi]}
             {#if row.kind === 'node'}
               {@const node = row.node}
               {@const problems = problemMessages(node)}
+              {@const shownValue = formatNodeValue(node)}
+              {@const fullValue = formatNodeValue(node, MAX_TITLE_CHARS)}
               <div
                 class="row"
                 class:selected={row.key === selectedKey}
@@ -429,13 +604,15 @@
                 aria-level={row.depth + 1}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={row.key === selectedKey}
+                {...(fullValue !== shownValue ? { 'aria-description': fullValue } : {})}
                 id={rowId(row.key)}
                 data-key={row.key}
                 onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
                 ondblclick={(e) => onRowDblClick(row, e)}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   <span
                     class="twisty"
                     role="presentation"
@@ -449,6 +626,7 @@
                       if (row.expandable) setExpanded(node, !row.expanded);
                     }}>{row.expandable ? (row.expanded ? '▾' : '▸') : ''}</span
                   >
+                  {#if mark?.kind === 'self'}<span class="swatch" data-group={mark.group} aria-hidden="true"></span>{/if}
                   <span class="nm" title={sanitizeText(node.name, 500)}>{sanitizeText(node.name)}</span>
                   {#if node.ref}<span class="refmark" title="Points to {sanitizeText(node.ref.typeName, 64)} at {hex(node.ref.offset)}" aria-hidden="true">↗</span>{/if}
                   {#each node.ref?.jumps ?? [] as jump, ji (ji)}
@@ -469,8 +647,8 @@
                     >
                   {/each}
                 </span>
-                <span class="val" title={formatNodeValue(node)}>
-                  <span class="vt">{formatNodeValue(node)}</span>
+                <span class="val" title={fullValue}>
+                  <span class="vt">{shownValue}</span>
                   {#if node.link && onJump}
                     <button
                       type="button"
@@ -489,9 +667,9 @@
                     >
                   {/if}
                 </span>
-                <span class="type">{sanitizeText(node.typeName, 60)}</span>
-                <span class="off">{hex(node.offset)}</span>
-                <span class="num">{node.size}</span>
+                <span class="type" title={sanitizeText(node.typeName, 500)}>{sanitizeText(node.typeName, 60)}</span>
+                <span class="off" title={hex(node.offset)}>{hex(node.offset)}</span>
+                <span class="num" title={String(node.size)}>{node.size}</span>
                 <span class="badge-cell">
                   {#if problems.length > 0}
                     {@const sev = node.error ? 'error' : (severity.get(node.id) ?? 'warning')}
@@ -514,7 +692,8 @@
                 onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14 + 24}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   {row.loading || !row.node.ref ? 'Opening…' : `▸ open ${sanitizeText(row.node.ref.typeName, 64)} @ ${hex(row.node.ref.offset)}`}
                 </span>
               </div>
@@ -532,7 +711,8 @@
                 onclick={(e) => onRowClick(row, e)}
                 onkeydown={() => {}}
               >
-                <span class="name" style:padding-left="{row.depth * 14 + 4}px">
+                <span class="name" style:padding-left="{row.depth * 14 + 24}px">
+                  {#if mark?.kind === 'inside'}<span class="grp-rule" data-group={mark.group} aria-hidden="true" style:left="{row.depth * 14}px"></span>{/if}
                   {row.loading ? 'Loading…' : `Load more…${row.remaining !== null ? ` (${row.remaining} items)` : ''}`}
                 </span>
               </div>
@@ -551,25 +731,58 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
+    container: tree / inline-size;
   }
   .head,
   .row {
     display: grid;
-    grid-template-columns: minmax(150px, 1.5fr) minmax(90px, 1fr) 70px 80px 50px 22px;
+    /* The fallbacks use the default widths from prefs.ts (--dw-*, set on .tree). */
+    grid-template-columns: var(--c-name, minmax(var(--dw-name), 1.5fr)) var(--c-value, minmax(var(--dw-value), 1fr)) var(--c-type, var(--dw-type)) var(--c-offset, var(--dw-offset)) var(--c-size, var(--dw-size)) 22px;
     align-items: center;
-    min-width: 470px;
+    min-width: var(--min-wide);
     box-sizing: border-box;
   }
+  /* In a narrow side bar the Type column gives way, so the default width needs no horizontal scrolling. */
+  @container tree (max-width: 469px) {
+    .tree .head,
+    .tree .row {
+      grid-template-columns: var(--c-name, minmax(var(--dn-name), 2fr)) var(--c-value, minmax(var(--dn-value), 1fr)) var(--c-offset, var(--dn-offset)) var(--c-size, var(--dn-size)) 20px;
+      gap: 4px;
+      min-width: var(--min-narrow);
+    }
+    .head > :nth-child(3),
+    .row > :nth-child(3) {
+      display: none;
+    }
+    .scroller .spacer {
+      min-width: var(--min-narrow);
+    }
+    .tree .grip {
+      right: -3px;
+    }
+  }
   .head {
-    color: var(--muted);
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
+    color: var(--ink-quiet);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--rule);
     padding: 3px 0;
     gap: 6px;
   }
   .head > span:first-child {
-    padding-left: 22px;
+    padding-left: 26px;
+  }
+  .head > span {
+    position: relative;
+    white-space: nowrap;
+  }
+  /* A divider sits in the gap to the right of its column title; its 17px hit area is the Resizer's own. */
+  .grip {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    right: -4px;
+    display: flex;
   }
   .scroller {
     flex: 1;
@@ -578,12 +791,18 @@
     outline: none;
     user-select: none;
   }
+  /* Quiet frame on the container; the keyboard cue is the active row. */
   .scroller:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--accent);
+    outline: 1px solid color-mix(in srgb, var(--signal) 55%, transparent);
+    outline-offset: -1px;
+  }
+  .scroller:focus-visible .row.active {
+    outline: 2px solid var(--signal);
+    outline-offset: -2px;
   }
   .spacer {
     position: relative;
-    min-width: 470px;
+    min-width: var(--min-wide);
   }
   .window {
     position: absolute;
@@ -597,10 +816,10 @@
     white-space: nowrap;
   }
   .row:hover {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    background: var(--hover);
   }
   .row.active {
-    outline: 1px dotted var(--muted);
+    outline: 1px dotted var(--ink-quiet);
     outline-offset: -1px;
   }
   .row.selected {
@@ -612,18 +831,52 @@
     text-overflow: ellipsis;
   }
   .name {
+    position: relative;
     display: flex;
     align-items: center;
+  }
+  /* Colour groups (the same colours as the hex view and the minimap): a swatch on a group node, a rule inside it. */
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+  }
+  .grp-rule {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+  }
+  .swatch[data-group='0'],
+  .grp-rule[data-group='0'] {
+    background: var(--struct-1);
+  }
+  .swatch[data-group='1'],
+  .grp-rule[data-group='1'] {
+    background: var(--struct-2);
+  }
+  .swatch[data-group='2'],
+  .grp-rule[data-group='2'] {
+    background: var(--struct-3);
+  }
+  .swatch[data-group='3'],
+  .grp-rule[data-group='3'] {
+    background: var(--struct-4);
   }
   .nm {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* A 24 x 24 target (the whole row height); the glyph keeps its size. */
   .twisty {
     flex: none;
-    width: 14px;
-    text-align: center;
-    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    color: var(--ink-quiet);
     cursor: pointer;
   }
   .val,
@@ -641,55 +894,77 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The button is 24px tall (a full row); only a 17px pill is drawn, by ::before, so it looks as before. */
   .jump {
+    position: relative;
+    isolation: isolate;
     flex: none;
     margin-left: 6px;
     padding: 0 5px;
-    height: 17px;
-    line-height: 15px;
+    height: 24px;
+    min-width: 24px;
+    line-height: 24px;
     font-size: 11px;
     font-family: inherit;
-    color: var(--accent);
+    color: var(--ink);
     background: transparent;
-    border: 1px solid var(--accent);
-    border-radius: 3px;
+    border: none;
+    border-radius: 0;
     cursor: pointer;
+  }
+  .jump::before {
+    content: '';
+    position: absolute;
+    inset: 3px 0;
+    z-index: -1;
+    border: 1px solid var(--ink-quiet);
+    border-radius: var(--radius);
   }
   .val .jump {
     margin-left: 0;
   }
-  .jump:hover,
+  .jump:hover:not(:disabled) {
+    background: transparent;
+  }
+  .jump:hover::before {
+    background: var(--hover);
+  }
   .jump:focus-visible {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
     outline: none;
+  }
+  .jump:focus-visible::before {
+    outline: 2px solid var(--signal);
+    outline-offset: 1px;
   }
   .row.selected .jump {
     color: var(--sel-fg);
+  }
+  .row.selected .jump::before {
     border-color: var(--sel-fg);
   }
   .type {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .off {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .num {
     text-align: right;
     padding-right: 4px;
   }
   .more {
-    color: var(--accent);
+    color: var(--ink-quiet);
+    text-decoration: underline;
     cursor: pointer;
   }
   .refmark {
     flex: none;
     margin-left: 4px;
-    color: var(--accent);
+    color: var(--ink-quiet);
   }
   .empty {
-    color: var(--muted);
-    text-align: center;
-    margin: 16px;
+    color: var(--ink-quiet);
+    margin: 16px 12px;
   }
   .badge {
     display: inline-block;
@@ -700,17 +975,17 @@
     border-radius: 50%;
     font-weight: 700;
     font-size: 11px;
-    color: #fff;
+    color: var(--ground);
   }
   .badge.error {
     background: var(--error);
   }
   .badge.warning {
-    background: #d97706;
+    background: var(--warn);
   }
   .err {
     color: var(--error);
     padding: 4px 8px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--rule);
   }
 </style>

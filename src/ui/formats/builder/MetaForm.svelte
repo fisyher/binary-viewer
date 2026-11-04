@@ -96,7 +96,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   label {
     display: flex;
@@ -115,8 +115,8 @@
     gap: 2px;
   }
   .chip {
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
     padding: 0 6px;
   }
   .chip button {
@@ -131,7 +131,7 @@
     color: var(--error);
   }
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   textarea {
     font: inherit;

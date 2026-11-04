@@ -172,34 +172,34 @@
   .note,
   .muted,
   .empty {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .note {
-    font-size: 12px;
-    border-left: 3px solid var(--border);
+    font-size: var(--fs-sm);
+    border-left: 3px solid var(--rule);
     padding-left: 8px;
   }
   .prose {
     white-space: pre-wrap;
   }
   section:focus {
-    outline: 1px dashed var(--accent);
+    outline: 2px solid var(--signal);
   }
   table {
     border-collapse: collapse;
     width: 100%;
     margin-bottom: 12px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   th,
   td {
-    border: 1px solid var(--border);
+    border: 1px solid var(--rule);
     padding: 3px 6px;
     text-align: left;
     vertical-align: top;
   }
   th {
-    background: var(--panel);
+    background: var(--chrome);
   }
   code {
     font-family: var(--mono);
@@ -208,7 +208,7 @@
     padding: 0;
     border: none;
     background: none;
-    color: var(--accent);
+    color: var(--ink);
     font-family: var(--mono);
     font-size: inherit;
     text-decoration: underline;

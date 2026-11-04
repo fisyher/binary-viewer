@@ -11,6 +11,7 @@
     onSave,
     onDuplicate,
     onDirtyChange = () => {},
+    initialResult = null,
     text: textProp,
     onText,
     onResult,
@@ -19,6 +20,8 @@
     onSave: (text: string) => Promise<SaveResult>;
     onDuplicate: () => void;
     onDirtyChange?: (dirty: boolean) => void;
+    /** The save outcome to show when the editor is mounted again (switching back to its tab). */
+    initialResult?: { ok: boolean; text: string } | null;
     /** Controlled draft text (owned by the parent, shared with the builder). Omit to let the editor own it. */
     text?: string;
     onText?: (text: string) => void;
@@ -39,7 +42,7 @@
   let base = $state(untrack(() => entry.text)); // the library's text as last seen
   let check = $state.raw<TextCheck>(untrack(() => checkSpecText(entry.text)));
   let saving = $state(false);
-  let result = $state<{ ok: boolean; text: string } | null>(null);
+  let result = $state<{ ok: boolean; text: string } | null>(untrack(() => initialResult));
   let area: HTMLTextAreaElement | undefined = $state();
   let gutter: HTMLPreElement | undefined = $state();
 
@@ -154,7 +157,7 @@
       <span class="note">Built-in format (read-only)</span>
       <button type="button" onclick={onDuplicate}>Duplicate to edit</button>
     {:else}
-      <button type="button" onclick={() => void save()} disabled={check.syntax !== null || saving || !dirty}>Save</button>
+      <button type="button" onclick={() => void save()} disabled={check.syntax !== null || saving || !dirty}>Save spec</button>
       <button type="button" onclick={revert} disabled={!dirty}>Revert</button>
       {#if dirty}<span class="dirty" title="Unsaved changes" role="status">● Unsaved changes</span>{/if}
     {/if}
@@ -219,21 +222,21 @@
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+    background: var(--chrome);
   }
   .spacer {
     flex: 1;
   }
   .note,
   .muted {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .dirty {
     color: var(--edited);
   }
   .good {
-    color: #16a34a;
+    color: var(--ok);
   }
   .bad,
   .err {
@@ -241,9 +244,9 @@
   }
   .result {
     padding: 2px 8px;
-    font-size: 12px;
-    color: var(--muted);
-    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-sm);
+    color: var(--ink-quiet);
+    border-bottom: 1px solid var(--rule);
   }
   .result.fail {
     color: var(--error);
@@ -252,14 +255,14 @@
     flex: 1;
     min-height: 0;
     display: flex;
-    background: var(--bg);
+    background: var(--ground);
   }
   .gutter,
   textarea {
     margin: 0;
     padding: 6px 8px;
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: var(--fs-base);
     line-height: 1.45;
     tab-size: 2;
   }
@@ -268,9 +271,9 @@
     min-width: 4ch;
     padding-bottom: 24px; /* room for the textarea's horizontal scrollbar so the last lines stay aligned */
     text-align: right;
-    color: var(--muted);
-    background: var(--panel);
-    border-right: 1px solid var(--border);
+    color: var(--ink-quiet);
+    background: var(--chrome);
+    border-right: 1px solid var(--rule);
     overflow: hidden;
     user-select: none;
   }
@@ -279,22 +282,25 @@
     min-width: 0;
     resize: none;
     border: none;
-    outline: none;
-    color: var(--fg);
-    background: var(--bg);
+    color: var(--ink);
+    background: var(--ground);
     white-space: pre;
     overflow: auto;
   }
+  textarea:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: -2px;
+  }
   textarea:read-only {
-    background: var(--panel);
+    background: var(--chrome);
   }
   .problems {
     flex: none;
     max-height: 30%;
     overflow: auto;
-    border-top: 1px solid var(--border);
-    background: var(--bg);
-    font-size: 12px;
+    border-top: 1px solid var(--rule);
+    background: var(--ground);
+    font-size: var(--fs-sm);
     padding: 4px 8px;
   }
   .problems ul {
@@ -309,7 +315,7 @@
     padding: 0;
     border: none;
     background: none;
-    color: var(--accent);
+    color: var(--ink);
     text-decoration: underline;
     cursor: pointer;
     font: inherit;

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { builtins, specText } from '../../../test/spec-fixtures';
 import { SpecLibrary } from '../../../core/spec-library';
 import { createMemoryStore } from '../../../core/spec-store';
-import FormatLibrary from '../FormatLibrary.svelte';
+import FormatLibrary from '../../../test/FormatsHarness.svelte';
 
 afterEach(cleanup);
 
@@ -100,6 +100,23 @@ describe('Builder: editing', () => {
     expect(spec().types.root.fields).toHaveLength(2);
     await fireEvent.keyDown(getByRole('button', { name: 'Undo' }), { key: 'y', ctrlKey: true });
     expect(spec().types.root.fields).toHaveLength(1);
+  });
+
+  it('Ctrl+S in the Builder saves the spec like the Save spec button, and keeps the browser dialog away', async () => {
+    const { getByLabelText, getByRole, lib } = await open([['two', two]], 'two');
+    const saved = () => JSON.parse(lib.snapshot().entries.find((e) => e.id === 'two')!.text).types.root.fields.length;
+    await fireEvent.click(getByLabelText('Delete field 1'));
+    expect(saved()).toBe(2); // only a draft so far
+    expect(await fireEvent.keyDown(getByRole('button', { name: 'Undo' }), { key: 's', ctrlKey: true })).toBe(false);
+    await waitFor(() => expect(saved()).toBe(1));
+  });
+
+  it('Ctrl+S also works while a text input in the Builder has focus', async () => {
+    const { getByLabelText, lib } = await open([['two', two]], 'two');
+    const saved = () => JSON.parse(lib.snapshot().entries.find((e) => e.id === 'two')!.text).types.root.fields.length;
+    await fireEvent.click(getByLabelText('Delete field 1'));
+    expect(await fireEvent.keyDown(getByLabelText('Name of field 1'), { key: 's', ctrlKey: true })).toBe(false);
+    await waitFor(() => expect(saved()).toBe(1));
   });
 
   it('edits meta: endian, extension chips, detect rules', async () => {

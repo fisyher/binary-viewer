@@ -24,7 +24,7 @@ function mount(entry: SpecEntry, extra: { onSave?: (t: string) => Promise<SaveRe
   const r = render(SpecJsonEditor, { entry, onSave, onDuplicate, onDirtyChange: extra.onDirtyChange });
   const area = r.getByLabelText('Spec JSON') as HTMLTextAreaElement;
   const type = (v: string) => fireEvent.input(area, { target: { value: v } });
-  const saveBtn = () => r.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+  const saveBtn = () => r.getByRole('button', { name: 'Save spec' }) as HTMLButtonElement;
   return { ...r, area, type, saveBtn, onSave, onDuplicate };
 }
 
@@ -117,7 +117,7 @@ describe('SpecJsonEditor', () => {
     const { area, getByRole, queryByRole, getByText, onDuplicate } = mount(lib.get('bmp')!);
     expect(area.readOnly).toBe(true);
     expect(getByText('Built-in format (read-only)')).toBeTruthy();
-    expect(queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(queryByRole('button', { name: 'Save spec' })).toBeNull();
     await fireEvent.click(getByRole('button', { name: 'Duplicate to edit' }));
     expect(onDuplicate).toHaveBeenCalledOnce();
   });

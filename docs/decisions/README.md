@@ -16,3 +16,5 @@ Format: `NNNN-short-title.md` with the sections Status, Date, Context, Decision,
 | [0008](0008-spec-storage-indexeddb-and-folder-sync.md) | Specs in IndexedDB, optional folder sync, verify mode after timeouts | 2026-10-30 |
 | [0009](0009-no-network-requests.md) | No network requests at runtime | 2026-10-31 |
 | [0010](0010-deferred-refs-and-navigation-links.md) | Deferred refs and navigation links | 2026-10-31 |
+| [0011](0011-ide-shell-and-editor-tabs.md) | IDE-style shell, editor tabs, light and dark themes, bundled fonts | 2026-11-02 |
+| [0012](0012-preview-engine-worker.md) | Several spec tabs; spec previews on their own engine worker | 2026-11-02 |

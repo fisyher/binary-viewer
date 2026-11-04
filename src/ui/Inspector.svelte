@@ -2,18 +2,28 @@
   import type { ByteSource } from '../core/byte-source';
   import { formatOffset, offsetWidth } from '../core/hex-format';
   import { decodeInspector, INSPECTOR_WINDOW, type InspectorRow } from '../core/inspector';
+  import { paletteKeyName } from './shell/platform';
 
   let {
     source,
     offset,
     version = 0,
     littleEndian = $bindable(true),
+    onCollapse,
+    hasFile = true,
+    empty = false,
   }: {
     source: ByteSource | null;
     offset: number | null;
     /** Bump when the source's bytes changed in place (an EditBuffer edit) to re-read them. */
     version?: number;
     littleEndian?: boolean;
+    /** Hide the panel (it can be shown again from the rail). */
+    onCollapse?: () => void;
+    /** A document is open (the empty state then explains how to pick a byte; else it says to open a file). */
+    hasFile?: boolean;
+    /** The open file has no bytes at all (there is nothing to click). */
+    empty?: boolean;
   } = $props();
 
   // Bytes tagged with the source/offset they were read for, so stale data can be dimmed.
@@ -64,19 +74,27 @@
 
 <aside class="inspector" aria-label="Data inspector">
   <header>
-    <h2>Data Inspector{#if at} <span class="at">{at}</span>{/if}</h2>
-    <button
-      type="button"
-      class="endian"
-      onclick={() => (littleEndian = !littleEndian)}
-      title="Toggle byte order"
-      aria-label="Byte order: {littleEndian ? 'little-endian' : 'big-endian'}"
-    >{littleEndian ? 'LE' : 'BE'}</button>
+    <h2>Data inspector{#if at} <span class="at">{at}</span>{/if}</h2>
+    <div class="tools">
+      <button
+        type="button"
+        class="endian"
+        onclick={() => (littleEndian = !littleEndian)}
+        title="Toggle byte order"
+        aria-label="Byte order: {littleEndian ? 'little-endian' : 'big-endian'}"
+      >{littleEndian ? 'LE' : 'BE'}</button>
+      {#if onCollapse}
+        <button type="button" class="collapse" onclick={onCollapse} title="Hide data inspector" aria-label="Hide data inspector">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
+      {/if}
+    </div>
   </header>
   {#if error}
     <p class="msg error" role="alert">{error}</p>
   {:else if !bytes}
-    <p class="msg">Select a byte to inspect.</p>
+    <!-- There is no Go to shortcut of its own: Go to offset is a palette command (and the status bar's selection button). -->
+    <p class="msg">{!hasFile ? 'Open a file to inspect its bytes.' : empty ? 'The file is empty.' : `Click a byte, or press ${paletteKeyName()} and choose Go to offset.`}</p>
   {:else}
     <div class="body" class:stale aria-busy={stale}>
       {#each groups as g (g.name)}
@@ -97,47 +115,78 @@
 </aside>
 
 <style>
-  .inspector {
-    width: 360px;
-    flex: none;
+.inspector {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--panel);
-    border-left: 1px solid var(--border);
+    min-width: 0;
+    background: var(--chrome);
   }
   header {
+    flex: none;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--border);
+    gap: 8px;
+    height: 34px;
+    padding: 0 6px 0 12px;
+    box-sizing: border-box;
+    border-bottom: 1px solid var(--rule);
   }
   h2 {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--fs-base);
     font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
   }
   .endian {
-    min-width: 4ch;
+    min-width: max(4ch, 24px);
+    min-height: 24px;
     font-family: var(--mono);
-    padding: 2px 8px;
+    font-size: var(--fs-xs);
+    padding: 1px 6px;
+  }
+  .collapse {
+    border-color: transparent;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 4px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-quiet);
   }
   .at {
     font-family: var(--mono);
-    font-weight: normal;
-    color: var(--muted);
+    font-weight: 400;
+    font-size: var(--fs-sm);
+    color: var(--ink-quiet);
+    margin-left: 6px;
   }
   .body.stale {
     opacity: 0.4;
   }
   .body {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     padding: 4px 0 8px;
   }
   .msg {
     margin: 12px;
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .msg.error {
     color: var(--error);
@@ -145,20 +194,19 @@
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   caption {
     text-align: left;
-    padding: 8px 12px 2px;
-    color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    padding: 10px 12px 2px;
+    color: var(--ink-quiet);
+    font-size: var(--fs-sm);
+    font-weight: 600;
   }
   th {
     text-align: left;
-    font-weight: normal;
-    color: var(--muted);
+    font-weight: 400;
+    color: var(--ink-quiet);
     padding: 1px 8px 1px 12px;
     white-space: nowrap;
     vertical-align: top;
@@ -166,11 +214,11 @@
   }
   td {
     font-family: var(--mono);
+    font-size: var(--fs-sm);
     padding: 1px 12px 1px 0;
     word-break: break-all;
   }
   td.na {
-    color: var(--muted);
-    opacity: 0.6;
+    color: var(--ink-faint);
   }
 </style>

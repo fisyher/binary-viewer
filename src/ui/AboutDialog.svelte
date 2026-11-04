@@ -29,7 +29,7 @@
 <div class="backdrop">
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <h2 id="about-title">Binary Viewer</h2>
-    <p class="meta">Version {APP_VERSION} · build {BUILD_COMMIT} · {BUILD_DATE}</p>
+    <p class="meta"><span>Version {APP_VERSION}</span> <span>Build {BUILD_COMMIT}</span> <span>{BUILD_DATE}</span></p>
     <p>
       View and edit the bytes of any file, decode its structure with built-in and your own JSON format specs, and build
       new specs visually.
@@ -63,19 +63,20 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 10;
   }
   .dialog {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    background: var(--chrome);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 28px var(--dialog-shadow);
     padding: 16px 20px;
-    width: min(520px, calc(100vw - 24px));
-    max-height: calc(100vh - 24px);
+    width: min(520px, calc(100vw / var(--ui-scale, 1) - 24px));
+    max-height: calc(100vh / var(--ui-scale, 1) - 24px);
     overflow-y: auto;
     box-sizing: border-box;
   }
@@ -84,13 +85,16 @@
   }
   h3 {
     margin: 16px 0 4px;
-    font-size: 1rem;
+    font-size: var(--fs-base);
   }
   p {
     margin: 8px 0;
   }
   .meta {
-    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 16px;
+    color: var(--ink-quiet);
     font-family: var(--mono);
     font-size: 12px;
     overflow-wrap: anywhere;
@@ -109,7 +113,7 @@
   dd {
     margin: 0;
   }
-  @media (max-width: 480px) {
+  @container page (max-width: 480px) {
     dl {
       grid-template-columns: 1fr;
     }
@@ -122,7 +126,7 @@
     font-size: 12px;
   }
   .license {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .buttons {
     display: flex;

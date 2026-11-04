@@ -9,6 +9,7 @@ import { createClient } from './worker/engine-client';
 import { createEngineHandler } from './worker/engine-handler';
 import type { EngineResponse } from './worker/protocol';
 import { createInlineClient } from './worker/inline-client';
+import { chooseFormat, closePalette, formatButton, formatShown, openFormatPicker } from './test/format-ui';
 
 beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 400 });
@@ -44,13 +45,14 @@ const nodeOffsets = (c: HTMLElement, cls = '.b') =>
 
 describe('App: format engine + structure tree', () => {
   it('detects a BMP, shows the tree, and links tree selection and hex clicks both ways', async () => {
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient() });
+    const { container } = render(App, { createClient: () => createInlineClient() });
     await pick(container, new File([makeBmp()], 'pic.bmp'));
 
-    // detection summary
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('bmp'));
-    expect([...select.options].map((o) => o.textContent)).toEqual(['None (raw)', 'Windows Bitmap (magic + extension)', 'ZIP Archive']);
+    // detection summary: the status bar names the format; the Choose format list has the detections first
+    await waitFor(() => expect(formatShown(container)).toBe('Windows Bitmap'));
+    expect(formatButton(container)!.getAttribute('aria-label')).toBe('Format: Windows Bitmap. Choose format');
+    expect(await openFormatPicker(container)).toEqual(['None (raw)', 'Windows Bitmap (magic + extension)', 'ZIP Archive']);
+    await closePalette();
 
     // parse status + tree
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/^Parsed: \d+ nodes, 0 errors, 0 warnings/));
@@ -70,9 +72,89 @@ describe('App: format engine + structure tree', () => {
     await fireEvent.mouseDown(byte);
     await fireEvent.mouseUp(byte);
     await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
-    expect(selectedOffsets(container)).toEqual([10, 11, 12, 13]);
+    // the clicked byte stays the selection (and the caret); the node's bytes are only highlighted
+    expect(selectedOffsets(container)).toEqual([10]);
     expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]);
     expect(container.querySelector('.at')?.textContent).toBe('@ 0x0000000A');
+  });
+
+  it('a hex click inside a field keeps the caret on the clicked byte: typing edits that byte, the field row is selected and its bytes only highlighted', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    // the third byte (offset 12) of off_bits (bytes 10..13): in the ASCII column too
+    const byte = container.querySelector('.b[data-o="12"]')!;
+    await fireEvent.mouseDown(byte);
+    await fireEvent.mouseUp(byte);
+    await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
+    expect(selectedOffsets(container)).toEqual([12]);
+    expect(container.querySelectorAll('.b.caret')).toHaveLength(1);
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('12');
+    expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]);
+    expect(container.querySelector('.at')?.textContent).toBe('@ 0x0000000C');
+    const grid = container.querySelector('[role="grid"]')!;
+    await fireEvent.keyDown(grid, { key: 'f' });
+    await fireEvent.keyDown(grid, { key: '7' });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('F7'));
+    expect(container.querySelector('.b[data-o="11"]')!.textContent).toBe('00');
+    expect(container.querySelector('.b[data-o="13"]')!.textContent).toBe('00');
+
+    const ascii = container.querySelector('.c[data-o="40"]')!; // inside the DIB header, in the ASCII column
+    await fireEvent.mouseDown(ascii);
+    await fireEvent.mouseUp(ascii);
+    await waitFor(() => expect(nodeOffsets(container, '.c')).toContain(40));
+    expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('false');
+    expect(container.querySelectorAll('[role="treeitem"][aria-selected="true"]')).toHaveLength(1);
+    expect(selectedOffsets(container, '.c')).toEqual([40]);
+    expect(container.querySelector('.c.caret')!.getAttribute('data-o')).toBe('40');
+
+    // a selection made from the tree is still the whole node
+    await fireEvent.click(rowOf(container, 'off_bits')!);
+    await waitFor(() => expect(selectedOffsets(container)).toEqual([10, 11, 12, 13]));
+  });
+
+  it('the node highlight follows the caret: a click in a gap and a key move out of the node clear it', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    const bytes = new Uint8Array([...makeBmp(), ...new Uint8Array(30).fill(7)]); // 30 bytes after the parsed structure
+    await pick(container, new File([bytes], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    const click = async (o: number) => {
+      const b = container.querySelector(`.b[data-o="${o}"]`)!;
+      await fireEvent.mouseDown(b);
+      await fireEvent.mouseUp(b);
+    };
+    await click(12);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]));
+    // a keyboard move to a byte of another node: the highlight of off_bits goes away
+    const grid = container.querySelector('[role="grid"]')!;
+    await click(13);
+    await fireEvent.keyDown(grid, { key: 'ArrowRight' });
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([]));
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('14');
+    // a click in the gap after a click in a node
+    await click(12);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([10, 11, 12, 13]));
+    await click(70);
+    await waitFor(() => expect(nodeOffsets(container)).toEqual([]));
+    expect(selectedOffsets(container)).toEqual([70]);
+  });
+
+  it('an undo after a hex click puts the caret back on the edited byte and restores it', async () => {
+    const { container } = render(App, { createClient: () => createInlineClient() });
+    await pick(container, new File([makeBmp()], 'pic.bmp'));
+    await waitFor(() => expect(rowOf(container, 'off_bits')).toBeTruthy());
+    const byte = container.querySelector('.b[data-o="12"]')!;
+    await fireEvent.mouseDown(byte);
+    await fireEvent.mouseUp(byte);
+    await waitFor(() => expect(rowOf(container, 'off_bits')?.getAttribute('aria-selected')).toBe('true'));
+    const grid = container.querySelector('[role="grid"]')!;
+    await fireEvent.keyDown(grid, { key: 'f' });
+    await fireEvent.keyDown(grid, { key: '7' });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('F7'));
+    await fireEvent.keyDown(grid, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(container.querySelector('.b[data-o="12"]')!.textContent).toBe('00'));
+    expect(selectedOffsets(container)).toEqual([12]);
+    expect(container.querySelector('.b.caret')!.getAttribute('data-o')).toBe('12');
   });
 
   it('tints the visible bytes by top-level field using ranges from the worker', async () => {
@@ -121,7 +203,7 @@ describe('App: format engine + structure tree', () => {
       onError: (cb) => (fail = cb),
       close: () => {},
     });
-    const { container, findByText, findByLabelText } = render(App, { createClient: () => client });
+    const { container, findByText } = render(App, { createClient: () => client });
     await pick(container, new File([makeBmp()], 'pic.bmp'));
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/^Parsed/));
 
@@ -129,9 +211,8 @@ describe('App: format engine + structure tree', () => {
     await findByText(/Format engine unavailable: worker crashed/);
 
     // (a) pick another format: no stuck "Parsing..."
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: '' } });
-    await fireEvent.change(select, { target: { value: 'bmp' } });
+    await chooseFormat(container, 'None (raw)');
+    await chooseFormat(container, 'Windows Bitmap (magic + extension)');
     await new Promise((r) => setTimeout(r, 20));
     expect(container.textContent).not.toContain('Parsing');
     expect(container.textContent).toContain('Format engine unavailable: worker crashed');
@@ -144,14 +225,15 @@ describe('App: format engine + structure tree', () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 
-  it('untrusted spec names and error strings are sanitized in the format bar', async () => {
+  it('untrusted spec names and error strings are sanitized in the status bar and the format list', async () => {
     const evil = mkSpec({ root: { fields: [{ name: 'a', type: 'u1' }] } }, { id: 'evil', name: '‮Evil', extensions: ['bmp'] });
     const { container, findByText } = render(App, {
       createClient: () => createInlineClient({ specs: [evil], specErrors: ['bad‮key.json: oops'] }),
     });
     await pick(container, new File([new Uint8Array(4)], 'x.bmp'));
     await findByText(/Built-in format spec invalid: bad\\u\{202E\}key\.json/);
-    const opts = [...container.querySelectorAll('option')].map((o) => o.textContent ?? '');
+    const opts = await openFormatPicker(container);
+    expect(formatShown(container)).toContain('\\u{202E}Evil');
     expect(opts.some((t) => t.includes('\\u{202E}Evil'))).toBe(true);
     expect(opts.join('').includes('‮')).toBe(false);
     expect(container.textContent!.includes('‮')).toBe(false);
@@ -174,19 +256,25 @@ describe('App: format engine + structure tree', () => {
   });
 
   it('extension-only match is a suggestion and still parses; "None (raw)" clears the tree', async () => {
-    const { container, findByLabelText, findByText } = render(App, { createClient: () => createInlineClient() });
+    const { container, findByText } = render(App, { createClient: () => createInlineClient() });
     await pick(container, new File([new Uint8Array(40)], 'fake.bmp'));
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('bmp'));
-    expect(select.selectedOptions[0]?.textContent).toBe('Windows Bitmap (extension)');
-    await findByText(/Suggested from extension only/);
+    await waitFor(() => expect(formatShown(container)).toBe('Windows Bitmap'));
+    // the status bar says the format is only a suggestion: a muted tag, and the full hint in the title and the accessible name
+    await findByText('(extension only)');
+    const btn = formatButton(container)!;
+    expect(btn.title).toContain('Suggested from extension only');
+    expect(btn.getAttribute('aria-label')).toBe('Format: Windows Bitmap (Suggested from extension only). Choose format');
+    expect(await openFormatPicker(container)).toContain('Windows Bitmap (extension)');
+    await closePalette();
     await waitFor(() => expect(rowOf(container, 'file_header')).toBeTruthy());
 
-    await fireEvent.change(select, { target: { value: '' } });
+    await chooseFormat(container, 'None (raw)');
     await waitFor(() => expect(container.querySelector('[role="treeitem"]')).toBeNull());
+    expect(formatShown(container)).toBe('No format');
     expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.textContent).not.toContain('extension only');
 
-    await fireEvent.change(select, { target: { value: 'bmp' } });
+    await chooseFormat(container, 'Windows Bitmap (extension)');
     await waitFor(() => expect(rowOf(container, 'file_header')).toBeTruthy());
   });
 
@@ -195,9 +283,9 @@ describe('App: format engine + structure tree', () => {
     const { container, findByText } = render(App, { createClient: () => createInlineClient() });
     await pick(container, new File([bytes.slice(0, 30)], 'cut.bmp')); // truncated inside the DIB header
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/[1-9]\d* errors/));
-    await fireEvent.click(await findByText(/Problems/));
+    // The bottom Problems panel is open by default and lists the diagnostics.
+    await waitFor(() => expect(container.querySelectorAll('.diag .item').length).toBeGreaterThan(0));
     const items = container.querySelectorAll('.diag .item');
-    expect(items.length).toBeGreaterThan(0);
     await fireEvent.click(items[0]!);
     await waitFor(() => expect(container.querySelector('[role="treeitem"][aria-selected="true"]')).not.toBeNull());
   });
@@ -220,7 +308,11 @@ describe('App: format engine + structure tree', () => {
     await pick(container, new File([makeBmp()], 'pic.bmp'));
     await findByText('Parsing…');
     await fireEvent.click(await findByRole('button', { name: 'Cancel' }));
-    await findByText(/^Aborted/);
+    await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/^Aborted/));
+    // the visible summary is short; the whole sentence is its title
+    const summary = container.querySelector<HTMLElement>('footer.status .summary')!;
+    expect(summary.textContent).toMatch(/Aborted/);
+    expect(summary.title).toMatch(/^Aborted \(partial tree\): \d+ nodes/);
   });
 
   it('a missing worker is a visible message and the hex view still works', async () => {

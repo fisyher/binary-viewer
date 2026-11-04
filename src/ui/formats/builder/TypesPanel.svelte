@@ -123,7 +123,7 @@
 
 <style>
   .types {
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   ul {
     list-style: none;
@@ -143,9 +143,9 @@
     border-left: 3px solid var(--error);
   }
   .badge {
-    font-size: 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    font-size: var(--fs-xs);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
     padding: 0 5px;
     margin-left: 4px;
   }

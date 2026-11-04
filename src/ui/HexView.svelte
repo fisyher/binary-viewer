@@ -26,6 +26,8 @@
   } from '../core/virtual-scroll';
 
   const ROW_HEIGHT = 20;
+  // The column header row above the grid: sticky at the top of the scroller, so the rows are laid out in the height that is left below it.
+  const HEADER_HEIGHT = 22;
   const TINT_COUNT = 4;
 
   let {
@@ -40,7 +42,10 @@
     locked = false,
     onNotice,
     onViewChange,
+    onViewport,
     onByteClick,
+    banding = true,
+    id = undefined,
   }: {
     source: ByteSource;
     selection: Selection | null;
@@ -61,12 +66,20 @@
     onNotice?: (message: string | null) => void;
     /** Visible byte window [start, end) changed (rows rendered, not just fully visible). */
     onViewChange?: (start: number, end: number) => void;
+    /** The bytes in the viewport changed: [start, end) of the rows that are (at least partly) on screen, no overscan. */
+    onViewport?: (start: number, end: number) => void;
     /** A plain click (no drag, no shift) landed on a byte. */
     onByteClick?: (offset: number) => void;
+    /** Every other 8-byte group of the hex and ASCII columns gets a faint background (CSS only). */
+    banding?: boolean;
+    /** DOM id of the scrolling grid (for aria-controls). */
+    id?: string;
   } = $props();
 
   let scroller: HTMLDivElement | undefined = $state();
-  let viewportHeight = $state(0);
+  let scrollerHeight = $state(0); // the scroller's whole client height, header row included
+  // Everything that counts rows (the window, page sizes, the caret scrolled into view, the minimap's frame) uses the height of the data area only.
+  const viewportHeight = $derived(Math.max(0, scrollerHeight - HEADER_HEIGHT));
 
   // The first row in the viewport is the source of truth for rendering. It is derived from
   // scrollTop only on user scrolls; goTo/keyboard set it exactly (matters for huge files where
@@ -120,6 +133,8 @@
   const tintAt = (o: number) => tintMap[o - winStart] || undefined;
   const inNode = (o: number) => nodeRange !== null && o >= nodeRange.start && o <= nodeRange.end;
   const fullRows = $derived(Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT)));
+  // The column (0..15) the caret is in: its labels in the header row are highlighted.
+  const caretColumn = $derived(selection ? ((selection.caret % BYTES_PER_ROW) + BYTES_PER_ROW) % BYTES_PER_ROW : -1);
 
   // Reset when a new source is opened.
   $effect(() => {
@@ -155,9 +170,23 @@
     untrack(() => onViewChange?.(a, b));
   });
 
+  $effect(() => {
+    void source;
+    const a = Math.min(size, topRow * BYTES_PER_ROW);
+    const b = Math.min(size, (topRow + Math.ceil(viewportHeight / ROW_HEIGHT)) * BYTES_PER_ROW);
+    untrack(() => onViewport?.(a, b));
+  });
+
   /** Give the grid keyboard focus. */
   export function focus() {
     scroller?.focus();
+  }
+
+  /** Switch between insert and overwrite (what the Insert key does); nothing while the document is locked or read-only. */
+  export function toggleInsert() {
+    if (locked || !editor) return;
+    insertMode = !insertMode;
+    half = null;
   }
 
   /** Re-attempt a failed read now. */
@@ -259,6 +288,18 @@
     if (!Number.isSafeInteger(offset) || offset < 0 || source.size <= 0) return;
     const row = Math.floor(Math.min(offset, source.size - 1) / BYTES_PER_ROW);
     if (row < topRow || row >= topRow + fullRows) setTop(row - Math.floor(fullRows / 2));
+  }
+
+  /** Scroll so the row holding `offset` is in the middle of the view (`center`) or at its top; the selection is untouched. */
+  export function scrollToOffset(offset: number, center = true) {
+    if (!Number.isFinite(offset) || source.size <= 0) return;
+    const row = Math.floor(Math.min(Math.max(0, offset), source.size - 1) / BYTES_PER_ROW);
+    setTop(center ? row - Math.floor(fullRows / 2) : row);
+  }
+
+  /** Scroll by `px` pixels, like the wheel does. */
+  export function scrollBy(px: number) {
+    if (scroller && Number.isFinite(px)) scroller.scrollTop += px;
   }
 
   /** Select a single byte and scroll it into the middle of the view. */
@@ -568,8 +609,9 @@
 
 <div
   class="scroller"
+  {id}
   bind:this={scroller}
-  bind:clientHeight={viewportHeight}
+  bind:clientHeight={scrollerHeight}
   onscroll={onScroll}
   onkeydown={onKeyDown}
   onpaste={onPaste}
@@ -579,48 +621,64 @@
   aria-label="Hex view"
   aria-rowcount={totalRows}
 >
-  <div class="spacer" style:height="{spacerHeight(geometry)}px">
-    <div class="layer" style:height="{viewportHeight}px">
-      <div class="rows" style:transform="translateY({shiftY}px)">
-        {#each rows as row (row)}
-          {@const base = row * BYTES_PER_ROW}
-          <div class="row" style:height="{ROW_HEIGHT}px" role="row">
-            <span class="off">{formatOffset(base, width)}</span>
-            <span class="hex">
-              {#each { length: BYTES_PER_ROW } as _, i (i)}
-                {@const o = base + i}
-                {@const b = o < size ? byteAt(o) : undefined}
-                <span
-                  class="b"
-                  class:gap={i === 8}
-                  class:sel={sel && o >= sel.start && o <= sel.end}
-                  class:node={inNode(o)}
-                  class:mod={modAt(o)}
-                  class:caret={selection?.caret === o}
-                  data-o={o < size || (editor && o === size) ? o : undefined}
-                  data-t={tintAt(o)}
-                  >{b === undefined ? (o < size ? '··' : '') : byteToHex(b)}</span
-                >
-              {/each}
-            </span>
-            <span class="ascii">
-              {#each { length: BYTES_PER_ROW } as _, i (i)}
-                {@const o = base + i}
-                {@const b = o < size ? byteAt(o) : undefined}
-                <span
-                  class="c"
-                  class:sel={sel && o >= sel.start && o <= sel.end}
-                  class:node={inNode(o)}
-                  class:mod={modAt(o)}
-                  class:caret={selection?.caret === o}
-                  data-o={o < size || (editor && o === size) ? o : undefined}
-                  data-t={tintAt(o)}
-                  >{b === undefined ? (o < size ? ' ' : '') : byteToAscii(b)}</span
-                >
-              {/each}
-            </span>
-          </div>
+  <div class="content">
+    <!-- Decoration for sighted users: the data cells are plain spans in their rows (not gridcells), so column headers would head nothing; hidden from assistive technology. -->
+    <div class="hrow" aria-hidden="true" style:height="{HEADER_HEIGHT}px">
+      <span class="hoff" style:width="{width}ch">Offset</span>
+      <span class="hhex">
+        {#each { length: BYTES_PER_ROW } as _, i (i)}
+          <span class="hb" class:gap={i === 8} class:here={caretColumn === i}>{byteToHex(i)}</span>
         {/each}
+      </span>
+      <span class="hascii">
+        {#each { length: BYTES_PER_ROW } as _, i (i)}
+          <span class="hc" class:here={caretColumn === i}>{byteToHex(i)[1]}</span>
+        {/each}
+      </span>
+    </div>
+    <div class="spacer" style:height="{spacerHeight(geometry)}px">
+      <div class="layer" style:top="{HEADER_HEIGHT}px" style:height="{viewportHeight}px">
+        <div class="rows" style:transform="translateY({shiftY}px)">
+          {#each rows as row (row)}
+            {@const base = row * BYTES_PER_ROW}
+            <div class="row" style:height="{ROW_HEIGHT}px" role="row">
+              <span class="off">{formatOffset(base, width)}</span>
+              <span class="hex" class:banded={banding}>
+                {#each { length: BYTES_PER_ROW } as _, i (i)}
+                  {@const o = base + i}
+                  {@const b = o < size ? byteAt(o) : undefined}
+                  <span
+                    class="b"
+                    class:gap={i === 8}
+                    class:sel={sel && o >= sel.start && o <= sel.end}
+                    class:node={inNode(o)}
+                    class:mod={modAt(o)}
+                    class:caret={selection?.caret === o}
+                    data-o={o < size || (editor && o === size) ? o : undefined}
+                    data-t={tintAt(o)}
+                    >{b === undefined ? (o < size ? '··' : '') : byteToHex(b)}</span
+                  >
+                {/each}
+              </span>
+              <span class="ascii" class:banded={banding}>
+                {#each { length: BYTES_PER_ROW } as _, i (i)}
+                  {@const o = base + i}
+                  {@const b = o < size ? byteAt(o) : undefined}
+                  <span
+                    class="c"
+                    class:sel={sel && o >= sel.start && o <= sel.end}
+                    class:node={inNode(o)}
+                    class:mod={modAt(o)}
+                    class:caret={selection?.caret === o}
+                    data-o={o < size || (editor && o === size) ? o : undefined}
+                    data-t={tintAt(o)}
+                    >{b === undefined ? (o < size ? ' ' : '') : byteToAscii(b)}</span
+                  >
+                {/each}
+              </span>
+            </div>
+          {/each}
+        </div>
       </div>
     </div>
   </div>
@@ -633,20 +691,67 @@
     overflow: auto;
     outline: none;
     font-family: var(--mono);
-    font-size: 13px;
-    background: var(--bg);
+    font-size: var(--fs-base);
+    background: var(--ground);
     user-select: none;
   }
+  /* The caret already shows the position, so the focused grid only gets a quiet 1px frame. */
   .scroller:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--accent);
+    outline: 1px solid color-mix(in srgb, var(--signal) 55%, transparent);
+    outline-offset: -1px;
   }
   .spacer {
     position: relative;
     min-width: max-content;
   }
-  .layer {
+  .content {
+    position: relative;
+    min-width: max-content;
+  }
+  /* The column labels share the data cells' geometry (same widths, margins and gaps), so they line up at every zoom. */
+  .hrow {
     position: sticky;
     top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 12px;
+    white-space: pre;
+    box-sizing: border-box;
+    color: var(--ink-faint);
+    background: var(--ground);
+    border-bottom: 1px solid var(--rule);
+  }
+  .hoff {
+    flex: none;
+    overflow: hidden;
+  }
+  .hhex,
+  .hascii {
+    display: inline-flex;
+  }
+  .hb {
+    display: inline-block;
+    width: 2.4ch;
+    text-align: center;
+    margin-right: 0.4ch;
+  }
+  .hb.gap {
+    margin-left: 1ch;
+  }
+  .hc {
+    display: inline-block;
+    width: 1ch;
+    text-align: center;
+  }
+  .hb.here,
+  .hc.here {
+    color: var(--signal);
+    font-weight: 700;
+  }
+  .layer {
+    position: sticky;
     overflow: hidden;
   }
   .row {
@@ -658,7 +763,7 @@
     box-sizing: border-box;
   }
   .off {
-    color: var(--muted);
+    color: var(--ink-faint);
   }
   .hex {
     display: inline-flex;
@@ -680,21 +785,38 @@
   }
   .ascii {
     display: inline-flex;
-    color: var(--ascii);
+    color: var(--ink-quiet);
+  }
+  /*
+   * Banding: the second 8-byte group of each row gets a faint background, as a gradient on the column (no per-byte work).
+   * It paints under the cells, whose own backgrounds (structure tints, node, selection) are drawn over it. The column
+   * fills the row's height so the bands join between rows. In .hex a byte is 2.4ch + 0.4ch of margin, and the group gap adds
+   * 1ch: the second group starts at 8 * 2.8 + 1 = 23.4ch, so the band begins in the middle of the gap, at 22.7ch.
+   */
+  .hex.banded,
+  .ascii.banded {
+    align-self: stretch;
+    align-items: center;
+  }
+  .hex.banded {
+    background-image: linear-gradient(to right, transparent 22.7ch, var(--band) 22.7ch);
+  }
+  .ascii.banded {
+    background-image: linear-gradient(to right, transparent 8ch, var(--band) 8ch);
   }
   [data-t='1'] {
-    background: var(--tint-1);
+    background: var(--struct-1-tint);
   }
   [data-t='2'] {
-    background: var(--tint-2);
+    background: var(--struct-2-tint);
   }
   [data-t='3'] {
-    background: var(--tint-3);
+    background: var(--struct-3-tint);
   }
   [data-t='4'] {
-    background: var(--tint-4);
+    background: var(--struct-4-tint);
   }
-  /* The tree-selected node: a distinct amber background plus an underline that stays visible under .sel. */
+  /* The tree-selected node: a signal-tinted background plus an underline that stays visible under .sel. */
   .node {
     background: var(--node-bg);
     box-shadow: inset 0 -2px 0 var(--node-edge);
@@ -702,14 +824,31 @@
   .sel {
     background: var(--sel-bg);
     color: var(--sel-fg);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--signal) 50%, transparent);
+  }
+  .sel.node {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--signal) 50%, transparent),
+      inset 0 -2px 0 var(--node-edge);
+  }
+  /* ASCII over a structure tint stays readable */
+  .c[data-t] {
+    color: var(--ink);
   }
   /* Bytes the user has written (live edits not yet saved). Declared after .sel so it stays visible when selected. */
   .mod {
     color: var(--edited);
     font-weight: 600;
   }
+  /* A modified byte inside the selection: the selection colour wins, the edit shows as an underline. */
+  .sel.mod {
+    color: var(--sel-fg);
+    text-decoration: underline var(--edited) 2px;
+    text-underline-offset: 2px;
+  }
   .caret {
-    outline: 1px solid var(--accent);
+    outline: 2px solid var(--signal);
     outline-offset: -1px;
+    border-radius: 2px;
   }
 </style>

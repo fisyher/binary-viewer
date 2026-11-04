@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import App from './App.svelte';
+import { formatShown } from './test/format-ui';
 import { buildZip } from './test/zip-builder';
 import { createInlineClient } from './worker/inline-client';
 
@@ -22,13 +23,12 @@ const rowOf = (c: HTMLElement, name: string) => ([...c.querySelectorAll('[role="
 
 describe('App: ZIP', () => {
   it('detects a ZIP, shows the tree and opens a local header through its reference', async () => {
-    const { container, findByLabelText } = render(App, { createClient: () => createInlineClient() });
+    const { container } = render(App, { createClient: () => createInlineClient() });
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File([buildZip([{ name: 'a.txt', data: 'hi' }]).bytes], 'a.zip')] });
     await fireEvent.change(input);
 
-    const select = (await findByLabelText('Format')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe('zip'));
+    await waitFor(() => expect(formatShown(container)).toBe('ZIP Archive'));
     await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toMatch(/^Parsed: \d+ nodes, 0 errors, 0 warnings/));
     await waitFor(() => expect(rowOf(container, 'eocd')).toBeTruthy());
     await waitFor(() => expect(rowOf(container, 'central_directory')).toBeTruthy());

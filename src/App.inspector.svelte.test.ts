@@ -27,7 +27,7 @@ const cell = (c: HTMLElement, id: string) => c.querySelector(`[data-id="${id}"] 
 describe('App + Inspector', () => {
   it('selecting a byte in the hex view updates the inspector; loading a new file resets it', async () => {
     const { container, findByText } = render(App);
-    await findByText('Select a byte to inspect.');
+    await findByText('Open a file to inspect its bytes.');
 
     await pick(container, new File([new Uint8Array([0x10, 0x20, 0x30, 0x40])], 'a.bin'));
     await waitFor(() => expect(container.querySelector('[data-o="1"]')).not.toBeNull());
@@ -41,7 +41,7 @@ describe('App + Inspector', () => {
     expect(cell(container, 'uint16')).toBe('n/a');
 
     await pick(container, new File([new Uint8Array([9, 9])], 'b.bin'));
-    await findByText('Select a byte to inspect.');
+    await findByText('Click a byte, or press Ctrl+K and choose Go to offset.');
     expect(container.querySelector('[data-id]')).toBeNull();
   });
 });

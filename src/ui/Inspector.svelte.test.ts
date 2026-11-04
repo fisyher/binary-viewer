@@ -15,9 +15,27 @@ const source = new MemoryByteSource(Uint8Array.from([0x01, 0x02, 0x03, 0x04, 0xf
 const cell = (c: HTMLElement, id: string) => c.querySelector(`[data-id="${id}"] td`)?.textContent;
 
 describe('Inspector', () => {
-  it('prompts when nothing is selected', () => {
+  it('hints how to pick a byte when nothing is selected, naming the palette shortcut (there is no Go to key of its own)', () => {
     const { getByText } = render(Inspector, { source, offset: null });
-    getByText('Select a byte to inspect.');
+    getByText('Click a byte, or press Ctrl+K and choose Go to offset.');
+  });
+
+  it('says the file is empty when it has no bytes, instead of asking to click one', () => {
+    const { getByText, queryByText } = render(Inspector, { source: null, offset: null, hasFile: true, empty: true });
+    getByText('The file is empty.');
+    expect(queryByText(/Click a byte/)).toBeNull();
+  });
+
+  it('asks for a file when none is open', () => {
+    const { getByText, queryByText } = render(Inspector, { source: null, offset: null, hasFile: false });
+    getByText('Open a file to inspect its bytes.');
+    expect(queryByText(/Click a byte/)).toBeNull();
+  });
+
+  it('says Cmd+K on macOS', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    const { getByText } = render(Inspector, { source, offset: null });
+    getByText('Click a byte, or press Cmd+K and choose Go to offset.');
   });
 
   it('updates when the caret moves', async () => {

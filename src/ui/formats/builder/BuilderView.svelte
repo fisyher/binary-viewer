@@ -201,7 +201,7 @@
     {:else}
       <button type="button" onclick={doUndo} disabled={!hist || !canUndo(hist)}>Undo</button>
       <button type="button" onclick={doRedo} disabled={!hist || !canRedo(hist)}>Redo</button>
-      <button type="button" onclick={onSave} disabled={!dirty || check.syntax !== null}>Save</button>
+      <button type="button" onclick={onSave} disabled={!dirty || check.syntax !== null}>Save spec</button>
       <button type="button" onclick={onRevert} disabled={!dirty}>Revert</button>
       {#if dirty}<span class="dirty" role="status">● Unsaved edits</span>{/if}
     {/if}
@@ -274,25 +274,25 @@
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+    background: var(--chrome);
   }
   .spacer {
     flex: 1;
   }
   .note,
   .pad {
-    color: var(--muted);
+    color: var(--ink-quiet);
   }
   .pad {
     padding: 2px 8px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   .dirty {
     color: var(--edited);
   }
   .good {
-    color: #16a34a;
+    color: var(--ok);
   }
   .bad {
     color: var(--error);
@@ -300,11 +300,11 @@
   .result,
   .warn {
     padding: 2px 8px;
-    font-size: 12px;
-    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-sm);
+    border-bottom: 1px solid var(--rule);
   }
   .warn {
-    color: #d97706;
+    color: var(--warn);
   }
   .result.fail {
     color: var(--error);
@@ -322,7 +322,7 @@
     flex: none;
     width: 280px;
     overflow: auto;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--rule);
     padding: 4px 8px;
   }
   .main {
@@ -337,7 +337,7 @@
     flex: none;
     width: 260px;
     overflow: auto;
-    border-left: 1px solid var(--border);
+    border-left: 1px solid var(--rule);
   }
   summary {
     cursor: pointer;

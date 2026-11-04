@@ -4,7 +4,9 @@
  */
 import { BlobByteSource, MemoryByteSource, type ByteSource } from '../core/byte-source';
 import * as realEngine from '../core/engine';
+import { groupOfIndex, topGroupNodes } from '../core/groups';
 import type { FormatSpec, Node, ParseResult } from '../core/engine';
+import { clampBuckets, computeOverview, computeRegions, type OverviewRegion } from './overview';
 import type { DetectionInfo, EngineRequest, EngineResponse, RangeSegment, SpecInfo } from './protocol';
 
 export type EngineApi = Pick<typeof realEngine, 'detect' | 'parse' | 'expandLazy' | 'findNodeAt' | 'lazyElementIndexAt'> & Partial<Pick<typeof realEngine, 'expandRef'>>;
@@ -64,6 +66,8 @@ export function createEngineHandler(deps: HandlerDeps) {
   let result: ParseResult | null = null;
   let index: TreeIndex | null = null;
   let extents: Map<Node, { lo: number; hi: number }> | null = null;
+  // For the current tree shape. The regions do not depend on the bucket count, so only `buckets` is keyed on it.
+  let overviewCache: { size: number; regions: OverviewRegion[]; truncated: boolean; buckets: { n: number; data: Uint8Array } | null } | null = null;
   let errorsSent = 0; // diagnostics of `result` already delivered to the client
   let generation = 0; // bumped by open/parse; responses from older generations are dropped
   let parseCtl: AbortController | null = null;
@@ -80,6 +84,7 @@ export function createEngineHandler(deps: HandlerDeps) {
     result = null;
     index = null;
     extents = null;
+    overviewCache = null;
     errorsSent = 0;
     return ++generation;
   }
@@ -133,7 +138,8 @@ export function createEngineHandler(deps: HandlerDeps) {
       }
       out.push({ start: Math.max(start, n.offset), end: Math.min(end, n.offset + n.size), group });
     };
-    (root.children ?? []).forEach((c, g) => visit(c, g));
+    // The same grouping as the minimap (core/groups), so hex tints and minimap colours agree.
+    topGroupNodes(root).forEach((c, g) => visit(c, groupOfIndex(g)));
     // The cap applies in window order, not traversal order.
     return out.sort((a, b) => a.start - b.start).slice(0, MAX_SEGMENTS);
   }
@@ -228,15 +234,17 @@ export function createEngineHandler(deps: HandlerDeps) {
         const nodes = await engine.expandLazy(r, req.nodeId, { start: req.start, count: req.count }, { signal: lifeCtl?.signal });
         if (gen !== generation) return null;
         const lazy = arr?.lazy ?? null;
-        if ((arr?.children?.length ?? 0) !== childrenBefore) {
+        const treeChanged = (arr?.children?.length ?? 0) !== childrenBefore;
+        if (treeChanged) {
           // Variable-size expansion appended children; fixed-size page loads leave the tree untouched.
           index = null;
           extents = null;
+          overviewCache = null;
         }
         // Overlapping expands share one cursor, advanced synchronously after the await, so no error is sent twice.
         const newErrors = r.errors.slice(errorsSent);
         errorsSent = r.errors.length;
-        return { id, type: 'expand', nodes, lazy, newErrors };
+        return { id, type: 'expand', nodes, lazy, newErrors, treeChanged };
       }
       case 'expandRef': {
         if (!result) return { id, type: 'error', message: 'no parse result' };
@@ -249,6 +257,7 @@ export function createEngineHandler(deps: HandlerDeps) {
           // The target was attached under the ref node: ids, parents and byte extents changed.
           index = null;
           extents = null;
+          overviewCache = null;
         }
         const newErrors = r.errors.slice(errorsSent);
         errorsSent = r.errors.length;
@@ -271,6 +280,21 @@ export function createEngineHandler(deps: HandlerDeps) {
           return { id, type: 'error', message: 'invalid byte window' };
         }
         return { id, type: 'ranges', segments: collectRanges(result.root, req.start, req.end) };
+      }
+      case 'overview': {
+        if (!isCount(req.buckets)) return { id, type: 'error', message: 'invalid bucket count' };
+        // No result (none yet, or a re-parse is running): an error, so the client keeps the last overview it has.
+        if (!result) return { id, type: 'error', message: 'no parse result' };
+        const size = source?.size ?? 0;
+        const n = size > 0 ? Math.min(clampBuckets(req.buckets), size) : clampBuckets(req.buckets); // never empty buckets
+        // The reply's buffer is transferred away, so the cache keeps its own copy.
+        if (!overviewCache || overviewCache.size !== size) {
+          overviewCache = { size, ...computeRegions(result.root, size), buckets: null };
+        }
+        if (overviewCache.buckets?.n !== n) overviewCache.buckets = { n, data: computeOverview(result.root, size, n) };
+        const { buckets, regions, truncated } = overviewCache;
+        // Both transports structured-clone the reply, so `regions` need no copy; only the transferred buffer does.
+        return { id, type: 'overview', size, buckets: buckets.data.slice(), regions, truncated };
       }
       default:
         return { id: (req as { id?: number }).id ?? -1, type: 'error', message: 'unknown request' };

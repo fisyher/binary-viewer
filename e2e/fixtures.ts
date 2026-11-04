@@ -41,7 +41,7 @@ export async function gotoApp(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Binary Viewer', level: 1 })).toBeVisible();
 }
 
-// The Formats view has a second (multiple) file input for importing specs.
+// The Formats side bar has a second (multiple) file input for importing specs.
 const OPEN_INPUT = 'input[type="file"]:not([multiple])';
 
 const tempFiles: string[] = [];
@@ -112,4 +112,12 @@ export function makeBmp(pixelBytes = 40, offBits = 54): Uint8Array {
   out.set([0x42, 0x4d, ...le32(out.length), ...le16(0), ...le16(0), ...le32(offBits), ...dib]);
   for (let i = offBits; i < out.length; i++) out[i] = 0xa0 + (i % 16);
   return out;
+}
+
+/** The structure minimap beside the hex grid. */
+export const minimap = (page: Page): Locator => page.getByRole('scrollbar', { name: 'File overview' });
+
+/** Offset of the first byte of the hex view's top row, as the minimap reports it. */
+export async function viewTop(page: Page): Promise<number> {
+  return Number(await minimap(page).getAttribute('aria-valuenow'));
 }

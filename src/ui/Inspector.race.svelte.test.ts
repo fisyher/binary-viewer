@@ -41,11 +41,11 @@ describe('Inspector request ordering', () => {
     const { container, rerender, getByText } = render(Inspector, { source: s.src, offset: 0 });
     await waitFor(() => expect(s.calls.length).toBe(1));
     await rerender({ source: null, offset: null });
-    getByText('Select a byte to inspect.');
+    getByText('Click a byte, or press Ctrl+K and choose Go to offset.');
     s.calls[0]!.resolve([7]);
     await settle();
     expect(container.querySelector('[data-id]')).toBeNull();
-    getByText('Select a byte to inspect.');
+    getByText('Click a byte, or press Ctrl+K and choose Go to offset.');
   });
 
   it('a stale read from the previous source is ignored after a source switch', async () => {
